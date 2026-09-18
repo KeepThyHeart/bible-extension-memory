@@ -1,0 +1,11 @@
+# Patterns for `bible-ext package`. One per line; # for comments.
+# A trailing / means "this directory and everything under it".
+
+src/
+test/
+tsconfig*.json
+vitest.config.ts
+esbuild.config.mjs
+package.json
+package-lock.json
+README.md

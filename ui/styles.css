@@ -1,0 +1,1547 @@
+/* ==========================================================================
+   Scripture Memory - panel styles
+
+   THEMING. Everything is expressed through a `--sm-*` layer that maps onto the
+   host's tokens, which arrive from `ext-ui://host/theme.css` (linked in
+   index.html). The host serves about 150 custom properties: `--theme-*` for
+   colour, `--bible-font-*` / `--ui-font-*` / `--study-font-*` for typography.
+   It serves NO spacing, radius or shadow tokens - those come from Tailwind
+   utilities in the app itself, which panels do not get - so this file defines
+   its own and says so where it does.
+
+   Every mapping is written as `var(--theme-x, <fallback>)`, and the fallbacks
+   are repeated inside a `prefers-color-scheme: dark` block. That combination
+   is what makes the panel behave sensibly in all three situations:
+
+     - the host sheet loaded: the `var()` resolves to the host's value, in the
+       user's chosen theme, and the fallback is never used;
+     - the host sheet missing (a future host, a packaging mistake, an
+       unexpected 404): the fallback is used, and the media query means it is
+       still the right fallback for a dark desktop;
+     - the theme changed while the panel was open: panel.ts writes the new
+       values onto the root element as inline custom properties and re-links
+       the sheet, and everything below follows without a reload.
+
+   The one thing NOT keyed to `prefers-color-scheme` is the choice of light or
+   dark when the host sheet IS present - the app's theme wins over the OS,
+   which is correct: a user who has set the app to sepia wants the panel sepia
+   too, whatever the desktop is doing.
+
+   NO STRIKE-THROUGH. Wrong answers are red text with a ✗ beside them. There is
+   no `text-decoration: line-through` in this file and there should never be
+   one: defacing the words of the verse was ruled out explicitly.
+   ========================================================================== */
+
+:root {
+  /* Lets form controls and scrollbars pick a matching default rendering. */
+  color-scheme: light dark;
+
+  /* --- Colour ---------------------------------------------------------- */
+  --sm-bg: var(--theme-bg-primary, #ffffff);
+  --sm-surface: var(--theme-surface-secondary, #f9fafb);
+  --sm-surface-raised: var(--theme-surface-elevated, #ffffff);
+  --sm-hover: var(--theme-bg-hover, #f0f0f0);
+
+  --sm-text: var(--theme-text-primary, #2c2c2c);
+  --sm-text-dim: var(--theme-text-secondary, #666666);
+  --sm-text-muted: var(--theme-text-muted, #9ca3af);
+  --sm-heading: var(--theme-text-heading, #000000);
+
+  --sm-border: var(--theme-border-primary, #e0e0e0);
+  --sm-border-strong: var(--theme-border-secondary, #d1d5db);
+  --sm-focus: var(--theme-border-focus, #3d78bc);
+
+  --sm-accent: var(--theme-accent-primary, #3d78bc);
+  --sm-accent-hover: var(--theme-accent-hover, #34669f);
+  --sm-accent-text: var(--theme-accent-text, #ffffff);
+  --sm-accent-light: var(--theme-accent-light, rgba(61, 120, 188, 0.12));
+
+  --sm-danger: var(--theme-danger, #dc2626);
+  --sm-danger-text: var(--theme-danger-text, #991b1b);
+  --sm-danger-soft: var(--theme-danger-soft, #fef2f2);
+  --sm-danger-border: var(--theme-danger-border, #fecaca);
+
+  --sm-success: var(--theme-success, #16a34a);
+  --sm-success-text: var(--theme-success-text, #166534);
+  --sm-success-soft: var(--theme-success-soft, #f0fdf4);
+  --sm-success-border: var(--theme-success-border, #bbf7d0);
+
+  --sm-warning: var(--theme-warning, #d97706);
+  --sm-warning-soft: var(--theme-warning-soft, #fffbeb);
+  --sm-warning-text: var(--theme-warning-text, #92400e);
+  --sm-warning-border: var(--theme-warning-border, #fde68a);
+
+  --sm-info-soft: var(--theme-info-soft, #eff6ff);
+  --sm-info-text: var(--theme-info-text, #1e40af);
+  --sm-info-border: var(--theme-info-border, #bfdbfe);
+
+  --sm-input-bg: var(--theme-input-bg, #ffffff);
+  --sm-input-border: var(--theme-input-border, #d1d5db);
+  --sm-input-text: var(--theme-input-text, #2c2c2c);
+  --sm-input-placeholder: var(--theme-input-placeholder, #9ca3af);
+
+  --sm-control-bg: var(--theme-control-bg, #e5e7eb);
+  --sm-control-hover: var(--theme-control-hover, #d1d5db);
+  --sm-control-text: var(--theme-control-text, #374151);
+
+  /* --- Typography ------------------------------------------------------ */
+  /* `--global-font-scale` is the host's accessibility zoom. Folding it in
+     costs nothing when it is 1 and means the panel tracks it if it is not. */
+  --sm-ui-font: var(--ui-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  --sm-ui-size: calc(var(--ui-font-size, 13px) * var(--global-font-scale, 1));
+  --sm-control-size: calc(var(--ui-control-font-size, 14px) * var(--global-font-scale, 1));
+  --sm-ui-lh: var(--ui-line-height, 1.5);
+
+  /* Scripture is set in the host's Bible face, not the UI face. The panel is
+     showing the same text the main window is; setting it in a different
+     typeface would make the two look like different translations. */
+  --sm-bible-font: var(--bible-font-family, Georgia, 'Times New Roman', serif);
+  --sm-bible-size: calc(var(--bible-font-size, 20px) * var(--global-font-scale, 1));
+  --sm-bible-lh: var(--bible-line-height, 1.75);
+
+  /* --- Metrics --------------------------------------------------------- */
+  /* Defined here because the host serves no spacing or radius tokens at all. */
+  --sm-s1: 4px;
+  --sm-s2: 8px;
+  --sm-s3: 12px;
+  --sm-s4: 16px;
+  --sm-s5: 24px;
+  --sm-radius: 6px;
+  --sm-radius-lg: 10px;
+
+  /* Width the reading column is capped at when the panel is popped out wide.
+     Scripture set across 900px is measurably harder to track line-to-line. */
+  --sm-measure: 42rem;
+}
+
+/* Fallbacks only. When the host sheet is present every `var()` above resolves
+   before reaching these values, so this block changes nothing; when it is
+   absent, it is the difference between a usable panel and white-on-white. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sm-bg: var(--theme-bg-primary, #1a1a2e);
+    --sm-surface: var(--theme-surface-secondary, #232347);
+    --sm-surface-raised: var(--theme-surface-elevated, #282850);
+    --sm-hover: var(--theme-bg-hover, #253358);
+
+    --sm-text: var(--theme-text-primary, #e0e0e0);
+    --sm-text-dim: var(--theme-text-secondary, #a0a0b8);
+    --sm-text-muted: var(--theme-text-muted, #8282a0);
+    --sm-heading: var(--theme-text-heading, #f0f0ff);
+
+    --sm-border: var(--theme-border-primary, #3a3a5c);
+    --sm-border-strong: var(--theme-border-secondary, #4a4a70);
+    --sm-focus: var(--theme-border-focus, #6ba3e8);
+
+    --sm-accent: var(--theme-accent-primary, #6ba3e8);
+    --sm-accent-hover: var(--theme-accent-hover, #5b93d8);
+    --sm-accent-text: var(--theme-accent-text, #121628);
+    --sm-accent-light: var(--theme-accent-light, rgba(107, 163, 232, 0.16));
+
+    --sm-danger: var(--theme-danger, #ef4444);
+    --sm-danger-text: var(--theme-danger-text, #fca5a5);
+    --sm-danger-soft: var(--theme-danger-soft, #3d1f26);
+    --sm-danger-border: var(--theme-danger-border, #7f1d1d);
+
+    --sm-success: var(--theme-success, #22c55e);
+    --sm-success-text: var(--theme-success-text, #86efac);
+    --sm-success-soft: var(--theme-success-soft, #17301f);
+    --sm-success-border: var(--theme-success-border, #166534);
+
+    --sm-warning: var(--theme-warning, #f59e0b);
+    --sm-warning-soft: var(--theme-warning-soft, #362b14);
+    --sm-warning-text: var(--theme-warning-text, #fcd34d);
+    --sm-warning-border: var(--theme-warning-border, #78350f);
+
+    --sm-info-soft: var(--theme-info-soft, #1b2a4a);
+    --sm-info-text: var(--theme-info-text, #93c5fd);
+    --sm-info-border: var(--theme-info-border, #1e40af);
+
+    --sm-input-bg: var(--theme-input-bg, #232347);
+    --sm-input-border: var(--theme-input-border, #4a4a70);
+    --sm-input-text: var(--theme-input-text, #e0e0e0);
+    --sm-input-placeholder: var(--theme-input-placeholder, #8282a0);
+
+    --sm-control-bg: var(--theme-control-bg, #2d2d55);
+    --sm-control-hover: var(--theme-control-hover, #3a3a6b);
+    --sm-control-text: var(--theme-control-text, #d5d5e8);
+  }
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--sm-ui-font);
+  font-size: var(--sm-ui-size);
+  line-height: var(--sm-ui-lh);
+  color: var(--sm-text);
+  background: var(--sm-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, p, ul, ol, li, figure {
+  margin: 0;
+  padding: 0;
+}
+
+ul, ol {
+  list-style: none;
+}
+
+/* One focus treatment for the whole panel. `:focus-visible` rather than
+   `:focus` so a mouse click on a button does not leave a ring behind it, while
+   every keyboard route through the panel stays visible. */
+:focus-visible {
+  outline: 2px solid var(--sm-focus);
+  outline-offset: 2px;
+  border-radius: var(--sm-radius);
+}
+
+.sm-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ==========================================================================
+   Shell
+   ========================================================================== */
+
+#sm-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sm-main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--sm-s4);
+}
+
+/* The status line is pinned so a message is not lost below the fold of a long
+   passage, and reserves no height when empty so it costs nothing. */
+.sm-status {
+  flex: 0 0 auto;
+  padding: 0 var(--sm-s4);
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-status:not(:empty) {
+  padding: var(--sm-s2) var(--sm-s4);
+  border-top: 1px solid var(--sm-border);
+  background: var(--sm-surface);
+}
+
+.sm-status-error {
+  color: var(--sm-danger-text);
+  background: var(--sm-danger-soft);
+}
+
+.sm-screen {
+  max-width: var(--sm-measure);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s4);
+}
+
+.sm-screen-title {
+  font-size: 1.35em;
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+/* The heading takes focus after every navigation; the ring would otherwise
+   sit tight against the glyphs. */
+.sm-screen-title:focus-visible {
+  outline-offset: 4px;
+}
+
+.sm-subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  color: var(--sm-text-dim);
+}
+
+.sm-hint {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+/* ==========================================================================
+   Toolbar
+
+   A local approximation of the host's own `PaneToolbar` look, described in
+   the task 0004 review: a full-width band, a plain back arrow at the left,
+   and small flat buttons rather than v0's rounded filled ones. The host
+   serves no button/toolbar tokens of its own yet (see `components.ts`'s file
+   header) - once it does, this block is what gets replaced.
+   ========================================================================== */
+
+.sm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  margin: calc(-1 * var(--sm-s4)) calc(-1 * var(--sm-s4)) 0;
+  padding: var(--sm-s2) var(--sm-s4);
+  background: var(--sm-surface);
+  border-bottom: 1px solid var(--sm-border);
+}
+
+.sm-toolbar-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Bumped from 1.05em - a review round found the reference on the passage
+     and practice screens not prominent enough next to the activity name
+     beneath it (`.sm-practice-rung`, `.sm-activity-title`), both smaller and
+     dimmer than this already. */
+  font-size: 1.2em;
+  font-weight: 600;
+  color: var(--sm-heading);
+  overflow-wrap: break-word;
+}
+
+.sm-toolbar-title:focus-visible {
+  outline-offset: 4px;
+}
+
+.sm-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s1);
+  flex: 0 0 auto;
+}
+
+.sm-toolbar-meta {
+  color: var(--sm-text-dim);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* The back arrow at the toolbar's left edge - the only place in the panel
+   that is an arrow rather than a word. A review round found the original,
+   fully transparent version "kind of hard to see": it read as blank space
+   until hovered, with nothing to say a control was even there. A second
+   round, on the practice screen specifically, still found it too easy to
+   miss ("so user doesn't feel trapped ever") - so it is bigger again and,
+   critically, filled with `--sm-control-bg`, the same solid fill every other
+   `.sm-btn` actually uses (the surface-raised fill this carried before was
+   nearly the toolbar's own background and read as barely there). */
+.sm-back {
+  flex: 0 0 auto;
+  width: 2.3em;
+  height: 2.3em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4em;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  border: 1px solid var(--sm-border-strong);
+  border-radius: var(--sm-radius);
+  background: var(--sm-control-bg);
+  color: var(--sm-control-text);
+  cursor: pointer;
+}
+
+.sm-back:hover {
+  background: var(--sm-control-hover);
+  border-color: var(--sm-accent);
+  color: var(--sm-accent);
+}
+
+/* Reserves the same width as `.sm-back` on the one screen with nowhere
+   further back to go, so the title still lines up across every screen. */
+.sm-toolbar-spacer {
+  flex: 0 0 auto;
+  width: 2.3em;
+  height: 2.3em;
+}
+
+/* ==========================================================================
+   Buttons and inputs
+   ========================================================================== */
+
+.sm-btn {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  padding: var(--sm-s2) var(--sm-s3);
+  border: 1px solid var(--sm-border-strong);
+  border-radius: var(--sm-radius);
+  background: var(--sm-control-bg);
+  color: var(--sm-control-text);
+  cursor: pointer;
+  /* Buttons sit next to text that wraps; without this they are the one thing
+     that can force the panel to scroll sideways in a narrow pane. */
+  max-width: 100%;
+}
+
+.sm-btn:hover:not(:disabled) {
+  background: var(--sm-control-hover);
+}
+
+.sm-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sm-btn-primary {
+  background: var(--sm-accent);
+  border-color: var(--sm-accent);
+  color: var(--sm-accent-text);
+  font-weight: 600;
+}
+
+.sm-btn-primary:hover:not(:disabled) {
+  background: var(--sm-accent-hover);
+  border-color: var(--sm-accent-hover);
+}
+
+.sm-btn-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--sm-accent);
+}
+
+.sm-btn-quiet:hover:not(:disabled) {
+  background: var(--sm-accent-light);
+}
+
+.sm-btn-small {
+  font-size: 0.92em;
+  padding: var(--sm-s1) var(--sm-s2);
+}
+
+/* A glyph-only button (the passage screen's answer-mode gear) - square
+   rather than however wide its text would be, so it reads as an icon rather
+   than a stray label. */
+.sm-icon-btn {
+  width: 2em;
+  height: 2em;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1em;
+}
+
+.sm-btn-block {
+  display: block;
+  width: 100%;
+}
+
+/* "Start practicing" - the one button v0 called "Practice due (N)". Bigger
+   because task 0004 asked this to be the obvious, unmissable thing to press
+   on the home screen ("it should be possible, and easy, for the user to just
+   go"). */
+.sm-btn-large {
+  font-size: calc(var(--sm-control-size) * 1.15);
+  padding: var(--sm-s3) var(--sm-s4);
+}
+
+.sm-btn-danger {
+  background: var(--sm-danger);
+  border-color: var(--sm-danger);
+  color: #ffffff;
+}
+
+.sm-btn-danger-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--sm-danger-text);
+}
+
+.sm-btn-danger-quiet:hover:not(:disabled) {
+  background: var(--sm-danger-soft);
+}
+
+.sm-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--sm-s1);
+}
+
+.sm-input {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--sm-s2);
+  border: 1px solid var(--sm-input-border);
+  border-radius: var(--sm-radius);
+  background: var(--sm-input-bg);
+  color: var(--sm-input-text);
+}
+
+.sm-input::placeholder {
+  color: var(--sm-input-placeholder);
+}
+
+/* ==========================================================================
+   Plan
+   ========================================================================== */
+
+.sm-callout {
+  padding: var(--sm-s3);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-callout-action {
+  border-color: var(--sm-accent);
+  background: var(--sm-accent-light);
+}
+
+.sm-callout-text {
+  color: var(--sm-text-dim);
+}
+
+.sm-add {
+  display: flex;
+  flex-direction: column;
+}
+
+.sm-add-row {
+  display: flex;
+  gap: var(--sm-s2);
+}
+
+/* Reserved height. The parse error for a mistyped reference is the single most
+   likely thing to appear here, and a list of passages that jumps down a line
+   the moment it does is a list the user loses their place in. */
+.sm-error-slot {
+  min-height: 1.6em;
+  margin-top: var(--sm-s1);
+}
+
+.sm-error {
+  color: var(--sm-danger-text);
+  background: var(--sm-danger-soft);
+  border: 1px solid var(--sm-danger-border);
+  border-radius: var(--sm-radius);
+  padding: var(--sm-s1) var(--sm-s2);
+}
+
+.sm-add-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The "Add N passages?" preview a pasted batch waits in until it is
+   confirmed or cancelled (task 0004 review: bulk-add "after confirmation"). */
+.sm-batch-confirm {
+  margin-top: var(--sm-s2);
+  padding: var(--sm-s3);
+  border: 1px solid var(--sm-accent);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-accent-light);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s1);
+  max-height: 10em;
+  overflow-y: auto;
+}
+
+.sm-batch-list-item {
+  font-family: var(--sm-bible-font);
+}
+
+.sm-batch-actions {
+  display: flex;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+  padding: var(--sm-s2);
+}
+
+/* One line, tabular: reference (plus its due badge) on the left, activity
+   squares on the right - a follow-up review round asked the plan list to be
+   "more compact, tabular" once the per-activity strips became squares. */
+.sm-row-main {
+  font: inherit;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sm-s3);
+  padding: var(--sm-s1) var(--sm-s2);
+  border: 0;
+  border-radius: var(--sm-radius);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sm-row-main:hover {
+  background: var(--sm-hover);
+}
+
+.sm-row-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.sm-row-ref {
+  font-weight: 600;
+  color: var(--sm-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm-row-meta {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-remove-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-empty {
+  border: 1px dashed var(--sm-border-strong);
+  border-radius: var(--sm-radius-lg);
+  padding: var(--sm-s5) var(--sm-s4);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sm-s2);
+}
+
+.sm-empty-message {
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-empty-detail {
+  color: var(--sm-text-dim);
+  max-width: 34em;
+}
+
+/* ==========================================================================
+   Badges, pills, chips, bars
+   ========================================================================== */
+
+.sm-badge {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 0 0.4em;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 0.85em;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.sm-badge-due {
+  background: var(--sm-warning);
+  color: #ffffff;
+}
+
+/* "Suggested" - understated on purpose. Nothing is locked any more, so this
+   is a hint about a good next step, not a claim about what is or is not
+   allowed (task 0004 review, point 10). */
+.sm-badge-suggested {
+  background: var(--sm-accent-light);
+  color: var(--sm-accent);
+}
+
+.sm-badge-learned {
+  background: var(--sm-success-soft);
+  color: var(--sm-success-text);
+  border: 1px solid var(--sm-success-border);
+}
+
+/* ==========================================================================
+   Level boxes - five per activity, replacing v0's locked/learning/review/
+   mastered chips. Grey = not reached, yellow = levels 1-3, green = 4-5,
+   faded green = mastered but due again. See `components.ts#levelBoxes`.
+   ========================================================================== */
+
+.sm-level-boxes {
+  display: inline-flex;
+  gap: 3px;
+  vertical-align: middle;
+}
+
+/* A due activity below the mastered bar gets a ring instead of a fill colour
+   change, the same device `sm-badge-due` uses - due is a status layered on
+   top of the level, not a level of its own. */
+.sm-level-boxes-due {
+  box-shadow: 0 0 0 2px var(--sm-warning);
+  border-radius: 3px;
+}
+
+.sm-level-box {
+  width: 0.85em;
+  height: 0.85em;
+  border-radius: 2px;
+  background: var(--sm-control-bg);
+  border: 1px solid var(--sm-border-strong);
+}
+
+.sm-level-box-yellow {
+  background: var(--sm-warning);
+  border-color: var(--sm-warning);
+}
+
+.sm-level-box-green {
+  background: var(--sm-success);
+  border-color: var(--sm-success);
+}
+
+.sm-level-box-faded {
+  opacity: 0.5;
+}
+
+.sm-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--sm-control-bg);
+  overflow: hidden;
+}
+
+.sm-bar-slim {
+  height: 4px;
+  flex: 1 1 auto;
+  min-width: 60px;
+}
+
+.sm-bar-fill {
+  height: 100%;
+  background: var(--sm-accent);
+  border-radius: inherit;
+}
+
+.sm-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--sm-s2);
+}
+
+.sm-stat {
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface);
+  padding: var(--sm-s3);
+}
+
+.sm-stat-value {
+  font-size: 1.6em;
+  font-weight: 700;
+  color: var(--sm-heading);
+  line-height: 1.2;
+}
+
+.sm-stat-caption {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-block-title {
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-block-caption {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+/* ==========================================================================
+   Plan row activity squares - one small square per applicable activity, all
+   on a single line. Replaced the earlier per-activity labelled strip (a line
+   each) after a review round asked for something "a lot more compact": with
+   many passages in a plan, a whole extra line per activity per row is the
+   difference between a list that fits on screen and one that does not.
+   ========================================================================== */
+
+.sm-activity-squares {
+  display: inline-flex;
+  gap: 3px;
+  margin-top: var(--sm-s1);
+  vertical-align: middle;
+}
+
+.sm-activity-square {
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: 2px;
+  border: 1px solid var(--sm-border-strong);
+}
+
+/* Grey - never attempted. */
+.sm-activity-square-new {
+  background: var(--sm-control-bg);
+}
+
+/* Orange - attempted, not yet mastered. */
+.sm-activity-square-partial {
+  background: var(--sm-warning);
+  border-color: var(--sm-warning);
+}
+
+/* Green - mastered on this activity itself. */
+.sm-activity-square-done {
+  background: var(--sm-success);
+  border-color: var(--sm-success);
+}
+
+/* Light green - not mastered here, but a harder activity already was, so
+   this one counts as passed without ever having been drilled directly
+   ("harder carries down" - task 0004 review, point 10). */
+.sm-activity-square-carried {
+  background: var(--sm-success);
+  border-color: var(--sm-success);
+  opacity: 0.45;
+}
+
+/* ==========================================================================
+   Passage screen - a table-like list of activities, all always practisable.
+
+   Originally one boxed "card" per activity, each with its own border and
+   background - which read, in a review round's words, as "confusing" rather
+   than as "a list of peers". Sharing one border around the whole list and
+   dividing rows with a single line reads the three activities as rows of the
+   same table instead of three separate objects, while keeping the per-row
+   detail (level boxes, schedule, actions) exactly as before.
+   ========================================================================== */
+
+.sm-activities {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+  overflow: hidden;
+}
+
+/* A tabular row: name+badge, level, schedule/paused note, action(s), each a
+   flex child rather than a stacked block - a follow-up review round asked
+   for the activity list to read as compact and tabular, the way the plan
+   row's squares do. Falls back to stacking at the narrow, docked width (see
+   the responsive block at the end of this file). */
+.sm-activity-card {
+  padding: var(--sm-s2) var(--sm-s3);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sm-s3);
+  border-bottom: 1px solid var(--sm-border);
+}
+
+.sm-activities .sm-activity-card:last-child {
+  border-bottom: 0;
+}
+
+/* Due gets a left accent stripe rather than a full border, so a due row still
+   reads as a row in the same table rather than standing apart as its own
+   card. */
+.sm-activity-due {
+  box-shadow: inset 3px 0 0 var(--sm-warning);
+}
+
+.sm-activity-na {
+  opacity: 0.7;
+}
+
+.sm-activity-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sm-activity-title {
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-activity-blurb {
+  color: var(--sm-text-dim);
+}
+
+.sm-activity-level-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex: 0 0 auto;
+}
+
+.sm-activity-level-text {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+
+.sm-schedule {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+}
+
+.sm-activity-paused {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+  font-style: italic;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+}
+
+.sm-activity-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Revealed by the toolbar's gear icon (`passageView.ts`) rather than shown
+   open on the screen - a drawer, not a permanent row, so it gets a border and
+   its own surface once visible instead of sitting flush with the page. */
+.sm-answer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+  padding: var(--sm-s2) var(--sm-s3);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface);
+}
+
+/* `display: flex` above has the same specificity as the browser's own
+   `[hidden] { display: none }` default, so without this the two are a
+   coin-flip on source order and the gear toggle can end up doing nothing
+   visible at all. The extra attribute selector outweighs it deliberately. */
+.sm-answer-row[hidden] {
+  display: none;
+}
+
+.sm-label-inline {
+  font-weight: 600;
+}
+
+.sm-select {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  padding: var(--sm-s1) var(--sm-s2);
+  border: 1px solid var(--sm-input-border);
+  border-radius: var(--sm-radius);
+  background: var(--sm-input-bg);
+  color: var(--sm-input-text);
+}
+
+/* ==========================================================================
+   Settings
+   ========================================================================== */
+
+.sm-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-radio-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sm-s2);
+}
+
+.sm-radio-label {
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+/* ==========================================================================
+   Analytics - the practice calendar and recent milestones
+   ========================================================================== */
+
+.sm-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sm-calendar-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+
+.sm-calendar-heading {
+  text-align: center;
+  font-size: 0.75em;
+  color: var(--sm-text-muted);
+}
+
+.sm-calendar-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--sm-control-bg);
+}
+
+.sm-calendar-cell-on {
+  background: var(--sm-success);
+}
+
+.sm-calendar-cell-today {
+  box-shadow: 0 0 0 2px var(--sm-accent);
+}
+
+.sm-milestones {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s1);
+}
+
+.sm-milestone-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-milestone-ref {
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-milestone-rung {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-milestone-date {
+  color: var(--sm-text-muted);
+  font-size: 0.85em;
+  margin-left: auto;
+}
+
+/* ==========================================================================
+   Practice
+   ========================================================================== */
+
+.sm-practice {
+  gap: var(--sm-s3);
+}
+
+.sm-practice-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+  padding-bottom: var(--sm-s2);
+  border-bottom: 1px solid var(--sm-border);
+}
+
+.sm-practice-sub {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-practice-rung {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-practice-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+}
+
+.sm-step-tally {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+
+/* --- The scripture itself ------------------------------------------------ */
+
+.sm-context {
+  font-family: var(--sm-bible-font);
+  font-size: var(--sm-bible-size);
+  line-height: var(--sm-bible-lh);
+  color: var(--sm-text);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+
+/* `display: flex` above has the same specificity as the browser's own
+   `[hidden] { display: none }` default, so `practiceView.ts` setting
+   `contextEl.hidden = true` (between an ordering step's picker and no prior
+   verses, and for the end-of-activity summary) would otherwise be a
+   coin-flip on cascade order rather than something that reliably hides the
+   passage. Found while building this round's review screenshots - see the
+   answer-mode drawer below for the same fix on the same bug shape. */
+.sm-context[hidden] {
+  display: none;
+}
+
+.sm-context-note {
+  font-family: var(--sm-ui-font);
+  font-size: var(--sm-ui-size);
+  color: var(--sm-text-muted);
+  font-style: italic;
+}
+
+.sm-para {
+  margin: 0;
+}
+
+/* Context is REAL, READABLE TEXT. This is a small step down in contrast, not a
+   blur and not a 30%-opacity ghost - the surrounding verses are meant to be
+   read, because reading them is how the passage gets learnt in its setting. */
+.sm-verse-muted {
+  color: var(--sm-text-dim);
+}
+
+/* The verse being worked on. A tinted band rather than a border, because a
+   border on an inline run that wraps across three lines draws four edges in
+   the middle of the text; `box-decoration-break: clone` makes the tint wrap
+   cleanly instead. */
+.sm-verse-current {
+  background: var(--sm-accent-light);
+  border-radius: var(--sm-radius);
+  box-shadow: inset 3px 0 0 var(--sm-accent);
+  padding: 0.05em 0.25em 0.05em 0.5em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.sm-verse-label {
+  font-size: 0.62em;
+  font-weight: 700;
+  vertical-align: super;
+  color: var(--sm-text-muted);
+  margin-right: 0.25em;
+  font-family: var(--sm-ui-font);
+}
+
+/* Poetry. `level` 1..3 becomes increasing indentation, and the negative
+   text-indent gives each line a hanging indent so a long line that wraps stays
+   visibly subordinate to the line it belongs to. */
+.sm-line {
+  padding-left: 1.25em;
+  text-indent: -1.25em;
+}
+
+.sm-line-2 {
+  padding-left: 2.5em;
+}
+
+.sm-line-3 {
+  padding-left: 3.75em;
+}
+
+/* A superscription - USFM \d, "A Psalm of David". Part of the text, so it is
+   rendered; a section heading is not, and none arrives in this data. */
+.sm-superscription {
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--sm-text-dim);
+  margin-top: 0.4em;
+}
+
+/* --- Blanks and first letters -------------------------------------------- */
+
+/* `font: inherit` is what makes the measurement honest: the input renders the
+   word in exactly the face and size measure.ts measured it in. */
+.sm-blank,
+.sm-fl {
+  font: inherit;
+  color: var(--sm-text);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid var(--sm-accent);
+  border-radius: 2px 2px 0 0;
+  padding: 0 1px;
+  margin: 0;
+  /* Width is set in pixels by JS from the measured width of the hidden word. */
+  vertical-align: baseline;
+}
+
+.sm-blank:focus,
+.sm-fl:focus {
+  outline: none;
+  background: var(--sm-accent-light);
+}
+
+.sm-fl {
+  text-align: center;
+}
+
+/* `.sm-fl` never carries a `placeholder` any more - see `practiceView.ts`'s
+   file header on why the box has to stay empty - so this rule is dormant. It
+   is kept rather than deleted so a future change that DID add one back would
+   inherit sane contrast instead of the host's default, faded placeholder
+   grey, which would make the reveal-on-keystroke box look broken. */
+.sm-fl::placeholder {
+  color: var(--sm-text);
+  opacity: 1;
+}
+
+.sm-blank::placeholder {
+  color: var(--sm-input-placeholder);
+}
+
+/* A word the user got right, revealed back into the passage. */
+.sm-word-ok {
+  background: var(--sm-success-soft);
+  border-radius: 3px;
+  box-shadow: 0 1px 0 var(--sm-success-border);
+}
+
+/* A word the user missed.
+
+   The verse text stays intact and in the normal colour; what is marked is the
+   ANSWER - red, with a ✗ beside it. No strike-through, on this or anything
+   else. `text-decoration: none` is stated rather than assumed so that a
+   future change to a parent cannot introduce one by inheritance. */
+.sm-word-missed {
+  text-decoration: none;
+}
+
+.sm-word-answer {
+  background: var(--sm-danger-soft);
+  border-radius: 3px;
+  box-shadow: 0 1px 0 var(--sm-danger-border);
+  text-decoration: none;
+}
+
+.sm-word-wrong {
+  color: var(--sm-danger);
+  font-family: var(--sm-ui-font);
+  font-size: 0.6em;
+  white-space: nowrap;
+  margin-left: 0.3em;
+  text-decoration: none;
+}
+
+.sm-mark {
+  font-weight: 700;
+  margin-right: 0.15em;
+}
+
+.sm-mark-bad {
+  color: var(--sm-danger);
+}
+
+/* --- The picker ---------------------------------------------------------- */
+
+.sm-prompt {
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-exercise {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-choice {
+  font: inherit;
+  font-family: var(--sm-bible-font);
+  font-size: calc(var(--sm-bible-size) * 0.85);
+  line-height: 1.5;
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sm-s1);
+  text-align: left;
+  padding: var(--sm-s2) var(--sm-s3);
+  border: 1px solid var(--sm-border-strong);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+  color: var(--sm-text);
+  cursor: pointer;
+}
+
+.sm-choices-compact .sm-choice {
+  font-family: var(--sm-ui-font);
+  font-size: var(--sm-control-size);
+}
+
+.sm-choice:hover {
+  background: var(--sm-hover);
+  border-color: var(--sm-accent);
+}
+
+.sm-choice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Reserved space for the verdict glyph, always. Adding the mark on a wrong
+   pick must not make the row wider and shove the text it contains around -
+   the user is trying to read those words. */
+.sm-choice-mark {
+  flex: 0 0 auto;
+  width: 1.25em;
+  text-align: center;
+  font-weight: 700;
+}
+
+.sm-choice-wrong {
+  border-color: var(--sm-danger);
+  background: var(--sm-danger-soft);
+  color: var(--sm-danger-text);
+}
+
+.sm-choice-wrong .sm-choice-mark::after {
+  content: '✗';
+  color: var(--sm-danger);
+}
+
+.sm-choice-correct {
+  border-color: var(--sm-success);
+  background: var(--sm-success-soft);
+  color: var(--sm-success-text);
+}
+
+.sm-choice-correct .sm-choice-mark::after {
+  content: '✓';
+  color: var(--sm-success);
+}
+
+/* --- Feedback and actions ------------------------------------------------ */
+
+/* Reserved height so the verdict appearing does not push the passage up the
+   screen while the user is still reading it. */
+.sm-feedback {
+  min-height: 2.2em;
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s1);
+  font-weight: 600;
+}
+
+.sm-feedback-good {
+  color: var(--sm-success-text);
+}
+
+.sm-feedback-bad {
+  color: var(--sm-danger-text);
+}
+
+.sm-exercise-actions {
+  display: flex;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-summary {
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface);
+  padding: var(--sm-s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s1);
+  text-align: center;
+}
+
+.sm-summary-title {
+  font-size: 1.15em;
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-summary-level {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sm-s2);
+}
+
+.sm-summary-level .sm-level-box {
+  width: 1.3em;
+  height: 1.3em;
+}
+
+.sm-summary-level-text {
+  font-size: 1.3em;
+  font-weight: 700;
+  color: var(--sm-heading);
+}
+
+.sm-summary-detail {
+  color: var(--sm-text-dim);
+}
+
+.sm-summary-good {
+  color: var(--sm-success-text);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Responsive
+
+   The panel is opened two ways and has to work at both extremes: docked in a
+   narrow right-hand pane, and popped out into a window the width of a desktop.
+   ========================================================================== */
+
+/* Narrow docked pane. Rows stop trying to be two columns, and the scripture
+   drops a size so a poetic line at indent level 3 still fits without the
+   passage scrolling sideways. */
+@media (max-width: 30rem) {
+  .sm-main {
+    padding: var(--sm-s3);
+  }
+
+  /* Keeps the toolbar band flush with the pane's edges as `.sm-main`'s own
+     padding shrinks - see `.sm-toolbar`'s negative margin. */
+  .sm-toolbar {
+    margin: calc(-1 * var(--sm-s3)) calc(-1 * var(--sm-s3)) 0;
+  }
+
+  .sm-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sm-row-main {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .sm-activity-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .sm-schedule,
+  .sm-activity-paused {
+    text-align: left;
+  }
+
+  .sm-context {
+    font-size: calc(var(--sm-bible-size) * 0.85);
+  }
+
+  .sm-practice-progress {
+    flex-wrap: wrap;
+  }
+}
+
+/* Popped out wide. The reading column stays capped at `--sm-measure`, and the
+   picker becomes two columns so a five-candidate list is one glance rather
+   than a scroll. */
+@media (min-width: 52rem) {
+  .sm-main {
+    padding: var(--sm-s5);
+  }
+
+  .sm-toolbar {
+    margin: calc(-1 * var(--sm-s5)) calc(-1 * var(--sm-s5)) 0;
+  }
+
+  .sm-choices {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sm-choices-compact {
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+}
+
+/* Nothing here animates, but the transitions on background colour that the
+   hover rules imply are still worth turning off for anyone who has asked. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Wide content must scroll inside itself, never take the page sideways. */
+.sm-context,
+.sm-choice-text {
+  overflow-wrap: break-word;
+}

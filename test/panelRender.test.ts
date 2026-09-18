@@ -1,0 +1,1994 @@
+﻿/**
+ * @vitest-environment jsdom
+ *
+ * Rendering tests: the part of the panel that had never been executed.
+ *
+ * `panel.test.ts` covers the panel's *decisions* - which card is next, how a
+ * date reads, how an ambiguous `StepResult` maps back onto answers - and says
+ * in its own header that none of the rendering, none of the event handling and
+ * none of the measurement is covered because "those need a browser". They do,
+ * and this file supplies one. The exercises are what the extension is for and
+ * essentially all of their behaviour lives in the DOM, so a suite that stops at
+ * the pure helpers is testing the easy half.
+ *
+ * The pragma above turns on `jsdom` for this file only rather than changing
+ * `vitest.config.ts`: the rest of the suite is deliberately DOM-free (see the
+ * note at the top of `format.ts`) and giving every test a document would
+ * quietly remove the pressure that keeps the logic testable.
+ *
+ * WHAT IS ASSERTED, AND WHAT IS NOT. These tests assert what a user would
+ * experience - the words on screen, which element is distinguished from its
+ * neighbours, what a screen reader would be given, whether an input is sized to
+ * its word - and avoid asserting on class names or markup shape wherever the
+ * behaviour can be reached another way. Class names are used to *locate* nodes
+ * in a couple of places where nothing else identifies them; they are not the
+ * thing being checked.
+ *
+ * WHAT JSDOM CANNOT DO, stated once here rather than implied at each site:
+ *
+ *   - It has no layout engine. Every `getBoundingClientRect()` is zero, which
+ *     is exactly the condition `WordMeasurer.measure` documents as "the panel
+ *     is not being laid out" and falls back from. So the width assertions
+ *     below exercise the documented fallback (`estimateTextWidth`) and check
+ *     that it is proportional and respects its floor. A real pixel width for a
+ *     real font cannot be produced here and is not claimed.
+ *   - It does not resolve `var()`. Computed colours come back as the literal
+ *     token reference, so "is this red?" is answered by following the token to
+ *     the hex fallback declared in `styles.css`.
+ *   - It does not evaluate `::after { content }`. The ✗ on a *picker*
+ *     candidate is drawn that way, so the picker tests assert the candidate is
+ *     visually distinguished from its siblings rather than looking for a glyph
+ *     that jsdom will never generate. (The ✗ inside a missed *word* is a real
+ *     text node and is asserted directly.)
+ *
+ * The panel's real stylesheet is loaded into the document, because several of
+ * the decisions being guarded here - poetry indentation, context that is legible
+ * rather than blurred, and above all the absence of any strike-through - are
+ * expressed in CSS and would be reintroduced there, not in TypeScript.
+ */
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type {
+  AnalyticsView,
+  AnswerMode,
+  BlanksStep,
+  FirstLettersStep,
+  OrderingStep,
+  PanelReply,
+  PanelRequest,
+  Passage,
+  PassageContext,
+  PassageView,
+  PlanView,
+  RequestMap,
+  Rung,
+  RungView,
+  SessionView,
+  SettingsView,
+  Step,
+  StepResult,
+  VerseText,
+} from '../src/types';
+import type { PanelHost } from '../src/ui/host';
+import type { NavAction } from '../src/ui/state';
+import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
+import { renderPassage } from '../src/ui/scripture';
+import { PracticeView } from '../src/ui/practiceView';
+import { renderPlan } from '../src/ui/planView';
+import { renderPassageScreen } from '../src/ui/passageView';
+import { renderSettings } from '../src/ui/settingsView';
+import { renderAnalytics } from '../src/ui/analyticsView';
+
+// ---------------------------------------------------------------------------
+// The panel's own stylesheet
+// ---------------------------------------------------------------------------
+
+const STYLESHEET_PATH = resolve(process.cwd(), 'ui', 'styles.css');
+const STYLESHEET_TEXT = readFileSync(STYLESHEET_PATH, 'utf8');
+
+/**
+ * Every style rule in the sheet, flattened out of its `@media` blocks.
+ *
+ * Captured once, before the hover rules are pruned (see `installStylesheet`),
+ * and read from parsed rules rather than the raw file text: the file's own
+ * header comment contains the words "line-through" while promising there is no
+ * such declaration, so a text search would report the promise as a violation of
+ * itself.
+ */
+const ALL_RULE_TEXTS: string[] = [];
+
+function eachStyleRule(rules: CSSRuleList, visit: (rule: CSSStyleRule) => void): void {
+  for (const rule of Array.from(rules)) {
+    if (rule instanceof CSSStyleRule) visit(rule);
+    const grouping = rule as CSSRule & { cssRules?: CSSRuleList };
+    if (grouping.cssRules) eachStyleRule(grouping.cssRules, visit);
+  }
+}
+
+/** Drops `:hover` / `:active` rules from a sheet or an `@media` block. */
+function pruneHoverRules(container: CSSStyleSheet | CSSGroupingRule): void {
+  const rules = container.cssRules;
+  for (let i = rules.length - 1; i >= 0; i--) {
+    const rule = rules.item(i)!;
+    if (rule instanceof CSSStyleRule && /:hover|:active/.test(rule.selectorText)) {
+      container.deleteRule(i);
+      continue;
+    }
+    const grouping = rule as CSSRule & { cssRules?: CSSRuleList; deleteRule?: unknown };
+    if (grouping.cssRules && typeof grouping.deleteRule === 'function') {
+      pruneHoverRules(rule as CSSGroupingRule);
+    }
+  }
+}
+
+/**
+ * Loads the panel's real stylesheet, then removes its `:hover` and `:active`
+ * rules.
+ *
+ * The removal is a harness fix, not a statement about the panel. jsdom resolves
+ * `:hover` against the focused element, so a control that has just been given
+ * focus - which the picker does deliberately after a wrong pick - computes as
+ * permanently hovered, and any test asking "does this element look different
+ * from its siblings?" would then be answering a question about focus. The
+ * hover rules are still captured for the strike-through scan below.
+ */
+function installStylesheet(): void {
+  const style = document.createElement('style');
+  style.textContent = STYLESHEET_TEXT;
+  document.head.appendChild(style);
+
+  const sheet = style.sheet as CSSStyleSheet;
+  eachStyleRule(sheet.cssRules, (rule) => ALL_RULE_TEXTS.push(rule.cssText));
+  pruneHoverRules(sheet);
+}
+
+/**
+ * Follows a custom property to the hex it ultimately falls back to.
+ *
+ * jsdom does not resolve `var()`, so a computed colour arrives as the literal
+ * string `var(--sm-danger)`. The tokens in `styles.css` are all of the form
+ * `var(--theme-x, #rrggbb)` - the host's theme if it is there, a stated hex if
+ * it is not - so the hex is what this panel renders when it is opened outside
+ * the host, and it is the only concrete colour available to assert on.
+ */
+function tokenFallbackHexes(token: string): string[] {
+  const pattern = new RegExp(`${token}\\s*:\\s*([^;]+);`, 'g');
+  const hexes: string[] = [];
+  for (const match of STYLESHEET_TEXT.matchAll(pattern)) {
+    const hex = /#([0-9a-fA-F]{6})/.exec(match[1] ?? '');
+    if (hex) hexes.push(`#${hex[1]!.toLowerCase()}`);
+  }
+  return hexes;
+}
+
+function isRed(hex: string): boolean {
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
+  return r > 120 && r > g * 1.8 && r > b * 1.8;
+}
+
+// ---------------------------------------------------------------------------
+// Reading the tree the way a user would
+// ---------------------------------------------------------------------------
+
+/**
+ * Blocks that put a line break between what is on either side of them.
+ *
+ * `textContent` concatenates with nothing in between, so three poetic lines
+ * come back as "…ungodly,nor standeth…" and a test on the words of the verse
+ * fails on an artefact rather than on the rendering. A reader sees a line
+ * break, which is whitespace, so that is what this treats it as.
+ */
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'LI', 'UL', 'OL', 'SECTION', 'HEADER', 'FOOTER', 'FORM',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BR',
+]);
+
+/**
+ * The text a reader gets, with the presentational bits taken out.
+ *
+ * Verse labels and the ✗ glyph are marked `aria-hidden`; dropping them leaves
+ * the scripture itself plus the words written for a screen reader, which is
+ * what nearly every assertion here is about.
+ */
+function spokenText(node: Node): string {
+  const parts: string[] = [];
+
+  const walk = (current: Node): void => {
+    if (current.nodeType === Node.TEXT_NODE) {
+      parts.push(current.nodeValue ?? '');
+      return;
+    }
+    if (current.nodeType !== Node.ELEMENT_NODE) return;
+    const element = current as Element;
+    if (element.getAttribute('aria-hidden') === 'true') return;
+
+    const block = BLOCK_TAGS.has(element.tagName);
+    if (block) parts.push(' ');
+    for (const child of Array.from(element.childNodes)) walk(child);
+    if (block) parts.push(' ');
+  };
+
+  walk(node);
+  return parts.join('').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A few computed properties, as one comparable string.
+ *
+ * Used to ask "does this element look different from its siblings?" without
+ * naming the class that makes it so. `var()` is not resolved by jsdom, but the
+ * token *reference* still differs between a marked and an unmarked candidate,
+ * which is the whole question.
+ */
+function visualSignature(node: Element): string {
+  const cs = getComputedStyle(node);
+  return [cs.background, cs.backgroundColor, cs.color, cs.boxShadow].join('|');
+}
+
+/** Every element in a tree, the root included. */
+function everyElement(root: Element): Element[] {
+  return [root, ...Array.from(root.querySelectorAll('*'))];
+}
+
+/**
+ * Anything that would draw a line through text, by any route.
+ *
+ * Three routes exist and all three are checked, because ruling out only the one
+ * that happens to be in use today is how a rule like this comes back: an inline
+ * style written by a view, a declaration in the stylesheet, and the elements
+ * that are struck through by default with no CSS at all.
+ */
+function strikeThroughOffenders(root: Element): string[] {
+  const offenders: string[] = [];
+
+  for (const node of everyElement(root)) {
+    if (['S', 'STRIKE', 'DEL'].includes(node.tagName)) {
+      offenders.push(`<${node.tagName.toLowerCase()}> element`);
+    }
+    const inline = (node as HTMLElement).style;
+    const declared = `${inline.textDecoration} ${inline.textDecorationLine}`;
+    if (declared.includes('line-through')) offenders.push(`inline style on ${node.tagName}`);
+
+    const cs = getComputedStyle(node);
+    if (`${cs.textDecoration} ${cs.textDecorationLine}`.includes('line-through')) {
+      offenders.push(`computed style on ${node.tagName}.${node.className}`);
+    }
+  }
+
+  for (const rule of ALL_RULE_TEXTS) {
+    if (rule.includes('line-through')) offenders.push(`rule ${rule.slice(0, 60)}`);
+  }
+
+  return offenders;
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const NOW = Date.UTC(2026, 2, 12, 9, 0, 0);
+
+/**
+ * Psalm 1:1 - three poetic lines at three different indent levels.
+ *
+ * The shape is the point. `Line.end` is documented as INCLUSIVE, and the cost
+ * of reading it as exclusive is that the last word of every line disappears -
+ * "the counsel of the", "the way of", "the seat of the" - which reads as a
+ * slightly odd line break rather than as a bug. A fixture whose lines all end
+ * on a memorable word makes that failure loud.
+ */
+const PSALM_1_1: VerseText = {
+  verseId: 19001001,
+  label: '1:1',
+  words: [
+    'Blessed', 'is', 'the', 'man', 'that', 'walketh', 'not', 'in', 'the',
+    'counsel', 'of', 'the', 'ungodly,',
+    'nor', 'standeth', 'in', 'the', 'way', 'of', 'sinners,',
+    'nor', 'sitteth', 'in', 'the', 'seat', 'of', 'the', 'scornful.',
+  ],
+  lines: [
+    { start: 0, end: 12, level: 1 },
+    { start: 13, end: 19, level: 2 },
+    { start: 20, end: 27, level: 3 },
+  ],
+  psalmTitle: null,
+  paragraphStart: true,
+};
+
+const PSALM_1_2: VerseText = {
+  verseId: 19001002,
+  label: '1:2',
+  words: [
+    'But', 'his', 'delight', 'is', 'in', 'the', 'law', 'of', 'the', 'LORD;',
+    'and', 'in', 'his', 'law', 'doth', 'he', 'meditate', 'day', 'and', 'night.',
+  ],
+  lines: [
+    { start: 0, end: 9, level: 1 },
+    { start: 10, end: 19, level: 2 },
+  ],
+  psalmTitle: null,
+  paragraphStart: false,
+};
+
+const PSALM_1_3: VerseText = {
+  verseId: 19001003,
+  label: '1:3',
+  words: [
+    'And', 'he', 'shall', 'be', 'like', 'a', 'tree', 'planted', 'by', 'the',
+    'rivers', 'of', 'water',
+  ],
+  lines: [
+    { start: 0, end: 5, level: 1 },
+    { start: 6, end: 12, level: 2 },
+  ],
+  psalmTitle: null,
+  paragraphStart: false,
+};
+
+/** A superscription-bearing verse. The only "heading" the data ever carries. */
+const PSALM_3_1: VerseText = {
+  verseId: 19003001,
+  label: '3:1',
+  words: ['LORD,', 'how', 'are', 'they', 'increased', 'that', 'trouble', 'me!'],
+  lines: [{ start: 0, end: 7, level: 1 }],
+  psalmTitle: 'A Psalm of David, when he fled from Absalom his son.',
+  paragraphStart: true,
+};
+
+/** Prose: `lines` is null, so it must not be broken into indented lines. */
+const JOHN_3_16: VerseText = {
+  verseId: 43003016,
+  label: '3:16',
+  words: [
+    'For', 'God', 'so', 'loved', 'the', 'world,', 'that', 'he', 'gave', 'his',
+    'only', 'begotten', 'Son.',
+  ],
+  lines: null,
+  psalmTitle: null,
+  paragraphStart: true,
+};
+
+const JOHN_3_17: VerseText = {
+  ...JOHN_3_16,
+  verseId: 43003017,
+  label: '3:17',
+  words: ['For', 'God', 'sent', 'not', 'his', 'Son', 'to', 'condemn', 'the', 'world.'],
+  paragraphStart: false,
+};
+
+/** The passage under exercise, with a verse of context before it. */
+function psalmContext(): PassageContext {
+  return {
+    passageId: 1,
+    reference: 'Psalm 1:2-3',
+    before: [PSALM_1_1],
+    verses: [PSALM_1_2, PSALM_1_3],
+    // Empty during an exercise, by design - the verses after the working point
+    // are the answer to the ordering picker.
+    after: [],
+  };
+}
+
+function session(step: Step | null, over: Partial<SessionView> = {}): SessionView {
+  return {
+    sessionId: 'session-1',
+    passageId: 1,
+    rung: 'blanks',
+    step,
+    correctFirst: 0,
+    stepsTaken: 0,
+    ...over,
+  };
+}
+
+/**
+ * `fullWord` by default: most of this describe block exercises the Check-
+ * button, measured-width flow, which is what `blanks` looked like before task
+ * 0004 made the answer mode a setting. The `firstLetter` describe block below
+ * passes `'firstLetter'` explicitly to exercise the new default instead.
+ */
+function blanksStep(verse: VerseText, blankIndices: number[], answerMode: AnswerMode = 'fullWord'): BlanksStep {
+  return { kind: 'blanks', verse, blankIndices, answerMode, stepNumber: 1, totalSteps: 2 };
+}
+
+/**
+ * The standard pair of blanks: "his" (1) and "law" (6) in Psalm 1:2.
+ *
+ * Both sit in the verse's first poetic line, and both are three letters long
+ * while rendering at visibly different widths - which is what makes them useful
+ * for the sizing tests, since a character count cannot tell them apart.
+ *
+ * The working verse is deliberately one of `PassageContext.verses` rather than
+ * one of `before`: `renderWorkingPassage` substitutes the step's copy of the
+ * verse into the context by verse id, so a step whose verse is not in the
+ * passage renders no exercise at all.
+ */
+const BLANKED = [1, 6];
+
+function firstLettersStep(verse: VerseText, answerMode: AnswerMode = 'firstLetter'): FirstLettersStep {
+  return { kind: 'firstletters', verse, answerMode, stepNumber: 1, totalSteps: 2 };
+}
+
+function orderingStep(): OrderingStep {
+  return {
+    kind: 'ordering',
+    placed: [PSALM_1_1],
+    candidates: [
+      { verseId: 19001004, preview: 'The ungodly are not so', truncated: false },
+      { verseId: 19001002, preview: 'But his delight is in the law of the LORD', truncated: true },
+      { verseId: 19001003, preview: 'And he shall be like a tree planted', truncated: true },
+    ],
+    stepNumber: 2,
+    totalSteps: 3,
+  };
+}
+
+function stepResult(over: Partial<StepResult> = {}): StepResult {
+  return { correct: false, wrong: [], blocking: false, ...over };
+}
+
+function emptyPlan(): PlanView {
+  return {
+    collectionId: 1,
+    collectionName: 'My plan',
+    passages: [],
+    totalDue: 0,
+    defaultAnswerMode: 'firstLetter',
+  };
+}
+
+function rungView(over: Partial<RungView> & Pick<RungView, 'rung'>): RungView {
+  return {
+    level: 0,
+    dueAt: null,
+    streak: 0,
+    lastScore: null,
+    applicable: true,
+    resume: null,
+    ...over,
+  };
+}
+
+function passageFixture(over: Partial<Passage> = {}): Passage {
+  return {
+    id: 10,
+    collectionId: 1,
+    moduleId: 'kjv',
+    startVerseId: 19023001,
+    endVerseId: 19023006,
+    reference: 'Psalm 23:1-6',
+    verseCount: 6,
+    addedAt: NOW - 30 * 86_400_000,
+    answerMode: null,
+    ...over,
+  };
+}
+
+function passageViewFixture(over: Partial<PassageView> = {}): PassageView {
+  return {
+    passage: passageFixture(),
+    dueCount: 0,
+    bestLevel: 0,
+    wellLearned: false,
+    rungs: [
+      rungView({ rung: 'ordering', level: 3 }),
+      rungView({ rung: 'refmatch', applicable: false }),
+      rungView({ rung: 'blanks', level: 1, dueAt: NOW - 60_000 }),
+      rungView({ rung: 'firstletters' }),
+    ],
+    ...over,
+  };
+}
+
+function emptyAnalytics(): AnalyticsView {
+  return {
+    streakDays: 0,
+    versesLearned: 0,
+    passagesWellLearned: 0,
+    calendar: [],
+    recentlyReached: [],
+    nextMilestone: { versesLearned: 5, toGo: 5 },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// A stub host
+// ---------------------------------------------------------------------------
+
+type Handlers = {
+  [K in PanelRequest['type']]?: (request: Extract<PanelRequest, { type: K }>) => PanelReply<RequestMap[K]>;
+};
+
+/**
+ * Everything a view is allowed to reach, faked.
+ *
+ * `PanelHost` exists precisely so the screens can be rendered without the SDK
+ * (see its own header), and this is the harness that claim was made for. The
+ * measurer is real, not stubbed: the width behaviour under test is its
+ * fallback path, and stubbing it would test the stub.
+ */
+class TestHost implements PanelHost {
+  readonly requests: PanelRequest[] = [];
+  readonly announcements: string[] = [];
+  readonly navigations: NavAction[] = [];
+  readonly sessionsStarted: { passageId: number; rung?: Rung; restart?: boolean }[] = [];
+  readonly openedVerses: number[] = [];
+  reloads = 0;
+  activeReference: string | null = null;
+  readonly measurer: WordMeasurer;
+  handlers: Handlers = {};
+
+  constructor() {
+    this.measurer = new WordMeasurer(document);
+  }
+
+  now(): number {
+    return NOW;
+  }
+
+  request<R extends PanelRequest>(request: R): Promise<PanelReply<RequestMap[R['type']]>> {
+    this.requests.push(request);
+    const handler = this.handlers[request.type] as
+      | ((r: PanelRequest) => PanelReply<RequestMap[R['type']]>)
+      | undefined;
+    if (!handler) {
+      return Promise.resolve({
+        ok: false,
+        error: `No stub registered for "${request.type}".`,
+      });
+    }
+    return Promise.resolve(handler(request));
+  }
+
+  go(action: NavAction): void {
+    this.navigations.push(action);
+  }
+
+  reload(): void {
+    this.reloads += 1;
+  }
+
+  async startSession(passageId: number, rung?: Rung, restart?: boolean): Promise<void> {
+    this.sessionsStarted.push({ passageId, rung, restart });
+  }
+
+  openInBible(verseId: number): void {
+    this.openedVerses.push(verseId);
+  }
+
+  announce(message: string): void {
+    this.announcements.push(message);
+  }
+}
+
+/** Lets the stubbed replies - all immediate - reach the view. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+}
+
+let container: HTMLElement;
+let host: TestHost;
+let view: PracticeView | null = null;
+
+/** Mounts a practice view with the standard Psalm 1 context available. */
+async function mountPractice(
+  step: Step | null,
+  over: Partial<SessionView> = {},
+  contextReply?: PanelReply<PassageContext>,
+): Promise<PracticeView> {
+  host.handlers.getContext = () => contextReply ?? { ok: true, data: psalmContext() };
+  const practice = new PracticeView(host, session(step, over));
+  practice.mount(container);
+  await settle();
+  view = practice;
+  return practice;
+}
+
+/** The verse the exercise is about, as the accessibility tree marks it. */
+function workingVerse(root: HTMLElement): HTMLElement {
+  const found = root.querySelectorAll<HTMLElement>('[aria-current="step"]');
+  expect(found.length).toBe(1);
+  return found[0]!;
+}
+
+beforeAll(() => {
+  installStylesheet();
+});
+
+beforeEach(() => {
+  document.body.innerHTML = '';
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  host = new TestHost();
+});
+
+afterEach(() => {
+  view?.destroy();
+  view = null;
+  vi.useRealTimers();
+});
+
+// ---------------------------------------------------------------------------
+// 1. Scripture
+// ---------------------------------------------------------------------------
+
+describe('scripture rendering', () => {
+  function render(verses: VerseText[]): HTMLElement {
+    const wrapper = document.createElement('div');
+    for (const block of renderPassage(verses, () => ({}))) wrapper.appendChild(block);
+    container.appendChild(wrapper);
+    return wrapper;
+  }
+
+  it('lays a poetic verse out as its lines, not as a paragraph', () => {
+    const wrapper = render([PSALM_1_1]);
+    const verse = wrapper.firstElementChild!;
+
+    // Three lines in, three blocks out. A wrapped paragraph would be one.
+    expect(verse.children.length).toBe(3);
+    expect(spokenText(verse.children[0]!)).toBe(
+      'Blessed is the man that walketh not in the counsel of the ungodly,',
+    );
+    expect(spokenText(verse.children[1]!)).toBe('nor standeth in the way of sinners,');
+    expect(spokenText(verse.children[2]!)).toBe('nor sitteth in the seat of the scornful.');
+  });
+
+  it('treats Line.end as inclusive, so no line loses its last word', () => {
+    const wrapper = render([PSALM_1_1]);
+    const verse = wrapper.firstElementChild!;
+
+    // The exclusive reading drops exactly these three words and nothing else,
+    // which is why it survives a casual look at the screen.
+    for (const lastWord of ['ungodly,', 'sinners,', 'scornful.']) {
+      expect(spokenText(verse)).toContain(lastWord);
+    }
+    // Stronger: every word, once, in order.
+    expect(spokenText(verse)).toBe(PSALM_1_1.words.join(' '));
+  });
+
+  it('indents each line further than the one above it', () => {
+    const wrapper = render([PSALM_1_1]);
+    const verse = wrapper.firstElementChild!;
+
+    const indents = Array.from(verse.children).map((line) =>
+      Number.parseFloat(getComputedStyle(line).paddingLeft),
+    );
+
+    expect(indents.every((n) => Number.isFinite(n))).toBe(true);
+    expect(indents[0]!).toBeLessThan(indents[1]!);
+    expect(indents[1]!).toBeLessThan(indents[2]!);
+  });
+
+  it('does not break prose into indented lines', () => {
+    const wrapper = render([JOHN_3_16, JOHN_3_17]);
+
+    // One paragraph, because `paragraphStart` is false on the second verse:
+    // prose flows across verse boundaries.
+    expect(wrapper.children.length).toBe(1);
+    expect(wrapper.firstElementChild!.tagName).toBe('P');
+    expect(spokenText(wrapper)).toBe(
+      `${JOHN_3_16.words.join(' ')} ${JOHN_3_17.words.join(' ')}`,
+    );
+
+    // Nothing here is a poetic line, and nothing here is indented.
+    const indented = everyElement(wrapper).filter(
+      (n) => Number.parseFloat(getComputedStyle(n).paddingLeft) > 0,
+    );
+    expect(indented).toEqual([]);
+  });
+
+  it('starts a new paragraph where the data says to', () => {
+    const wrapper = render([JOHN_3_16, { ...JOHN_3_17, paragraphStart: true }]);
+    expect(wrapper.children.length).toBe(2);
+  });
+
+  it('recovers words the line markup leaves off the end of a verse', () => {
+    // A module whose poetry markup does not cover the whole verse is a real
+    // possibility, and a verse that silently lost its last seven words would be
+    // very hard to spot - it would read as a slightly short line. The trailing
+    // shortfall is emitted rather than dropped.
+    //
+    // Only the trailing shortfall: a gap *before* `lines[0].start` or between
+    // two lines is still dropped, which is worth knowing when reading the
+    // coverage tracking in `renderPoetryVerse`.
+    const undercovered: VerseText = {
+      ...PSALM_1_3,
+      lines: [{ start: 0, end: 5, level: 1 }],
+    };
+    const wrapper = render([undercovered]);
+    expect(spokenText(wrapper)).toBe(PSALM_1_3.words.join(' '));
+  });
+
+  it('renders a psalm superscription as its own block of text', () => {
+    const wrapper = render([PSALM_3_1]);
+
+    expect(wrapper.children.length).toBe(2);
+    expect(spokenText(wrapper.children[0]!)).toBe(PSALM_3_1.psalmTitle);
+    expect(spokenText(wrapper.children[1]!)).toBe(PSALM_3_1.words.join(' '));
+  });
+
+  it('emits no section headings - the superscription is text, not a heading', () => {
+    const wrapper = render([PSALM_3_1, PSALM_1_1, JOHN_3_16]);
+
+    // There are no headings in the data and none are invented. A superscription
+    // rendered as an <h2> would be announced as a document landmark, which is a
+    // claim about the text that USFM \d does not make.
+    expect(wrapper.querySelectorAll('h1, h2, h3, h4, h5, h6').length).toBe(0);
+    expect(wrapper.querySelectorAll('[role="heading"]').length).toBe(0);
+  });
+
+  it('keeps the verse label out of the reading text and out of the spoken text', () => {
+    const wrapper = render([PSALM_1_1]);
+    // Visible in the margin...
+    expect(wrapper.textContent).toContain('1:1');
+    // ...but not part of the verse as far as assistive tech is concerned.
+    expect(spokenText(wrapper)).not.toContain('1:1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. The working verse among its context
+// ---------------------------------------------------------------------------
+
+describe('the working verse among its context', () => {
+  it('shows the reference in the toolbar as soon as context arrives, before any answer is submitted', async () => {
+    // The toolbar title comes from `PassageContext.reference` alone, fetched
+    // separately from the step and deliberately not awaited before the first
+    // paint (see `practiceView.ts#loadContext`'s own header). Before this,
+    // nothing re-rendered the head once that fetch resolved, so the title
+    // sat blank until the next unrelated redraw (the first submitted
+    // answer) - exactly what a review round flagged as the reference not
+    // being prominent on this screen.
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    const title = practice.root.querySelector<HTMLElement>('.sm-toolbar-title')!;
+    expect(title.textContent).toBe('Psalm 1:2-3');
+  });
+
+  it('marks exactly one verse as the one being worked on', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    const current = workingVerse(practice.root);
+    expect(current.getAttribute('data-verse-id')).toBe(String(PSALM_1_2.verseId));
+  });
+
+  it('draws the working verse differently from every verse around it', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    const current = workingVerse(practice.root);
+    const others = Array.from(
+      practice.root.querySelectorAll<HTMLElement>('[data-verse-id]'),
+    ).filter((n) => n !== current);
+
+    expect(others.length).toBeGreaterThan(0);
+    for (const other of others) {
+      expect(visualSignature(other)).not.toBe(visualSignature(current));
+    }
+  });
+
+  it('renders context as real, readable text rather than placeholder shapes', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    // Psalm 1:1 comes from `PassageContext.before`; Psalm 1:3 from the passage
+    // itself. Both are context here, and both must be readable.
+    const before = practice.root.querySelector<HTMLElement>(
+      `[data-verse-id="${PSALM_1_1.verseId}"]`,
+    )!;
+    const after = practice.root.querySelector<HTMLElement>(
+      `[data-verse-id="${PSALM_1_3.verseId}"]`,
+    )!;
+
+    expect(spokenText(before)).toBe(PSALM_1_1.words.join(' '));
+    expect(spokenText(after)).toBe(PSALM_1_3.words.join(' '));
+  });
+
+  it('does not blur or ghost the context it just made readable', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    // "A small step down in contrast, not a blur and not a 30%-opacity ghost"
+    // is the stated rule, and it is a rule that a later styling tweak could
+    // undo without anyone noticing the reading experience had gone.
+    for (const node of everyElement(practice.root)) {
+      const cs = getComputedStyle(node);
+      expect(cs.filter).not.toContain('blur');
+      expect(cs.webkitFilter ?? '').not.toContain('blur');
+      const opacity = Number.parseFloat(cs.opacity);
+      if (Number.isFinite(opacity)) expect(opacity).toBeGreaterThanOrEqual(0.6);
+      expect(cs.visibility).not.toBe('hidden');
+      expect(cs.color).not.toContain('transparent');
+    }
+  });
+
+  it('renders nothing at all for the withheld verses after the working point', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    // `PassageContext.after` is empty during an exercise. An "…" or an empty
+    // bordered box would read as a passage that failed to load.
+    const verses = Array.from(
+      practice.root.querySelectorAll<HTMLElement>('[data-verse-id]'),
+    ).map((n) => n.getAttribute('data-verse-id'));
+
+    expect(verses.sort()).toEqual(
+      [PSALM_1_1, PSALM_1_2, PSALM_1_3].map((v) => String(v.verseId)).sort(),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. The ordering picker blocks
+// ---------------------------------------------------------------------------
+
+describe('the ordering picker', () => {
+  /** The candidates, in the order they are offered. */
+  function candidates(root: HTMLElement): HTMLButtonElement[] {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-choice'));
+  }
+
+  /** The one candidate that is drawn differently from the rest, if any. */
+  function markedCandidate(root: HTMLElement): HTMLButtonElement | null {
+    const all = candidates(root);
+    const signatures = all.map(visualSignature);
+    const odd = signatures
+      .map((sig, i) => ({ sig, i }))
+      .filter(({ sig }) => signatures.filter((s) => s === sig).length === 1);
+    return odd.length === 1 ? all[odd[0]!.i]! : null;
+  }
+
+  async function pickWrong(): Promise<{ practice: PracticeView; step: OrderingStep }> {
+    const step = orderingStep();
+    const held = session(step, { rung: 'ordering' });
+    host.handlers.submitStep = () => ({
+      ok: true,
+      data: {
+        // Wrong, and the picker blocks: the SAME step comes back.
+        result: stepResult({ correct: false, wrong: [19001004], blocking: true }),
+        session: held,
+        summary: null,
+      },
+    });
+
+    const practice = await mountPractice(step, { rung: 'ordering' });
+    vi.useFakeTimers();
+    candidates(practice.root)[0]!.click();
+    await settle();
+    return { practice, step };
+  }
+
+  it('marks the candidate that was clicked', async () => {
+    const { practice } = await pickWrong();
+
+    const marked = markedCandidate(practice.root);
+    expect(marked).not.toBeNull();
+    expect(marked!.getAttribute('data-verse-id')).toBe('19001004');
+  });
+
+  it('keeps the same step on screen instead of advancing past a wrong pick', async () => {
+    const { practice, step } = await pickWrong();
+
+    // Same question, same three candidates, in the same order.
+    expect(spokenText(practice.root)).toContain('Which verse comes next?');
+    expect(
+      candidates(practice.root).map((c) => c.getAttribute('data-verse-id')),
+    ).toEqual(step.candidates.map((c) => String(c.verseId)));
+  });
+
+  it('says why, out loud, rather than only in colour', async () => {
+    const { practice } = await pickWrong();
+
+    const live = practice.root.querySelector<HTMLElement>('[aria-live]')!;
+    expect(spokenText(live)).toContain('Not that one');
+  });
+
+  it('lets the mark expire - it says "not that one", it does not keep a tally', async () => {
+    const { practice } = await pickWrong();
+    expect(markedCandidate(practice.root)).not.toBeNull();
+
+    // The blocked step is handed back clean. A mark that survived into the
+    // retry would turn a hint into a scoreboard, which is explicitly not what
+    // it is for; a second wrong pick would then leave two candidates marked and
+    // the picker would look like it was accumulating a verdict.
+    vi.advanceTimersByTime(2_000);
+
+    expect(markedCandidate(practice.root)).toBeNull();
+    const live = practice.root.querySelector<HTMLElement>('[aria-live]')!;
+    expect(spokenText(live)).toBe('');
+  });
+
+  it('does not submit twice while a pick is still in flight', async () => {
+    const step = orderingStep();
+    host.handlers.submitStep = () => ({
+      ok: true,
+      data: {
+        result: stepResult({ correct: false, wrong: [19001004], blocking: true }),
+        session: session(step, { rung: 'ordering' }),
+        summary: null,
+      },
+    });
+
+    const practice = await mountPractice(step, { rung: 'ordering' });
+    vi.useFakeTimers();
+
+    const buttons = candidates(practice.root);
+    buttons[0]!.click();
+    buttons[1]!.click();
+    await settle();
+
+    // Double-clicking a candidate must not score the step twice.
+    expect(host.requests.filter((r) => r.type === 'submitStep').length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Blanks
+// ---------------------------------------------------------------------------
+
+describe('blanks', () => {
+  /** The measurement `measure.ts` will actually be able to take under jsdom. */
+  function fallbackWidthFor(word: string, sample: Element): number {
+    const parsed = Number.parseFloat(getComputedStyle(sample).fontSize);
+    const fontPx = Number.isFinite(parsed) && parsed > 0 ? parsed : 16;
+    return blankWidthFor(estimateTextWidth(word, fontPx));
+  }
+
+  function blanks(root: HTMLElement): HTMLInputElement[] {
+    return Array.from(root.querySelectorAll<HTMLInputElement>('.sm-blank'));
+  }
+
+  it('puts an input where the word goes, inside the line it belongs to', async () => {
+    // "his" (index 1) and "law" (index 6) both sit in the first poetic line of
+    // Psalm 1:2.
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const current = workingVerse(practice.root);
+    const inputs = blanks(practice.root);
+    expect(inputs.length).toBe(2);
+
+    // Both blanks are inside the first line, not in an answer box below the
+    // passage - the arrangement that was explicitly rejected.
+    const firstLine = current.children[0]!;
+    for (const input of inputs) expect(firstLine.contains(input)).toBe(true);
+  });
+
+  it('still renders every word that was not blanked', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const hidden = new Set(BLANKED);
+    const expected = PSALM_1_2.words.filter((_, i) => !hidden.has(i)).join(' ');
+    expect(spokenText(workingVerse(practice.root))).toBe(expected);
+  });
+
+  it('sizes each blank from a measurement rather than leaving it at a default', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const current = workingVerse(practice.root);
+    for (const [i, input] of blanks(practice.root).entries()) {
+      const word = PSALM_1_2.words[BLANKED[i]!]!;
+      expect(input.style.width).not.toBe('');
+      // jsdom reports zero for every text metric, which is exactly the
+      // condition `WordMeasurer.measure` documents and falls back from, so what
+      // is being checked here is the fallback: the input carries the estimate,
+      // not the browser's default input width and not a zero.
+      expect(Number.parseFloat(input.style.width)).toBe(fallbackWidthFor(word, current));
+    }
+  });
+
+  it('is proportional, not a character count - two 3-letter words differ', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const [his, law] = blanks(practice.root);
+    expect(PSALM_1_2.words[1]).toBe('his');
+    expect(PSALM_1_2.words[6]).toBe('law');
+
+    // `size=3` or `width: 3ch` would give these two the same box despite "law"
+    // being visibly the wider word - `ch` is the advance of "0", so it cannot
+    // tell an "i" from a "w". That is the failure this whole measurement path
+    // exists to avoid, and it is invisible in a screenshot.
+    expect(Number.parseFloat(law!.style.width)).toBeGreaterThan(
+      Number.parseFloat(his!.style.width),
+    );
+  });
+
+  it('respects the floor, so a one-letter word is still something you can hit', async () => {
+    // "a" is word 5 of Psalm 1:3. Its estimate is about eight pixels.
+    const practice = await mountPractice(blanksStep(PSALM_1_3, [5]));
+
+    const input = blanks(practice.root)[0]!;
+    expect(PSALM_1_3.words[5]).toBe('a');
+    expect(Number.parseFloat(input.style.width)).toBe(MIN_BLANK_WIDTH_PX);
+  });
+
+  it('grows a blank that is overtyped, and never shrinks it back', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const input = blanks(practice.root)[0]!;
+    const initial = Number.parseFloat(input.style.width);
+
+    input.value = 'hishishishis';
+    input.dispatchEvent(new Event('input'));
+    const grown = Number.parseFloat(input.style.width);
+    expect(grown).toBeGreaterThan(initial);
+
+    // Backspacing must not shuffle the line about under the user's hands.
+    input.value = 'h';
+    input.dispatchEvent(new Event('input'));
+    expect(Number.parseFloat(input.style.width)).toBe(grown);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4a. Blanks in firstLetter mode - the default answer mode (task 0004)
+// ---------------------------------------------------------------------------
+
+describe('blanks in firstLetter mode (the default)', () => {
+  it('hides the blanked words completely - no letter shown, no Check button', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED, 'firstLetter'));
+
+    const inputs = Array.from(practice.root.querySelectorAll<HTMLInputElement>('.sm-fl'));
+    expect(inputs.length).toBe(BLANKED.length);
+    for (const input of inputs) {
+      expect(input.getAttribute('placeholder')).toBeNull();
+      expect(input.getAttribute('maxlength')).toBe('1');
+    }
+    // firstLetter mode has nothing left to confirm once every slot resolves,
+    // so there is no Check button at all - unlike fullWord mode above.
+    expect(practice.root.querySelector('.sm-exercise-actions button')).toBeNull();
+  });
+
+  it('reveals the whole word on a correct letter and moves to the next blank', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED, 'firstLetter'));
+
+    const input = practice.root.querySelectorAll<HTMLInputElement>('.sm-fl')[0]!; // "his"
+    input.value = 'h';
+    input.dispatchEvent(new Event('input'));
+
+    expect(spokenText(workingVerse(practice.root))).toContain('his');
+    // One blank left ("law"); the other word is not blanked at all.
+    expect(practice.root.querySelectorAll('.sm-fl').length).toBe(1);
+  });
+
+  it('submits automatically once every blank is resolved, with no confirmation step', async () => {
+    let submitted: unknown = null;
+    host.handlers.submitStep = (req) => {
+      submitted = req.answer;
+      return {
+        ok: true,
+        data: { result: stepResult({ correct: true }), session: session(null), summary: null },
+      };
+    };
+
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED, 'firstLetter'));
+    const first = practice.root.querySelectorAll<HTMLInputElement>('.sm-fl')[0]!;
+    first.value = 'h';
+    first.dispatchEvent(new Event('input'));
+
+    const second = practice.root.querySelectorAll<HTMLInputElement>('.sm-fl')[0]!;
+    second.value = 'l';
+    second.dispatchEvent(new Event('input'));
+    await settle();
+
+    expect(submitted).toMatchObject({ kind: 'blanks', words: ['his', 'law'] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Wrong answers
+// ---------------------------------------------------------------------------
+
+describe('a missed word', () => {
+  async function submitOneWrong(): Promise<PracticeView> {
+    const step = blanksStep(PSALM_1_2, BLANKED);
+    host.handlers.submitStep = () => ({
+      ok: true,
+      data: {
+        // `wrong: [6]` is a word index - "law", the second blank.
+        result: stepResult({
+          correct: false,
+          wrong: [6],
+          blocking: false,
+          reveal: { words: ['his', 'law'] },
+        }),
+        session: session(null),
+        summary: null,
+      },
+    });
+
+    const practice = await mountPractice(step);
+    const inputs = Array.from(practice.root.querySelectorAll<HTMLInputElement>('.sm-blank'));
+    inputs[0]!.value = 'his';
+    inputs[1]!.value = 'lore';
+
+    practice.root.querySelector<HTMLButtonElement>('.sm-exercise-actions button')!.click();
+    await settle();
+    return practice;
+  }
+
+  it('shows the right word and the wrong answer beside it, both readable', async () => {
+    const practice = await submitOneWrong();
+    const text = spokenText(workingVerse(practice.root));
+
+    // The verse is intact - "law" is back in its place in the line - and what
+    // the user actually typed is shown next to it, named as a miss rather than
+    // left to be inferred from a colour.
+    expect(text).toContain('But his delight is in the law');
+    expect(text).toContain('of the LORD;');
+    expect(text).toContain('lore');
+    expect(text).toContain('missed');
+  });
+
+  it('marks the miss with a ✗ that is not the only thing carrying the meaning', async () => {
+    const practice = await submitOneWrong();
+    const current = workingVerse(practice.root);
+
+    // The glyph is present for a sighted reader...
+    expect(current.textContent).toContain('✗');
+    // ...and hidden from assistive tech, which gets words instead. A bare ✗ is
+    // announced as "multiplication sign" or skipped entirely.
+    const marks = Array.from(current.querySelectorAll('[aria-hidden="true"]')).filter((n) =>
+      (n.textContent ?? '').includes('✗'),
+    );
+    expect(marks.length).toBe(1);
+  });
+
+  it('renders the wrong answer in red', async () => {
+    const practice = await submitOneWrong();
+
+    const typed = everyElement(workingVerse(practice.root)).find(
+      (n) => n.children.length === 0 && n.textContent === 'lore',
+    )!;
+    expect(typed).toBeTruthy();
+
+    // jsdom does not resolve custom properties, so the chain is followed by
+    // hand: the element's colour is a danger token, and every value that token
+    // is defined with in `styles.css` - light theme and dark - is a red.
+    const colour = getComputedStyle(typed.parentElement ?? typed).color;
+    const token = /var\((--[\w-]+)/.exec(colour)?.[1];
+    expect(token, `expected a colour token, got ${JSON.stringify(colour)}`).toBeTruthy();
+    expect(token).toContain('danger');
+
+    const hexes = tokenFallbackHexes(token!);
+    expect(hexes.length).toBeGreaterThan(0);
+    for (const hex of hexes) expect(isRed(hex), `${token} = ${hex}`).toBe(true);
+  });
+
+  it('leaves the word that was right unmarked', async () => {
+    const practice = await submitOneWrong();
+    const current = workingVerse(practice.root);
+
+    // Exactly one miss, not two: the resolution of `StepResult.wrong` onto
+    // positions is what decides which words go red, and getting it wrong looks
+    // like a scoring bug in the worker.
+    expect((spokenText(current).match(/missed/g) ?? []).length).toBe(1);
+    expect(spokenText(current)).toContain('But his delight');
+  });
+
+  it('never strikes scripture through, by any route', async () => {
+    const practice = await submitOneWrong();
+
+    // An explicit user decision: the mistake gets a mark, the words of the
+    // verse are not defaced. Checked against inline styles, computed styles,
+    // the elements that strike through with no CSS at all, and every rule in
+    // the panel's own stylesheet - because the stylesheet is where a "tidy-up"
+    // would reintroduce it.
+    expect(strikeThroughOffenders(practice.root)).toEqual([]);
+    expect(strikeThroughOffenders(document.body)).toEqual([]);
+  });
+
+  it('would notice if a strike-through were reintroduced', () => {
+    // A rule this important must not be able to pass by being a no-op - an
+    // empty rule list or a property jsdom does not model would make the check
+    // above green forever. So the detector is shown catching each of the three
+    // routes it claims to cover.
+    expect(ALL_RULE_TEXTS.length).toBeGreaterThan(50);
+
+    const planted = document.createElement('div');
+    planted.innerHTML =
+      '<span style="text-decoration: line-through">a</span><del>b</del>';
+    container.appendChild(planted);
+
+    const offenders = strikeThroughOffenders(planted);
+    expect(offenders.some((o) => o.includes('inline style'))).toBe(true);
+    expect(offenders.some((o) => o.includes('<del>'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. First letters
+// ---------------------------------------------------------------------------
+
+describe('first letters', () => {
+  function slots(root: HTMLElement): HTMLInputElement[] {
+    return Array.from(root.querySelectorAll<HTMLInputElement>('.sm-fl'));
+  }
+
+  it('shows nothing of the word - not even its first letter', async () => {
+    // Task 0004, point 1: v0 put the initial in the box as a placeholder,
+    // which turned this into a copy exercise rather than a recall one. The
+    // box must be empty until the user types into it.
+    const practice = await mountPractice(firstLettersStep(PSALM_1_3), { rung: 'firstletters' });
+
+    const inputs = slots(practice.root);
+    expect(inputs.length).toBe(PSALM_1_3.words.length);
+
+    inputs.forEach((input) => {
+      // No placeholder at all - not the letter, not anything derived from it.
+      expect(input.getAttribute('placeholder')).toBeNull();
+      expect(input.getAttribute('maxlength')).toBe('1');
+      expect(input.value).toBe('');
+    });
+    expect(spokenText(workingVerse(practice.root))).toBe('');
+  });
+
+  it('reveals the WHOLE word on a correct initial - there is no partial tier', async () => {
+    const practice = await mountPractice(firstLettersStep(PSALM_1_3), { rung: 'firstletters' });
+
+    const input = slots(practice.root)[7]!; // "planted"
+    input.value = 'p';
+    input.dispatchEvent(new Event('input'));
+
+    // Not "p...", not "pl", not "p_____": the word. The staged partial reveal
+    // in the older design was cut, and a tier creeping back in would be a
+    // change to what this rung actually trains.
+    expect(spokenText(workingVerse(practice.root))).toBe('planted');
+    expect(slots(practice.root).length).toBe(PSALM_1_3.words.length - 1);
+  });
+
+  it('reveals the word on a wrong initial too, and marks it missed', async () => {
+    const practice = await mountPractice(firstLettersStep(PSALM_1_3), { rung: 'firstletters' });
+
+    const input = slots(practice.root)[7]!; // "planted"
+    input.value = 'x';
+    input.dispatchEvent(new Event('input'));
+
+    const text = spokenText(workingVerse(practice.root));
+    // One attempt per word: the answer is given whether or not it was earned,
+    // because the score is defined over first attempts and a retry loop would
+    // drive every score to 1.0.
+    expect(text).toContain('planted');
+    expect(text).toContain('missed');
+    expect(text).toContain('x');
+    expect(strikeThroughOffenders(practice.root)).toEqual([]);
+  });
+
+  it('says which word was missed rather than leaving it to the colour', async () => {
+    const practice = await mountPractice(firstLettersStep(PSALM_1_3), { rung: 'firstletters' });
+
+    const input = slots(practice.root)[7]!;
+    input.value = 'x';
+    input.dispatchEvent(new Event('input'));
+
+    const live = practice.root.querySelector<HTMLElement>('[aria-live]')!;
+    expect(spokenText(live)).toContain('planted');
+  });
+
+  it('does not offer a slot for a token with no initial to ask for', async () => {
+    const punctuated: VerseText = {
+      ...PSALM_1_3,
+      words: ['And', '—', 'he', 'shall'],
+      lines: [{ start: 0, end: 3, level: 1 }],
+    };
+    const practice = await mountPractice(firstLettersStep(punctuated), {
+      rung: 'firstletters',
+    });
+
+    // Three answerable words; the em dash is printed outright rather than
+    // presented as an input that cannot be answered.
+    expect(slots(practice.root).length).toBe(3);
+    expect(spokenText(workingVerse(practice.root))).toBe('—');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Accessibility basics
+// ---------------------------------------------------------------------------
+
+describe('accessibility', () => {
+  it('has the live region in the document before there is anything to announce', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    // A live region created at the same moment as its text is frequently not
+    // announced at all - the announcement is triggered by a mutation inside a
+    // region that was already there. So the region has to pre-exist, empty.
+    const live = practice.root.querySelector<HTMLElement>('[aria-live]');
+    expect(live).not.toBeNull();
+    expect(live!.getAttribute('aria-live')).toBe('assertive');
+    expect(spokenText(live!)).toBe('');
+  });
+
+  it('announces a result into that same region, not a replacement for it', async () => {
+    host.handlers.submitStep = () => ({
+      ok: true,
+      data: {
+        result: stepResult({ correct: true, wrong: [] }),
+        session: session(null),
+        summary: null,
+      },
+    });
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const live = practice.root.querySelector<HTMLElement>('[aria-live]')!;
+    practice.root.querySelector<HTMLButtonElement>('.sm-exercise-actions button')!.click();
+    await settle();
+
+    expect(practice.root.querySelector('[aria-live]')).toBe(live);
+    expect(spokenText(live)).not.toBe('');
+  });
+
+  it('uses real buttons for every control the picker offers', async () => {
+    const practice = await mountPractice(orderingStep(), { rung: 'ordering' });
+
+    const controls = Array.from(practice.root.querySelectorAll<HTMLElement>('.sm-choice'));
+    expect(controls.length).toBe(3);
+    for (const control of controls) {
+      // Not a clickable div: Enter and Space, focus order and the button role
+      // all come free, and none of them are reimplemented anywhere in here.
+      expect(control.tagName).toBe('BUTTON');
+      expect((control as HTMLButtonElement).type).toBe('button');
+    }
+  });
+
+  it('gives every blank an accessible name that says which blank it is', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+
+    const labels = Array.from(
+      practice.root.querySelectorAll<HTMLInputElement>('.sm-blank'),
+    ).map((n) => n.getAttribute('aria-label'));
+
+    // An unlabelled inline input is announced as "edit text, blank", which in a
+    // passage of them tells the user nothing about where they are.
+    expect(labels).toEqual(['Missing word 1 of 2', 'Missing word 2 of 2']);
+  });
+
+  it('names a first-letter slot by position only, never by its initial', async () => {
+    const practice = await mountPractice(firstLettersStep(PSALM_1_3), { rung: 'firstletters' });
+
+    const first = practice.root.querySelector<HTMLInputElement>('.sm-fl')!;
+    const label = first.getAttribute('aria-label') ?? '';
+    // "Blessed"/"And" is word 1 of 13 in Psalm 1:3 - the position is exactly
+    // what the label says, and nothing else: task 0004 point 1 asked that the
+    // first letter never be shown, and a screen-reader spoiler would be just
+    // as much a violation of that as the visible placeholder v0 had.
+    expect(label).toBe('Missing word 1 of 13');
+  });
+
+  it('associates the add-passage field with a real label', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    const input = root.querySelector<HTMLInputElement>('input')!;
+    const label = root.querySelector<HTMLLabelElement>('label')!;
+    expect(input.id).not.toBe('');
+    expect(label.getAttribute('for')).toBe(input.id);
+    expect(spokenText(label)).not.toBe('');
+  });
+
+  it('marks the working verse in the accessibility tree, not only in colour', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
+
+    // The highlight is a tinted band, and a tint is not available to everyone
+    // using this panel. `aria-current="step"` answers "which verse am I on"
+    // without it.
+    expect(workingVerse(practice.root).getAttribute('aria-current')).toBe('step');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7a. The passage screen
+// ---------------------------------------------------------------------------
+
+describe('the plan row', () => {
+  function planWith(pv: PassageView): PlanView {
+    return {
+      collectionId: 1,
+      collectionName: 'My plan',
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      passages: [pv],
+    };
+  }
+
+  it('draws one square per applicable activity, and none for one that does not apply', () => {
+    const root = renderPlan(host, planWith(passageViewFixture()));
+    container.appendChild(root);
+
+    // The fixture has four rungs; `refmatch` is inapplicable.
+    expect(root.querySelectorAll('.sm-activity-square').length).toBe(3);
+  });
+
+  it('colours a square green when that activity itself is mastered, and orange when only partly attempted', () => {
+    const pv = passageViewFixture({
+      rungs: [
+        rungView({ rung: 'ordering', level: 5 }),
+        rungView({ rung: 'refmatch', applicable: false }),
+        rungView({ rung: 'blanks', level: 2 }),
+        rungView({ rung: 'firstletters', level: 0 }),
+      ],
+    });
+    const root = renderPlan(host, planWith(pv));
+    container.appendChild(root);
+
+    const squares = Array.from(root.querySelectorAll('.sm-activity-square'));
+    expect(squares.map((s) => s.className)).toEqual([
+      expect.stringContaining('sm-activity-square-done'), // ordering: mastered
+      expect.stringContaining('sm-activity-square-partial'), // blanks: tried, not mastered
+      expect.stringContaining('sm-activity-square-new'), // firstletters: never tried
+    ]);
+  });
+
+  it('colours a square light green when it is not itself mastered but a harder activity carries it', () => {
+    const pv = passageViewFixture({
+      rungs: [
+        rungView({ rung: 'ordering', level: 0 }),
+        rungView({ rung: 'refmatch', applicable: false }),
+        rungView({ rung: 'blanks', level: 1 }),
+        rungView({ rung: 'firstletters', level: 5 }), // mastered - carries down to ordering and blanks
+      ],
+    });
+    const root = renderPlan(host, planWith(pv));
+    container.appendChild(root);
+
+    const squares = Array.from(root.querySelectorAll('.sm-activity-square'));
+    expect(squares[0]!.className).toContain('sm-activity-square-carried'); // ordering
+    expect(squares[1]!.className).toContain('sm-activity-square-carried'); // blanks
+    expect(squares[2]!.className).toContain('sm-activity-square-done'); // firstletters itself
+  });
+
+  it('opens the passage screen from the row, with no separate Practice or Show in Bible button on the row itself', () => {
+    const pv = passageViewFixture();
+    const root = renderPlan(host, planWith(pv));
+    container.appendChild(root);
+
+    const row = root.querySelector('.sm-row')!;
+    // The whole row is one button; a review round asked that per-row actions
+    // stay hidden until a passage is actually selected, since opening it
+    // already puts Practice and Show in Bible one click away.
+    expect(row.querySelectorAll('button').length).toBe(1);
+
+    row.querySelector<HTMLButtonElement>('button')!.click();
+    expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: pv.passage.id });
+  });
+});
+
+describe('the passage screen', () => {
+  it('offers one big Practice button that starts the suggested activity', () => {
+    // The fixture's suggested activity is `blanks` (see the "badges the
+    // suggested activity" test below) - a second review round asked that a
+    // decision be made *for* the user rather than only offered per-row, "so
+    // the user never has to not practice for lack of decisiveness".
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const callout = root.querySelector<HTMLElement>('.sm-callout-action')!;
+    const practiceButton = callout.querySelector('button')!;
+    expect(practiceButton.textContent).toBe('Practice');
+
+    practiceButton.click();
+    expect(host.sessionsStarted).toEqual([{ passageId: pv.passage.id, rung: 'blanks', restart: undefined }]);
+  });
+
+  it('offers "Resume practicing" instead of "Practice" when the suggested activity was left mid-way', () => {
+    const pv = passageViewFixture({
+      rungs: [
+        rungView({ rung: 'ordering', level: 3 }),
+        rungView({ rung: 'refmatch', applicable: false }),
+        rungView({ rung: 'blanks', level: 1, dueAt: NOW - 60_000, resume: { stepsDone: 2, totalSteps: 6 } }),
+        rungView({ rung: 'firstletters' }),
+      ],
+    });
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const practiceButton = root.querySelector<HTMLElement>('.sm-callout-action')!.querySelector('button')!;
+    // The button's label must not disagree with what pressing it actually
+    // does - `host.startSession` without `restart` resumes a paused activity.
+    expect(practiceButton.textContent).toBe('Resume practicing');
+  });
+
+  it('draws a level box row for every applicable activity, and none for one that does not apply', () => {
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const cards = root.querySelectorAll('.sm-activity-card');
+    // Four rungs in the fixture; `refmatch` is inapplicable but still shown,
+    // with an explanation rather than being hidden outright.
+    expect(cards.length).toBe(4);
+    expect(spokenText(root)).toContain('Matching a reference needs other passages');
+  });
+
+  it('badges the suggested activity, and only that one', () => {
+    // The fixture's `blanks` is due; everything else is not. `suggestedRungFor`
+    // is exercised for real here, not stubbed.
+    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
+    container.appendChild(root);
+
+    const badges = Array.from(root.querySelectorAll('.sm-badge-suggested'));
+    expect(badges.length).toBe(1);
+    const card = badges[0]!.closest('.sm-activity-card')!;
+    expect(spokenText(card)).toContain('Fill in the blanks');
+  });
+
+  it('offers Restart and Resume, not a plain Practice, for a paused activity', () => {
+    const pv = passageViewFixture({
+      rungs: [
+        rungView({ rung: 'ordering', level: 2, resume: { stepsDone: 2, totalSteps: 5 } }),
+        rungView({ rung: 'refmatch', applicable: false }),
+        rungView({ rung: 'blanks' }),
+        rungView({ rung: 'firstletters' }),
+      ],
+    });
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const orderingCard = Array.from(root.querySelectorAll('.sm-activity-card')).find((c) =>
+      spokenText(c).includes('Put in order'),
+    )!;
+    const labels = Array.from(orderingCard.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toEqual(['Restart', 'Resume']);
+    expect(spokenText(orderingCard)).toContain('Paused at verse 2 of 5');
+  });
+
+  it('starts the right activity, with restart, from the Restart button', () => {
+    const pv = passageViewFixture({
+      rungs: [
+        rungView({ rung: 'ordering', resume: { stepsDone: 1, totalSteps: 5 } }),
+        rungView({ rung: 'refmatch', applicable: false }),
+        rungView({ rung: 'blanks' }),
+        rungView({ rung: 'firstletters' }),
+      ],
+    });
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const restart = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Restart')!;
+    restart.click();
+
+    expect(host.sessionsStarted).toEqual([{ passageId: pv.passage.id, rung: 'ordering', restart: true }]);
+  });
+
+  it('lets a passage override the answer mode, and tells the worker', async () => {
+    host.handlers.setPassageAnswerMode = () => ({ ok: true, data: {} });
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('#sm-answer-mode')!;
+    select.value = 'fullWord';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    const sent = host.requests.find((r) => r.type === 'setPassageAnswerMode');
+    expect(sent).toMatchObject({ type: 'setPassageAnswerMode', passageId: pv.passage.id, mode: 'fullWord' });
+  });
+
+  it('asks for confirmation before removing a passage that has already been practiced', () => {
+    const pv = passageViewFixture({ bestLevel: 4 });
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    expect(spokenText(root)).not.toContain('Remove this passage and its history?');
+    root.querySelector<HTMLButtonElement>('.sm-remove button')!.click();
+    expect(spokenText(root)).toContain('Remove this passage and its history?');
+    // Not removed yet - only the confirmation step has been shown.
+    expect(host.requests.filter((r) => r.type === 'removePassage')).toEqual([]);
+  });
+
+  it('removes a never-practiced passage immediately, with no confirmation step', () => {
+    // `passageViewFixture()`'s default `bestLevel` is 0 - nothing has ever
+    // been attempted, so there is no history a confirmation would protect.
+    host.handlers.removePassage = () => ({ ok: true, data: {} });
+    const pv = passageViewFixture({ bestLevel: 0 });
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    root.querySelector<HTMLButtonElement>('.sm-remove button')!.click();
+
+    expect(spokenText(root)).not.toContain('Remove this passage and its history?');
+    expect(host.requests).toContainEqual({ type: 'removePassage', passageId: pv.passage.id });
+  });
+
+  it('hides the answer-mode setting behind a gear icon until it is opened', () => {
+    // A follow-up review round: "Hide the 'first letter' setting behind a
+    // Settings icon for cleanliness."
+    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('#sm-answer-mode')!;
+    expect(select.closest('[hidden]')).not.toBeNull();
+
+    const gear = root.querySelector<HTMLButtonElement>('[aria-label="Answer mode settings"]')!;
+    expect(gear.getAttribute('aria-expanded')).toBe('false');
+
+    gear.click();
+
+    expect(select.closest('[hidden]')).toBeNull();
+    expect(gear.getAttribute('aria-expanded')).toBe('true');
+
+    gear.click();
+
+    expect(select.closest('[hidden]')).not.toBeNull();
+    expect(gear.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7b. The settings screen
+// ---------------------------------------------------------------------------
+
+describe('the settings screen', () => {
+  function settings(mode: AnswerMode = 'firstLetter'): SettingsView {
+    return { defaultAnswerMode: mode };
+  }
+
+  it('checks the radio matching the current default', () => {
+    const root = renderSettings(host, settings('fullWord'), emptyPlan());
+    container.appendChild(root);
+
+    const checked = root.querySelector<HTMLInputElement>('input[type="radio"]:checked')!;
+    expect(checked.value).toBe('fullWord');
+  });
+
+  it('tells the worker when the default is changed', async () => {
+    host.handlers.setDefaultAnswerMode = () => ({ ok: true, data: {} });
+    const root = renderSettings(host, settings('firstLetter'), emptyPlan());
+    container.appendChild(root);
+
+    const fullWord = root.querySelector<HTMLInputElement>('input[value="fullWord"]')!;
+    fullWord.checked = true;
+    fullWord.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'setDefaultAnswerMode', mode: 'fullWord' });
+  });
+
+  it('lists only the passages that have overridden the default', () => {
+    const plan: PlanView = {
+      collectionId: 1,
+      collectionName: 'My plan',
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      passages: [
+        passageViewFixture({ passage: passageFixture({ id: 1, reference: 'Psalm 23:1-6', answerMode: 'fullWord' }) }),
+        passageViewFixture({ passage: passageFixture({ id: 2, reference: 'John 3:16', answerMode: null }) }),
+      ],
+    };
+    const root = renderSettings(host, settings(), plan);
+    container.appendChild(root);
+
+    expect(spokenText(root)).toContain('Psalm 23:1-6');
+    expect(spokenText(root)).not.toContain('John 3:16');
+  });
+
+  it('navigates to a passage screen from "Change"', () => {
+    const plan: PlanView = {
+      collectionId: 1,
+      collectionName: 'My plan',
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      passages: [
+        passageViewFixture({ passage: passageFixture({ id: 7, reference: 'Psalm 23:1-6', answerMode: 'fullWord' }) }),
+      ],
+    };
+    const root = renderSettings(host, settings(), plan);
+    container.appendChild(root);
+
+    const change = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Change')!;
+    change.click();
+
+    expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: 7 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Empty and error states
+// ---------------------------------------------------------------------------
+
+describe('empty and error states', () => {
+  it('gives an empty plan something to read and something to do', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    const text = spokenText(root);
+    expect(text).not.toBe('');
+    expect(text).toContain('Nothing in your plan yet.');
+    // Not a dead end: the empty state says what to type, and the field to type
+    // it into is on the same screen.
+    expect(text).toContain('Psalm 1:1-6');
+    expect(root.querySelector('input')).not.toBeNull();
+
+    // Announced as a status rather than left as anonymous text.
+    expect(root.querySelector('[role="status"]')).not.toBeNull();
+  });
+
+  it('offers one-click add-and-start once the reader has a verse open, even with an empty plan', () => {
+    host.activeReference = 'John 3:16';
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    // Task 0004: a first-time user should never see an empty list with
+    // nothing to press. With a verse already open, one button both adds it
+    // and starts practising it.
+    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels.some((l) => (l ?? '').includes('Add John 3:16 and start'))).toBe(true);
+  });
+
+  it('does not offer a start button at all with an empty plan and nothing being read', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    // A disabled primary button with no explanation looks broken. The screen
+    // points at the Add field instead.
+    expect(spokenText(root)).toContain('Add a verse below to get started.');
+    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels.some((l) => (l ?? '').includes('Start practicing'))).toBe(false);
+  });
+
+  it('gives an empty analytics screen a way back rather than a wall of zeroes', () => {
+    const root = renderAnalytics(host, emptyAnalytics());
+    container.appendChild(root);
+
+    expect(spokenText(root)).toContain('Nothing to show yet.');
+    expect(root.querySelectorAll('button').length).toBeGreaterThan(0);
+  });
+
+  it('shows the worker\'s reason for a rejected reference, word for word', async () => {
+    // The common case, and the whole reason failures travel as data rather than
+    // as an exception: only the worker can say which of "Jn 3.16", "1 Jn 1" or
+    // "Psalm 151" went wrong, and a generic "Could not add passage" throws that
+    // away.
+    const reason = '"Psalm 151:1" is not a passage in this Bible - Psalms ends at 150.';
+    host.handlers.addPassage = () => ({ ok: false, error: reason });
+
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    const input = root.querySelector<HTMLInputElement>('input')!;
+    input.value = 'Psalm 151:1';
+    root.querySelector('form')!.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    );
+    await settle();
+
+    expect(spokenText(root)).toContain(reason);
+    // And read out when it appears, since the user is looking at the field they
+    // just submitted, not at the space below it.
+    const alert = root.querySelector<HTMLElement>('[role="alert"]')!;
+    expect(alert.textContent).toBe(reason);
+    // The field keeps what was typed so it can be corrected rather than retyped.
+    expect(input.value).toBe('Psalm 151:1');
+  });
+
+  it('refuses an empty reference without asking the worker', async () => {
+    host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    root.querySelector('form')!.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    );
+    await settle();
+
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+    expect(spokenText(root)).toContain('Type a reference first');
+  });
+
+  /** Fires a paste with the given text, the way a browser would before jsdom's DataTransfer support is needed. */
+  function pasteInto(input: HTMLInputElement, text: string): void {
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } });
+    input.dispatchEvent(event);
+  }
+
+  /** Clicks the "Add N passages" button in the batch-confirm preview. */
+  function confirmBatch(root: HTMLElement): void {
+    const confirm = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-batch-actions button')).find((b) =>
+      (b.textContent ?? '').startsWith('Add'),
+    )!;
+    confirm.click();
+  }
+
+  it('shows the parsed batch and waits for confirmation before adding anything', async () => {
+    host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'John 3:16\nRomans 8:28\nPsalm 23:1-6');
+    await settle();
+
+    // Nothing sent to the worker yet - task 0004's follow-up review asked for
+    // bulk-add "after confirmation", not on the paste itself.
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+    const text = spokenText(root);
+    expect(text).toContain('John 3:16');
+    expect(text).toContain('Romans 8:28');
+    expect(text).toContain('Psalm 23:1-6');
+  });
+
+  it('adds every line of a pasted list as its own passage, one reference per line, once confirmed', async () => {
+    const references = ['John 3:16', 'Romans 8:28', 'Psalm 23:1-6'];
+    // Distinct id and non-overlapping verse range per reference: three real,
+    // unrelated passages, not three copies of the same row - so the batch's
+    // own overlap-consolidation (task 0004's review) has nothing to collapse
+    // here and every one of the three is expected to survive.
+    host.handlers.addPassage = (req) => {
+      const index = references.indexOf(req.reference);
+      return {
+        ok: true,
+        data: {
+          passage: passageFixture({
+            id: 100 + index,
+            reference: req.reference,
+            startVerseId: 40000000 + index * 100,
+            endVerseId: 40000000 + index * 100 + 5,
+          }),
+        },
+      };
+    };
+
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, references.join('\n'));
+    await settle();
+    confirmBatch(root);
+    await settle();
+
+    expect(host.requests.filter((r) => r.type === 'addPassage').map((r) => (r as { reference: string }).reference)).toEqual(
+      references,
+    );
+    // The batch is announced by count, not by leaving the field full of text.
+    expect(input.value).toBe('');
+    expect(host.announcements.some((a) => a.includes('Added 3 passages'))).toBe(true);
+    expect(host.reloads).toBeGreaterThan(0);
+  });
+
+  it('adds nothing, and clears the preview, when a pasted batch is cancelled', async () => {
+    host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'John 3:16\nRomans 8:28');
+    await settle();
+    root.querySelector<HTMLButtonElement>('.sm-batch-actions button:last-child')!.click();
+
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+    expect(spokenText(root)).not.toContain('Romans 8:28');
+    expect(input.disabled).toBe(false);
+  });
+
+  it('does not let a multi-line paste land in the single-line field as concatenated text', async () => {
+    host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'John 3:16\nRomans 8:28');
+    await settle();
+
+    // Never briefly or finally holds anything but what the batch handler put
+    // there itself (nothing, then cleared on success) - the paste's default
+    // insertion is what would otherwise garble this.
+    expect(input.value).toBe('');
+  });
+
+  it('finds several references sprinkled in one pasted line, not just one per line', async () => {
+    host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'Check out John 3:16, and also Romans 8:28 today!');
+    await settle();
+
+    // Not a single line handed through whole - two candidates, each its own
+    // reference, extracted out of the surrounding prose.
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+    const text = spokenText(root);
+    expect(text).toContain('John 3:16');
+    expect(text).toContain('Romans 8:28');
+    expect(text).not.toContain('Check out');
+  });
+
+  it('consolidates a batch that names both a range and one of its own verses', async () => {
+    // "if John 3:16-17 is in there, John 3:16 separately should be ignored" -
+    // a follow-up review round on the batch-add feature.
+    host.handlers.addPassage = (req) => {
+      if (req.reference === 'John 3:16-17') {
+        return { ok: true, data: { passage: passageFixture({ id: 55, reference: 'John 3:16-17', startVerseId: 43003016, endVerseId: 43003017 }) } };
+      }
+      return { ok: true, data: { passage: passageFixture({ id: 56, reference: 'John 3:16', startVerseId: 43003016, endVerseId: 43003016 }) } };
+    };
+    host.handlers.removePassage = () => ({ ok: true, data: {} });
+
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'John 3:16-17\nJohn 3:16');
+    await settle();
+    confirmBatch(root);
+    await settle();
+
+    // Both were added (each is a real add on the worker), then the narrower
+    // one - fully covered by the range also in this batch - is removed again.
+    expect(host.requests.filter((r) => r.type === 'addPassage').map((r) => (r as { reference: string }).reference)).toEqual(
+      ['John 3:16-17', 'John 3:16'],
+    );
+    expect(host.requests).toContainEqual({ type: 'removePassage', passageId: 56 });
+    expect(
+      host.announcements.some(
+        (a) => a.includes('Added 1 passage') && a.includes('already covered by another passage in this batch'),
+      ),
+    ).toBe(true);
+  });
+
+  it('reports which lines of a pasted batch failed, each with the worker\'s own reason', async () => {
+    host.handlers.addPassage = (req) => {
+      if (req.reference === 'Psalm 151:1') return { ok: false, error: '"Psalm 151:1" is not a passage in this Bible.' };
+      return { ok: true, data: { passage: passageFixture({ reference: req.reference }) } };
+    };
+
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'John 3:16\nPsalm 151:1');
+    await settle();
+    confirmBatch(root);
+    await settle();
+
+    expect(host.announcements.some((a) => a.includes('Added 1 passage') && a.includes('1 failed'))).toBe(true);
+    expect(spokenText(root)).toContain('Psalm 151:1: "Psalm 151:1" is not a passage in this Bible.');
+  });
+
+  it('leaves a single-line paste to the field\'s normal behaviour', async () => {
+    host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    pasteInto(input, 'John 3:16');
+    await settle();
+
+    // A single reference is not a batch: the paste is left alone rather than
+    // pre-empted, and nothing is submitted until the user presses Add or Enter.
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+  });
+
+  it('keeps the exercise usable when the surrounding context cannot be fetched', async () => {
+    const reason = 'Could not reach the Scripture Memory worker (getContext): Timeout';
+    const practice = await mountPractice(
+      blanksStep(PSALM_1_1, [5, 9]),
+      {},
+      { ok: false, error: reason },
+    );
+
+    // Not fatal: the step carries everything needed to answer, so the failure
+    // is reported and the exercise goes on with the step's own copy of the
+    // verse. Replacing the screen with an error here would take away the thing
+    // the user pressed a button to do.
+    expect(host.announcements).toContain(reason);
+    expect(practice.root.querySelectorAll('.sm-blank').length).toBe(2);
+    expect(spokenText(workingVerse(practice.root))).toContain('Blessed is the man');
+  });
+
+  it('surfaces a rejected submission instead of silently doing nothing', async () => {
+    const reason = 'That session has already ended.';
+    host.handlers.submitStep = () => ({ ok: false, error: reason });
+
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED));
+    practice.root.querySelector<HTMLButtonElement>('.sm-exercise-actions button')!.click();
+    await settle();
+
+    expect(spokenText(practice.root)).toContain(reason);
+    expect(practice.root.querySelector('[role="alert"]')).not.toBeNull();
+  });
+});

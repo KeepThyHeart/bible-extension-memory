@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scripture Memory</title>
+
+  <!--
+    The host's design tokens. This is the whole reason the panel follows the
+    app's theme instead of guessing at a palette: the main process serves a
+    generated `:root { … }` block of ~150 custom properties (--theme-*,
+    --bible-font-*, --ui-font-*) at this exact URL, flattened for whichever of
+    the app's fifteen themes is currently active.
+
+    Two things about it that are easy to get wrong:
+
+      * It must be LINKED, not fetched. `connect-src 'self'` excludes the host
+        origin, so `fetch('ext-ui://host/theme.css')` is blocked; `style-src`
+        lists it, so a <link> is fine.
+      * Nothing injects it. The host renders this document in a plain iframe
+        and does not add a stylesheet of its own, so a panel that omits this
+        line simply has no tokens and every `var()` in styles.css falls back.
+
+    `data-host-theme` marks it for panel.ts, which re-links it when the app's
+    theme changes - the served sheet is a snapshot of the theme at load time
+    and has no `data-theme` or `prefers-color-scheme` switching of its own.
+  -->
+  <link rel="stylesheet" href="ext-ui://host/theme.css" data-host-theme>
+
+  <!-- Ours second, so it wins where the two touch the same property. -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="sm-app">
+    <!-- The scroll container. Screens are swapped in and out of here. -->
+    <main id="sm-main" class="sm-main"></main>
+
+    <!--
+      A permanent live region for transient messages. It exists in the markup
+      rather than being created when there is something to say, because a live
+      region inserted at the same moment as its text is routinely not announced
+      at all - the announcement is triggered by a mutation *inside* a region
+      that was already there.
+    -->
+    <div id="sm-status" class="sm-status" role="status" aria-live="polite"></div>
+  </div>
+
+  <!--
+    Panel scripts MUST be external files. This document is served on its own
+    ext-ui:// origin under "script-src 'self' ext-ui://host" — there is no
+    'unsafe-inline', so an inline <script> here is blocked silently, with
+    nothing logged anywhere you will look. (Inline *styles* are allowed;
+    style-src permits them, and measure.ts relies on that.)
+
+    panel.js is built from src/panel.ts by esbuild.config.mjs. It talks to the
+    extension's worker through BibleExtUI.postToWorker; the panel has no api.*
+    of its own by design, so whatever it needs, it asks the worker for, and the
+    worker's permissions are the ones that apply.
+  -->
+  <script src="panel.js"></script>
+</body>
+</html>

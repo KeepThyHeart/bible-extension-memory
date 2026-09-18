@@ -1,0 +1,49 @@
+{
+  "$schema": "./node_modules/@bible/core/dist/Extensions/ExtensionManifestSchema.json",
+  "id": "ext.bible-app.scripture-memory",
+  "name": "Scripture Memory",
+  "version": "0.1.0",
+  "publisher": "bible-app",
+  "description": "Memorize passages with spaced repetition: order the verses, fill the blanks, then recite from first letters.",
+  "categories": ["Study"],
+  "keywords": ["memorization", "spaced repetition", "recall"],
+  "license": "MIT",
+  "engines": {
+    "bibleApp": ">=1.0.0"
+  },
+  "main": "dist/main.js",
+  "permissions": [
+    "bible:read",
+    "storage:database",
+    "ui:contribute-pane",
+    "ui:context-menu",
+    "ui:status-bar",
+    "ui:notification",
+    "commands:register"
+  ],
+  "activationEvents": ["onStartup"],
+  "contributes": {
+    "commands": [
+      {
+        "id": "ext.bible-app.scripture-memory.practiceDue",
+        "title": "Scripture Memory: Practice what's due",
+        "category": "Scripture Memory",
+        "handlerEndpoint": "practiceDue"
+      },
+      {
+        "id": "ext.bible-app.scripture-memory.addActiveVerse",
+        "title": "Scripture Memory: Add this verse to my plan",
+        "category": "Scripture Memory",
+        "handlerEndpoint": "addActiveVerse"
+      }
+    ],
+    "panelTypes": [
+      {
+        "id": "panel",
+        "title": "Scripture Memory",
+        "uiEntry": "ui/index.html",
+        "defaultBucket": "right"
+      }
+    ]
+  }
+}

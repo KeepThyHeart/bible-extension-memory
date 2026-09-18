@@ -1,0 +1,34 @@
+{
+  "name": "bible-ext-scripture-memory",
+  "version": "0.1.0",
+  "description": "A Bible app extension: Scripture Memory",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "npm run typecheck && node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.panel.json",
+    "watch": "node esbuild.config.mjs --watch",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "validate": "bible-ext validate",
+    "smoke": "bible-ext-smoke",
+    "package": "npm run build && bible-ext package"
+  },
+  "keywords": [
+    "bible",
+    "extension"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@bible/core": "file:../bible/build/sdk/bible-core-0.1.0.tgz",
+    "@bible/extension-testing": "file:../bible/build/sdk/bible-extension-testing-0.1.0.tgz",
+    "@bible/extension-ui": "file:../bible/build/sdk/bible-extension-ui-0.1.0.tgz",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^20.14.0",
+    "better-sqlite3": "^11.10.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
