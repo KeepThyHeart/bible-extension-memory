@@ -311,6 +311,40 @@ describe('preview', () => {
     const empty: VerseText = { ...JOHN_11_35, words: [], lines: null };
     expect(preview(empty)).toEqual({ preview: '', truncated: false });
   });
+
+  it('is unchanged when no options are given - the default caps still apply', () => {
+    // Guards the "defaults matching current behaviour" contract of the new
+    // options argument: an omitted second argument must not silently loosen
+    // the cap for every existing caller (`refmatch` included).
+    expect(preview(PSALM_1_1)).toEqual(preview(PSALM_1_1, {}));
+    expect(preview(PSALM_1_1).truncated).toBe(true);
+  });
+
+  it('honours a wider word cap, and no cap at all via Infinity', () => {
+    const wider = preview(PSALM_1_1, { maxWords: 100 });
+    expect(wider.truncated).toBe(false);
+    expect(wider.preview).toBe(PSALM_1_1.words.join(' '));
+
+    const uncapped = preview(JOHN_3_18, { maxWords: Infinity, maxLines: Infinity });
+    expect(uncapped.truncated).toBe(false);
+    expect(uncapped.preview).toBe(JOHN_3_18.words.join(' '));
+    // JOHN_3_18 is well past the normal 25-word cap, so this only passes if
+    // the option actually suppressed truncation rather than being ignored.
+    expect(JOHN_3_18.words.length).toBeGreaterThan(PREVIEW_MAX_WORDS);
+  });
+
+  it('honours a tighter word cap than the default', () => {
+    const tighter = preview(JOHN_3_16, { maxWords: 5 });
+    expect(tighter.preview).toBe('For God so loved the');
+    expect(tighter.truncated).toBe(true);
+  });
+
+  it('honours a tighter line cap than the default', () => {
+    // Psalm 24:7 normally cuts at 3 lines (15 words); a 2-line cap cuts sooner.
+    const tighter = preview(PSALM_24_7, { maxLines: 2 });
+    expect(tighter.preview).toBe('Lift up your heads, O ye gates; and be ye lift up,');
+    expect(tighter.truncated).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -374,6 +408,58 @@ describe('buildCandidates', () => {
     expect(() => buildCandidates(JOHN_3_PASSAGE, 99999999, 3, mulberry32(1))).toThrow(
       /not in the remaining verses/,
     );
+  });
+
+  it('passes preview options through, so the caller can ask for untruncated candidates', () => {
+    // JOHN_3_18 is longer than PREVIEW_MAX_WORDS, so a plain call truncates it
+    // and the full-text option must be what suppresses that - this is the
+    // shape `Session.prepareStep` relies on for the ordering rung, per the
+    // task that added it.
+    const capped = buildCandidates(JOHN_3_PASSAGE, 43003018, 3, mulberry32(7));
+    const cappedCorrect = capped.find((c) => c.verseId === 43003018)!;
+    expect(cappedCorrect.truncated).toBe(true);
+
+    const full = buildCandidates(JOHN_3_PASSAGE, 43003018, 3, mulberry32(7), {
+      maxWords: Infinity,
+      maxLines: Infinity,
+    });
+    const fullCorrect = full.find((c) => c.verseId === 43003018)!;
+    expect(fullCorrect.truncated).toBe(false);
+    expect(fullCorrect.preview).toBe(JOHN_3_18.words.join(' '));
+
+    // Every candidate, not only the correct one, is untruncated.
+    for (const candidate of full) expect(candidate.truncated).toBe(false);
+  });
+
+  it('keeps a 25-verse passage of untruncated candidates comfortably under the 256 KB protocol cap', () => {
+    // `types.ts` documents the 256 KB panel-message cap the whole protocol is
+    // built around. Asking `buildCandidates` for full, uncapped verse text
+    // (as `Session.prepareStep` now does for `ordering` - see `session.ts`)
+    // must not be able to blow that budget even for a long, many-verse
+    // passage, since only `count` candidates (never the whole passage) are
+    // ever serialized in one step. This measures the actual byte size rather
+    // than eyeballing it.
+    const LONG_WORD = 'begotten'; // a real, representatively long KJV word
+    const longPassage: VerseText[] = Array.from({ length: 25 }, (_, i) => ({
+      verseId: 43003001 + i,
+      label: `3:${i + 1}`,
+      // 60 words is a long verse by KJV standards (most run 15-30), so this
+      // is already a pessimistic per-verse size, not a typical one.
+      words: Array.from({ length: 60 }, () => LONG_WORD),
+      lines: null,
+      psalmTitle: null,
+      paragraphStart: false,
+    }));
+
+    const candidates = buildCandidates(longPassage, 43003013, 4, mulberry32(3), {
+      maxWords: Infinity,
+      maxLines: Infinity,
+    });
+    expect(candidates.every((c) => !c.truncated)).toBe(true);
+
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(candidates)).length;
+    const PANEL_MESSAGE_CAP_BYTES = 256 * 1024;
+    expect(serializedBytes).toBeLessThan(PANEL_MESSAGE_CAP_BYTES);
   });
 });
 

@@ -1222,6 +1222,31 @@ ul, ol {
 
 /* --- Blanks and first letters -------------------------------------------- */
 
+/* The fixed-width box every hidden word lives in, before and after reveal.
+   JS sets its pixel width once from blankWidthFor(measure(word)); the input,
+   the revealed word and the missed-word marker all render INSIDE it, so
+   revealing never moves a later word. Overflow stays visible only so the
+   absolutely positioned wrong-answer label below can escape the box. */
+.sm-slot {
+  display: inline-block;
+  position: relative;
+  box-sizing: border-box;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.sm-slot > .sm-word {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0 1px;
+}
+
+.sm-slot > .sm-word-missed {
+  background: none;
+  box-shadow: none;
+}
+
 /* `font: inherit` is what makes the measurement honest: the input renders the
    word in exactly the face and size measure.ts measured it in. */
 .sm-blank,
@@ -1234,7 +1259,13 @@ ul, ol {
   border-radius: 2px 2px 0 0;
   padding: 0 1px;
   margin: 0;
-  /* Width is set in pixels by JS from the measured width of the hidden word. */
+  /* Width is set in pixels by JS from the measured width of the hidden word.
+     It never grows: an overtyped word scrolls inside the box instead, so the
+     box (and everything after it on the line) stays put. */
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-x: hidden;
+  text-overflow: clip;
   vertical-align: baseline;
 }
 
@@ -1293,6 +1324,19 @@ ul, ol {
   white-space: nowrap;
   margin-left: 0.3em;
   text-decoration: none;
+}
+
+/* Inside a slot the "you typed" marker is out of the inline flow: a small
+   label hung under the box (position: absolute), so a wrong answer longer than
+   the word cannot widen the line. */
+.sm-slot .sm-word-wrong {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-left: 0;
+  line-height: 1.1;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .sm-mark {
@@ -1357,6 +1401,17 @@ ul, ol {
   min-width: 0;
 }
 
+/* The A/B/C/D keyboard-shortcut label, on the opposite side of the row from
+   the verdict mark. Muted rather than accented: it is a hint for the keys
+   that work, not a piece of the scripture text and not a verdict. */
+.sm-choice-letter {
+  flex: 0 0 auto;
+  width: 1.25em;
+  text-align: center;
+  font-weight: 700;
+  color: var(--sm-text-muted);
+}
+
 /* Reserved space for the verdict glyph, always. Adding the mark on a wrong
    pick must not make the row wider and shove the text it contains around -
    the user is trying to read those words. */
@@ -1387,6 +1442,17 @@ ul, ol {
 .sm-choice-correct .sm-choice-mark::after {
   content: '✓';
   color: var(--sm-success);
+}
+
+/* --- refprovide: type the reference from memory --------------------------- */
+
+/* `.sm-input` supplies the border/background/padding; this only bounds the
+   width so a one-line reference does not stretch edge to edge of the pane
+   the way a full-width form field would. */
+.sm-ref-input {
+  display: block;
+  width: 100%;
+  max-width: 20em;
 }
 
 /* --- Feedback and actions ------------------------------------------------ */
@@ -1460,6 +1526,400 @@ ul, ol {
 }
 
 /* ==========================================================================
+   Home
+
+   T10 owns the home-screen rework (the literal title "Bible Memory", the
+   list selector in the header, "All lists" filtering). This section exists
+   so it has somewhere to append without re-opening the file's structure.
+   ========================================================================== */
+
+.sm-list-selector {
+  max-width: 12rem;
+  margin-bottom: var(--sm-s3);
+}
+
+/* The Practice control: the activity picker sits to the left of the
+   chrome-free `Practice` button, per T10 - "Start practicing" loses its
+   border and becomes a plain text control, same family as `.sm-btn-quiet`
+   elsewhere, just a little larger so it still reads as the primary action. */
+.sm-practice-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+  margin-bottom: var(--sm-s3);
+}
+
+.sm-practice-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-activity-picker {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.sm-practice-btn {
+  font-size: calc(var(--sm-control-size) * 1.15);
+  font-weight: 600;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sm-reference-hint {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sm-s1);
+}
+
+.sm-practice-target-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+}
+
+.sm-practice-target {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sm-manage-passages-link {
+  align-self: flex-start;
+  margin-bottom: var(--sm-s3);
+}
+
+/* ==========================================================================
+   Passage overview
+
+   T12's passage-overview grid: one `display: grid` container
+   (`.sm-activity-table`) with fixed column tracks - activity name, tier
+   pips, level boxes, schedule/progress, play target - so every row's pieces
+   line up regardless of how long its own name or note is.
+
+   Every row spans the whole grid (`grid-column: 1 / -1`) and repeats the
+   same column template on itself, rather than leaning on CSS subgrid (not
+   safe to assume support for in the panel's runtime): an applicable row is
+   one real `<button>` with five children in that order (name, tier pips,
+   level boxes, a schedule/progress note, a decorative play glyph - never a
+   `<button>` nested inside it), and an inapplicable row is a plain `<div>`
+   with two (name, then a note spanning every column after it) - not
+   clickable, not focusable, visually dimmed. `components.ts#activityRow`'s
+   generic five-child shape (name/pips/level/schedule/an `iconButton`) lines
+   up in the same tracks if anything else ever reuses it.
+   ========================================================================== */
+
+.sm-activity-table {
+  --sm-activity-cols: minmax(8rem, 1.3fr) 3.25rem 6.25rem minmax(6rem, 1fr) 1.75rem;
+  display: grid;
+  grid-template-columns: var(--sm-activity-cols);
+  row-gap: 2px;
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+  overflow: hidden;
+}
+
+.sm-activity-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: var(--sm-activity-cols);
+  align-items: center;
+  column-gap: var(--sm-s3);
+  padding: var(--sm-s2) var(--sm-s3);
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--sm-border);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.sm-activity-table .sm-activity-row:last-child {
+  border-bottom: none;
+}
+
+button.sm-activity-row {
+  cursor: pointer;
+}
+
+button.sm-activity-row:hover {
+  background: var(--sm-hover);
+}
+
+/* Due gets a left accent stripe rather than a full border, so a due row
+   still reads as a row in the same table rather than standing apart as its
+   own card (carried over from the pre-T12 `.sm-activity-due` treatment). */
+.sm-activity-row-due {
+  box-shadow: inset 3px 0 0 var(--sm-warning);
+}
+
+.sm-activity-row-na {
+  opacity: 0.7;
+}
+
+.sm-activity-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sm-s1);
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-activity-row-note,
+.sm-activity-row-schedule,
+.sm-activity-row-progress {
+  color: var(--sm-text-dim);
+  font-size: 0.9em;
+}
+
+.sm-activity-row-na .sm-activity-row-note {
+  grid-column: 2 / -1;
+}
+
+.sm-activity-row-play {
+  justify-self: end;
+  color: var(--sm-accent);
+}
+
+.sm-tier-pips {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.sm-tier-pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sm-border-strong);
+}
+
+.sm-tier-pip-passed {
+  background: var(--sm-success);
+}
+
+/* The chrome-free "Practice Passage" link above the table - a real button
+   styled as a text link, mirroring the home screen's own Practice control
+   (`.sm-practice-btn`) at the scale of one passage. */
+.sm-passage-practice-link {
+  align-self: flex-start;
+  font-weight: 600;
+  margin-bottom: var(--sm-s3);
+  padding-left: 0;
+  padding-right: 0;
+  text-decoration: underline;
+}
+
+/* The settings modal's content: the answer-mode row (`.sm-answer-row`,
+   defined elsewhere and reused here) plus "Reset progress for this
+   passage", which reuses `.sm-remove-confirm`'s existing confirm-step
+   styling from Manage Passages' remove control. */
+.sm-reset-progress {
+  margin-top: var(--sm-s3);
+}
+
+.sm-answer-row-error:empty {
+  display: none;
+}
+
+/* ==========================================================================
+   Manage passages
+
+   T11's screen: the add-passage form (moved here from Home, reusing
+   `.sm-add`/`.sm-batch-*`/`.sm-row` etc. from the Plan section above), list
+   management, the passage list's per-row move/remove controls, and the
+   suggested-lists gallery.
+   ========================================================================== */
+
+.sm-screen-manage-passages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s4);
+}
+
+.sm-manage-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s3);
+}
+
+.sm-manage-lists-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+.sm-manage-list-rows {
+  gap: var(--sm-s1);
+}
+
+.sm-manage-list-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.sm-manage-list-actions {
+  display: flex;
+  gap: var(--sm-s2);
+  margin-left: auto;
+}
+
+.sm-manage-list-rename {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.sm-manage-passage-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.sm-suggested-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-suggested-lists-title {
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--sm-heading);
+  margin: 0;
+}
+
+.sm-suggested-list-row {
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.sm-suggested-list-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.sm-suggested-list-actions {
+  display: flex;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   Modal
+
+   Hand-rolled overlay dialogs (`components.ts#modal`) - never `<dialog>`,
+   never `window.confirm`; see that function's own doc comment for why.
+   ========================================================================== */
+
+.sm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sm-s4);
+  z-index: 100;
+}
+
+.sm-modal {
+  background: var(--sm-surface-raised);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  max-width: min(28rem, 100%);
+  max-height: calc(100vh - 2 * var(--sm-s4));
+  overflow-y: auto;
+  padding: var(--sm-s4);
+}
+
+.sm-modal:focus-visible {
+  outline: none;
+}
+
+.sm-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sm-s3);
+  margin-bottom: var(--sm-s3);
+}
+
+.sm-modal-title {
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--sm-heading);
+  margin: 0;
+}
+
+.sm-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s3);
+}
+
+/* ==========================================================================
+   Practice chrome
+
+   T13's work inside the practice screen: the activity tab strip, the
+   shuffle icon beside the activity name, and the tier label next to it (both
+   in the head and repeated in the end-of-session summary).
+   ========================================================================== */
+
+.sm-practice-tier {
+  color: var(--sm-text-muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* The shuffle icon sits at the end of the row regardless of how many of the
+   optional pieces before it (tier text) are present. */
+.sm-practice-sub .sm-icon-btn {
+  margin-left: auto;
+}
+
+.sm-practice-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sm-s1);
+}
+
+.sm-practice-tab {
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius);
+  background: transparent;
+  color: var(--sm-text-dim);
+  padding: 0.3em 0.75em;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.sm-practice-tab-current {
+  border-color: var(--sm-accent);
+  background: var(--sm-accent-light);
+  color: var(--sm-heading);
+  font-weight: 600;
+  cursor: default;
+}
+
+.sm-summary-tier {
+  color: var(--sm-text-muted);
+  font-size: 0.9em;
+  margin-top: -0.25em;
+}
+
+/* ==========================================================================
    Responsive
 
    The panel is opened two ways and has to work at both extremes: docked in a
@@ -1506,6 +1966,56 @@ ul, ol {
 
   .sm-practice-progress {
     flex-wrap: wrap;
+  }
+
+  /* T12's activity table: the name/pips/level/progress cells stack into two
+     narrow columns instead of five wide ones, but the play target
+     (`.sm-activity-row-play`) stays pinned to the row's right edge and
+     spans its full height - it must never end up on a wrapped line of its
+     own, away from the row it belongs to. */
+  .sm-activity-table {
+    --sm-activity-cols: 1fr auto;
+  }
+
+  .sm-activity-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'name play'
+      'pips play'
+      'level play'
+      'progress play';
+    row-gap: 2px;
+  }
+
+  .sm-activity-row-na {
+    grid-template-areas: 'name' 'note';
+    grid-template-columns: 1fr;
+  }
+
+  .sm-activity-row-na .sm-activity-row-note {
+    grid-column: auto;
+    grid-area: note;
+  }
+
+  .sm-activity-row-name {
+    grid-area: name;
+  }
+
+  .sm-activity-row .sm-tier-pips {
+    grid-area: pips;
+  }
+
+  .sm-activity-row .sm-level-boxes {
+    grid-area: level;
+  }
+
+  .sm-activity-row-progress {
+    grid-area: progress;
+  }
+
+  .sm-activity-row-play {
+    grid-area: play;
+    align-self: center;
   }
 }
 

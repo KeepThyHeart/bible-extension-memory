@@ -13,9 +13,17 @@
  * dependency on the host's packages.
  */
 
-import type { BibleExtensionAPI, BibleVerseDto, DisposableHandle } from './bibleTypes';
+import type {
+  BibleBookDto,
+  BibleChapterDto,
+  BibleExtensionAPI,
+  BibleVerseDto,
+  DisposableHandle,
+  ParsedReferenceDto,
+} from './bibleTypes';
 import type {
   AnswerMode,
+  Card,
   Passage,
   PanelReply,
   PanelRequest,
@@ -29,15 +37,35 @@ import type {
   VerseText,
 } from './types';
 import { migrate, ensureDefaultCollection } from './db';
-import { MemoryStore } from './store';
-import { applicableRungs, levelFromScore, WELL_LEARNED_LEVEL } from './ladder';
+import { MemoryStore, activityLevels, byCard, scopeOf } from './store';
+import type { ScopeFacts, TierProgressRow } from './store';
+import {
+  applicableRungs,
+  inRungOrder,
+  levelForActivity,
+  MIN_VERSES_FOR_REFERENCE_ACTIVITIES,
+  passageWellLearned,
+  summarizeActivity,
+  TIERS,
+  WELL_LEARNED_LEVEL,
+} from './ladder';
 import { schedule, makeRng, isDue } from './scheduler';
-import { Session, nextSessionId } from './session';
+import { Session, nextSessionId, MAX_REFERENCE_STEPS } from './session';
+import type { ReferenceCatalog } from './session';
 import { toVerseText, CONTEXT_VERSES } from './verses';
 import { resolveReference, ReferenceError, MAX_PASSAGE_VERSES } from './reference';
+import { BOOK_GENRE, buildReferenceDistractors, type ReferencePoint } from './exercises/references';
 
 const DB_NAME = 'memory';
-const DEFAULT_COLLECTION_NAME = 'My plan';
+const DEFAULT_COLLECTION_NAME = 'Default';
+/**
+ * The old default list's name, before T5 introduced multiple lists.
+ *
+ * Used only by `renameLegacyDefaultCollection`, the one-time activation
+ * upgrade below - a database created before this task has exactly one
+ * collection, still called this.
+ */
+const LEGACY_DEFAULT_COLLECTION_NAME = 'My plan';
 
 /** This extension's manifest id, used to namespace the command ids it binds. */
 const EXTENSION_ID = 'ext.bible-app.scripture-memory';
@@ -63,6 +91,34 @@ function labelFor(verseId: number): string {
   return `${chapter}:${verse}`;
 }
 
+/**
+ * Build a labeller for one passage: bare verse numbers when both the passage
+ * and the verse being labelled sit in the same single chapter, "chapter:verse"
+ * otherwise.
+ *
+ * A single-chapter passage reads fine with bare numbers in its own margin,
+ * but a context verse from the chapter before or after it does not belong to
+ * that chapter - labelling it bare would misread as if it were part of the
+ * passage's chapter. So the "bare number" shortcut only applies when the
+ * passage itself is single-chapter *and* the verse being labelled is inside
+ * that same chapter; everything else gets the fully qualified label.
+ */
+function makeLabeller(startVerseId: number, endVerseId: number): (verseId: number) => string {
+  if (!verseIdEncodingTrusted) {
+    return (verseId: number) => String(verseId);
+  }
+  const startChapter = Math.floor((startVerseId % BOOK_FACTOR) / CHAPTER_FACTOR);
+  const endChapter = Math.floor((endVerseId % BOOK_FACTOR) / CHAPTER_FACTOR);
+  const singleChapter = startChapter === endChapter ? startChapter : null;
+  return (verseId: number) => {
+    const chapter = Math.floor((verseId % BOOK_FACTOR) / CHAPTER_FACTOR);
+    if (singleChapter !== null && chapter === singleChapter) {
+      return String(verseId % CHAPTER_FACTOR);
+    }
+    return labelFor(verseId);
+  };
+}
+
 /** Book number -> display name, from the host. Empty until loaded, or if the host refuses. */
 let bookNames = new Map<number, string>();
 
@@ -84,7 +140,15 @@ function referenceFor(startVerseId: number, endVerseId = startVerseId): string {
 /** Module-level state. The realm gives each extension its own isolated global. */
 let api: BibleExtensionAPI;
 let store: MemoryStore;
-let collectionId: number;
+/**
+ * The Default list's id, set once at activation. Used only as the initial
+ * value and by `renameLegacyDefaultCollection`; every other read that needs
+ * "the Default list right now" goes through `resolveAddTargetCollectionId` /
+ * `findDefaultListId` instead, because the Default list can itself be
+ * deleted (its passages moved elsewhere) after activation, which would leave
+ * this variable pointing at a row that no longer exists.
+ */
+let defaultCollectionId: number;
 let activeVerseId: number | null = null;
 /** Abbreviation of the translation the reader is in, from the active-verse event. */
 let activeModule: string | null = null;
@@ -93,6 +157,123 @@ let lastStatusText: string | null = null;
 const sessions = new Map<string, Session>();
 /** When each in-flight session started, for the (currently unshown) duration column. */
 const sessionStartedAt = new Map<string, number>();
+
+/**
+ * Book catalog and chapter-extent caches for `refmatch`'s distractor pool.
+ *
+ * `listBooks` is one call, fetched once and kept for the life of the
+ * activation. `listChapters` is genuinely one host call PER BOOK - see its
+ * own doc comment in `ExtensionApiTypes.d.ts` - so it is fetched lazily, only
+ * for whichever books a session's tier actually needs (see
+ * `buildReferenceCatalog`), and cached the same way so a book fetched for one
+ * user's session is not re-fetched for the next.
+ */
+let bookCatalogCache: BibleBookDto[] | null = null;
+const chaptersCache = new Map<number, BibleChapterDto[]>();
+
+async function getBookCatalog(): Promise<BibleBookDto[]> {
+  if (!bookCatalogCache) bookCatalogCache = await api.bible.listBooks();
+  return bookCatalogCache;
+}
+
+async function getChaptersCached(bookNumber: number): Promise<BibleChapterDto[]> {
+  const cached = chaptersCache.get(bookNumber);
+  if (cached) return cached;
+  const chapters = await api.bible.listChapters(bookNumber);
+  chaptersCache.set(bookNumber, chapters);
+  return chapters;
+}
+
+/**
+ * The book/chapter/verse each of `verses` actually is, off the same trusted
+ * verse-id encoding `labelFor` uses. Pure arithmetic, no host call - see
+ * `session.ts#SessionOpts.referencePoints`'s doc comment for why `refmatch`
+ * needs this rather than parsing `VerseText.label` back (which can be a bare
+ * verse number for a single-chapter passage).
+ */
+function referencePointsFor(verses: VerseText[]): ReferencePoint[] {
+  return verses.map((v) => ({
+    bookNumber: Math.floor(v.verseId / BOOK_FACTOR),
+    chapter: Math.floor((v.verseId % BOOK_FACTOR) / CHAPTER_FACTOR),
+    verse: v.verseId % CHAPTER_FACTOR,
+  }));
+}
+
+/**
+ * How many distinct books a `refmatch` distractor pool samples, at tiers 0
+ * and 1 - a bound on `listChapters` calls, not an exhaustive fetch of every
+ * book in the canon or every book of a genre. Large enough that a real
+ * session essentially never runs short (see the `< 3` check in
+ * `startSession`), small enough that opening a fresh reference activity does
+ * not fire a dozen-plus host calls in a row.
+ */
+const REFERENCE_POOL_BOOKS = 8;
+
+/**
+ * Build the pre-fetched distractor pool `refmatch` needs for one tier.
+ *
+ * Tier 2 (same book) only ever needs the correct verse's own book - one
+ * `listChapters` call, cached forever after. Tiers 0/1 sample a bounded set
+ * of candidate books (any book / same genre) and fetch each one's chapters,
+ * also cached, so repeated sessions on the same tier cost nothing further.
+ */
+async function buildReferenceCatalog(
+  correctBookNumber: number,
+  tier: number,
+  rng: () => number,
+): Promise<ReferenceCatalog> {
+  const books = await getBookCatalog();
+  const bookNames: Record<number, string> = {};
+  for (const b of books) {
+    if (typeof b.name === 'string') bookNames[b.bookNumber] = b.name;
+  }
+
+  let candidates: BibleBookDto[];
+  if (tier >= 2) {
+    candidates = books.filter((b) => b.bookNumber === correctBookNumber);
+  } else if (tier === 1) {
+    const genre = BOOK_GENRE[correctBookNumber];
+    candidates = shuffledBooks(
+      books.filter((b) => BOOK_GENRE[b.bookNumber] === genre),
+      rng,
+    ).slice(0, REFERENCE_POOL_BOOKS);
+  } else {
+    candidates = shuffledBooks(books, rng).slice(0, REFERENCE_POOL_BOOKS);
+  }
+  // The correct book is always fetched, tier 2 or not: without it a step
+  // could not even format its OWN correct answer's chapter/verse bounds.
+  if (!candidates.some((b) => b.bookNumber === correctBookNumber)) {
+    const correctBook = books.find((b) => b.bookNumber === correctBookNumber);
+    if (correctBook) candidates = [correctBook, ...candidates];
+  }
+
+  const chapters: Record<number, { chapter: number; verseCount: number }[]> = {};
+  for (const book of candidates) {
+    const list = await getChaptersCached(book.bookNumber);
+    chapters[book.bookNumber] = list.map((c) => ({
+      chapter: c.chapter,
+      verseCount: c.verseCount,
+    }));
+  }
+
+  return {
+    books: books.map((b) => ({ bookNumber: b.bookNumber, chapterCount: b.chapterCount })),
+    chapters,
+    bookNames,
+  };
+}
+
+/** Fisher-Yates over a `BibleBookDto[]`, using the session's own injected RNG. */
+function shuffledBooks(books: BibleBookDto[], rng: () => number): BibleBookDto[] {
+  const out = books.slice();
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    const a = out[i] as BibleBookDto;
+    out[i] = out[j] as BibleBookDto;
+    out[j] = a;
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Activation
@@ -134,7 +315,8 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
     const db = await api.storage.openDatabase(DB_NAME);
     await migrate(db);
     store = new MemoryStore(db);
-    collectionId = await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now());
+    defaultCollectionId = await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now());
+    await renameLegacyDefaultCollection();
     ready = true;
   } catch (err) {
     console.error(
@@ -177,6 +359,51 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
   });
 
   console.log('Scripture Memory activated');
+}
+
+/**
+ * One-time, idempotent upgrade: a database created before T5 has exactly one
+ * collection, still named the old default `'My plan'`. Rename it to
+ * `'Default'` so it reads correctly under the new naming.
+ *
+ * Guarded on BOTH "exactly one list" and "still literally named the old
+ * default" so this can never fire a second time (the name will not match
+ * once it has been renamed) and never fires wrongly once the user has
+ * created a second list or renamed the first one themselves - either of
+ * which is a deliberate choice this upgrade must not undo.
+ */
+async function renameLegacyDefaultCollection(): Promise<void> {
+  const collections = await store.listCollections();
+  if (collections.length !== 1) return;
+  if (collections[0]!.name !== LEGACY_DEFAULT_COLLECTION_NAME) return;
+  await store.renameCollection(collections[0]!.id, DEFAULT_COLLECTION_NAME);
+}
+
+/**
+ * The Default list's id right now, without creating anything - for display
+ * purposes only (`buildPlanView`'s `collectionId` field). `undefined` when no
+ * list is named `'Default'` (the user renamed or deleted it); callers that
+ * need a real target to write into use `resolveAddTargetCollectionId`, which
+ * creates one if it has to.
+ */
+function findDefaultListId(lists: { id: number; name: string }[]): number | undefined {
+  return lists.find((c) => c.name === DEFAULT_COLLECTION_NAME)?.id;
+}
+
+/**
+ * Where `addPassage` should land right now: the currently scoped list, or -
+ * scope `'all'` - the Default list, created fresh if something has deleted
+ * it since activation.
+ */
+async function resolveAddTargetCollectionId(): Promise<number> {
+  const scope = await store.getScope();
+  if (scope.kind === 'list') return scope.id;
+
+  const lists = await store.listCollections();
+  const existing = findDefaultListId(lists);
+  if (existing !== undefined) return existing;
+  const created = await store.createCollection(DEFAULT_COLLECTION_NAME, Date.now());
+  return created.id;
 }
 
 /**
@@ -289,7 +516,10 @@ async function registerCommands(): Promise<void> {
   }
 
   await api.runtime.expose('practiceDue', async () => {
-    const next = await store.nextDueCard(Date.now());
+    // Same global choice as `refreshStatusBar`: this command is reached from
+    // the palette or the status bar item, neither of which is scoped to one
+    // list.
+    const next = await store.nextDueCard({ kind: 'all' }, Date.now());
     if (!next) {
       await api.ui.showNotification('Nothing is due right now.');
       return;
@@ -335,7 +565,10 @@ async function registerContextMenu(): Promise<void> {
  * dispose and recreate an identical item on every scheduling tick.
  */
 async function refreshStatusBar(): Promise<void> {
-  const count = await store.dueCount(Date.now());
+  // Global on purpose: the status bar item is a system-wide reminder, not a
+  // reflection of whatever list a panel happens to have scoped right now -
+  // and a panel need not even be open for it to matter.
+  const count = await store.dueCount({ kind: 'all' }, Date.now());
   const text = count === 0 ? 'Memory: up to date' : `Memory: ${count} due`;
   if (text === lastStatusText) return;
 
@@ -391,7 +624,7 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       return buildPlanView();
 
     case 'getAnalytics':
-      return store.analytics(collectionId, Date.now());
+      return store.analytics(await store.getScope(), Date.now());
 
     case 'getSettings':
       return { defaultAnswerMode: await store.getDefaultAnswerMode() };
@@ -419,8 +652,21 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       await refreshStatusBar();
       return {};
 
+    case 'resetPassageProgress':
+      // The only action that can lower a level. `Date.now()` is the reset
+      // boundary and attempts are compared strictly against it, so a session
+      // finishing in the same millisecond belongs to the run being discarded
+      // - see `store.ts#listTierProgress`.
+      await store.resetPassageProgress(req.passageId, Date.now());
+      await refreshStatusBar();
+      void api.panels.postMessage({ type: 'planChanged' });
+      // Unlike `removePassage`, the reply carries the rebuilt plan: the
+      // screen that asked is showing the levels that just changed, and
+      // waiting for the push to come round would flash the old ones.
+      return buildPlanView();
+
     case 'startSession':
-      return startSession(req.passageId, req.rung, req.restart ?? false);
+      return startSession(req.passageId, req.rung, req.restart ?? false, req.tier);
 
     case 'submitStep':
       return submitStep(req.sessionId, req.answer);
@@ -438,6 +684,39 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       await api.bible.navigateToVerse(req.verseId);
       return {};
 
+    case 'getPassageView':
+      return buildPassageView(req.passageId);
+
+    case 'createList':
+      await store.createCollection(req.name, Date.now());
+      void api.panels.postMessage({ type: 'planChanged' });
+      return buildPlanView();
+
+    case 'renameList':
+      await store.renameCollection(req.id, req.name);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return buildPlanView();
+
+    case 'deleteList':
+      // Throws a readable error (and touches nothing) when `req.id` is the
+      // only list - see `store.ts#deleteCollection`. Passages, cards and
+      // attempt history all move to `movePassagesTo` first.
+      await store.deleteCollection(req.id, req.movePassagesTo);
+      await refreshStatusBar();
+      void api.panels.postMessage({ type: 'planChanged' });
+      return buildPlanView();
+
+    case 'movePassage':
+      await store.movePassage(req.passageId, req.collectionId);
+      await refreshStatusBar();
+      void api.panels.postMessage({ type: 'planChanged' });
+      return buildPlanView();
+
+    case 'setScope':
+      await store.setScope(req.scope);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return buildPlanView();
+
     default: {
       const exhaustive: never = req;
       throw new Error(`Unknown request: ${JSON.stringify(exhaustive)}`);
@@ -449,69 +728,154 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
 // Views
 // ---------------------------------------------------------------------------
 
-async function buildPlanView(): Promise<PlanView> {
-  const now = Date.now();
-  const passages = await store.listPassages(collectionId);
-  const siblingCount = passages.length;
-  const views: PassageView[] = [];
-  let totalDue = 0;
+/**
+ * One passage's ladder, as both the plan list and the passage screen need it.
+ *
+ * Factored out of `buildPlanView` so `getPassageView` can build a single
+ * passage's view (`buildPassageView`) without fetching every other passage in
+ * the plan to get there - the whole point of that request existing (see
+ * `types.ts#RequestMap.getPassageView`).
+ */
+async function assemblePassageView(
+  passage: Passage,
+  cards: Card[],
+  tierRows: Map<number, TierProgressRow[]>,
+  scope: ScopeFacts,
+  now: number,
+): Promise<PassageView> {
+  const applicable = new Set(
+    applicableRungs(passage.verseCount, scope.siblingCount, scope.scopeVerseCount),
+  );
+  const rungs: RungView[] = [];
+  let bestLevel = 0;
+  let dueCount = 0;
 
-  for (const passage of passages) {
-    const applicable = new Set(applicableRungs(passage.verseCount, siblingCount));
-    const cards = await store.listCards(passage.id);
-    const rungs: RungView[] = [];
-    let bestLevel = 0;
-    let dueCount = 0;
-
-    for (const c of cards) {
-      const isApplicable = applicable.has(c.rung);
-      const level = levelFromScore(c.lastScore);
-      if (isApplicable) {
-        bestLevel = Math.max(bestLevel, level);
-        if (isDue(c.dueAt, now)) dueCount += 1;
-      }
-
-      const totalSteps = totalStepsFor(c.rung, passage.verseCount);
-      const resumeRow = await store.getResume(c.id);
-      const resume =
-        resumeRow && resumeRow.cursor > 0 && resumeRow.cursor < totalSteps
-          ? { stepsDone: resumeRow.cursor, totalSteps }
-          : null;
-
-      rungs.push({
-        rung: c.rung,
-        level,
-        dueAt: c.dueAt,
-        streak: c.streak,
-        lastScore: c.lastScore,
-        applicable: isApplicable,
-        resume,
-      });
+  for (const c of cards) {
+    const isApplicable = applicable.has(c.rung);
+    // The level is derived from per-tier bests over the whole history, not
+    // from `c.lastScore`. That is what makes it non-regressing: a bad
+    // session below still moves `dueAt` closer without moving this number.
+    const progress = summarizeActivity(c.rung, tierRows.get(c.id) ?? []);
+    const level = levelForActivity(progress);
+    if (isApplicable) {
+      bestLevel = Math.max(bestLevel, level);
+      if (isDue(c.dueAt, now)) dueCount += 1;
     }
 
-    totalDue += dueCount;
-    views.push({
-      passage,
-      rungs,
-      dueCount,
-      bestLevel,
-      wellLearned: bestLevel >= WELL_LEARNED_LEVEL,
+    // `totalStepsFor` needs the resume row's OWN tier, not the tier a fresh
+    // session would auto-select: `blanks` has a different step count per
+    // tier, so sizing this against today's suggested tier could make a
+    // perfectly valid tier-0 resume point read as "past the end" (or vice
+    // versa) the moment `nextTier` moves on.
+    const resumeRow = await store.getResume(c.id);
+    const totalSteps = totalStepsFor(c.rung, passage.verseCount, resumeRow?.tier ?? 0);
+    const resume =
+      resumeRow && resumeRow.cursor > 0 && resumeRow.cursor < totalSteps
+        ? { stepsDone: resumeRow.cursor, totalSteps }
+        : null;
+
+    rungs.push({
+      rung: c.rung,
+      level,
+      dueAt: c.dueAt,
+      streak: c.streak,
+      lastScore: c.lastScore,
+      applicable: isApplicable,
+      resume,
+      tiers: progress.totalTiers,
+      tiersPassed: progress.tiersPassed,
+      bestScore: progress.bestScore,
+      attempts: progress.attempts,
+      nextTier: progress.nextTier,
     });
   }
 
   return {
-    collectionId,
-    collectionName: DEFAULT_COLLECTION_NAME,
+    passage,
+    rungs: inRungOrder(rungs),
+    dueCount,
+    bestLevel,
+    // Not `bestLevel >= 4` any more: every applicable activity has to be
+    // satisfied, and an empty applicable set is never satisfied - see
+    // `PassageView.wellLearned`.
+    wellLearned: passageWellLearned(rungs),
+  };
+}
+
+async function buildPlanView(): Promise<PlanView> {
+  const now = Date.now();
+  const scope = await store.getScope();
+  const passages = await store.listPassagesInScope(scope);
+  const scopeFacts = scopeOf(passages);
+  // One query for the whole plan's attempt history, reduced in SQL. A plan of
+  // thirty passages is ~150 cards, and every one of their levels is needed to
+  // draw the list.
+  const tierRows = byCard(await store.listTierProgress(passages.map((p) => p.id)));
+  const views: PassageView[] = [];
+  let totalDue = 0;
+
+  for (const passage of passages) {
+    const cards = await store.listCards(passage.id);
+    const view = await assemblePassageView(passage, cards, tierRows, scopeFacts, now);
+    totalDue += view.dueCount;
+    views.push(view);
+  }
+
+  const lists = await store.listCollections();
+  const scopedListId = scope.kind === 'list' ? scope.id : findDefaultListId(lists);
+  const scopedList = scopedListId !== undefined ? lists.find((l) => l.id === scopedListId) : undefined;
+
+  return {
+    // The list `addPassage` would target right now - see the field's own doc
+    // comment in `types.ts` for why this is kept rather than dropped.
+    collectionId: scopedListId ?? defaultCollectionId,
+    collectionName: scopedList ? scopedList.name : 'All lists',
+    lists,
+    scope: scope.kind === 'all' ? 'all' : scope.id,
+    scopeVerseCount: scopeFacts.scopeVerseCount,
+    referenceActivitiesUnlocked: scopeFacts.scopeVerseCount >= MIN_VERSES_FOR_REFERENCE_ACTIVITIES,
     passages: views,
     totalDue,
     defaultAnswerMode: await store.getDefaultAnswerMode(),
   };
 }
 
-/** How many verses (or ordering placements) one pass through a rung takes. */
-function totalStepsFor(rung: Rung, verseCount: number): number {
+/**
+ * One passage's view on its own, for `getPassageView` - without rebuilding
+ * the whole plan just to find one row in it, the inefficiency the request was
+ * added to avoid.
+ *
+ * Scoped to the passage's OWN list, not the panel's current browsing scope:
+ * a passage's applicable activities are a property of the list it actually
+ * belongs to (D2(i) - a passage lives in exactly one list), not of whatever
+ * the plan list happens to be filtered to when this is requested.
+ */
+async function buildPassageView(passageId: number): Promise<PassageView> {
+  const passage = await store.getPassage(passageId);
+  if (!passage) throw new Error('That passage is no longer in your plan.');
+
+  const siblings = await store.listPassages(passage.collectionId);
+  const scopeFacts = scopeOf(siblings);
+  const cards = await store.listCards(passage.id);
+  const tierRows = byCard(await store.listTierProgress([passage.id]));
+
+  return assemblePassageView(passage, cards, tierRows, scopeFacts, Date.now());
+}
+
+/**
+ * How many verses (or ordering placements) one pass through a rung takes.
+ *
+ * `tier` only matters for `blanks`: tier 1 is one step for the whole passage
+ * regardless of `verseCount`, mirroring `Session#totalSteps` in `session.ts`.
+ */
+function totalStepsFor(rung: Rung, verseCount: number, tier = 0): number {
   if (rung === 'ordering') return Math.max(1, verseCount - 1);
-  if (rung === 'refmatch') return 1;
+  // One question per verse of the passage, capped - see `session.ts`'s
+  // `MAX_REFERENCE_STEPS` and `Session#verseSteps`, which this mirrors.
+  if (rung === 'refmatch' || rung === 'refprovide') {
+    return Math.min(Math.max(1, verseCount), MAX_REFERENCE_STEPS);
+  }
+  if (rung === 'blanks' && tier >= 1) return 1;
   return verseCount;
 }
 
@@ -533,12 +897,15 @@ async function buildContext(
   const passage = await store.getPassage(passageId);
   if (!passage) throw new Error('That passage is no longer in your plan.');
 
-  const verses = await fetchVerses(passage.startVerseId, passage.endVerseId, passage.moduleId);
+  const label = makeLabeller(passage.startVerseId, passage.endVerseId);
+
+  const verses = await fetchVerses(passage.startVerseId, passage.endVerseId, passage.moduleId, label);
 
   const before = await fetchVersesSafely(
     passage.startVerseId - CONTEXT_VERSES,
     passage.startVerseId - 1,
     passage.moduleId,
+    label,
   );
 
   const after = opts.withholdAfter
@@ -547,14 +914,20 @@ async function buildContext(
         passage.endVerseId + 1,
         passage.endVerseId + CONTEXT_VERSES,
         passage.moduleId,
+        label,
       );
 
   return { passageId, reference: passage.reference, before, verses, after };
 }
 
-async function fetchVerses(start: number, end: number, moduleId: string): Promise<VerseText[]> {
+async function fetchVerses(
+  start: number,
+  end: number,
+  moduleId: string,
+  label: (verseId: number) => string = labelFor,
+): Promise<VerseText[]> {
   const dtos = await api.bible.getRange(start, end, { module: moduleId });
-  return dtos.map((d: BibleVerseDto) => toVerseText(d, labelFor(d.verseId)));
+  return dtos.map((d: BibleVerseDto) => toVerseText(d, label(d.verseId)));
 }
 
 /**
@@ -568,10 +941,11 @@ async function fetchVersesSafely(
   start: number,
   end: number,
   moduleId: string,
+  label: (verseId: number) => string = labelFor,
 ): Promise<VerseText[]> {
   if (end < start) return [];
   try {
-    return await fetchVerses(start, end, moduleId);
+    return await fetchVerses(start, end, moduleId, label);
   } catch {
     return [];
   }
@@ -635,10 +1009,11 @@ async function addPassageFromReference(reference: string) {
   const moduleId = await activeModuleId();
   const resolved = await resolveReference(api, reference, moduleId);
   const now = Date.now();
+  const targetCollectionId = await resolveAddTargetCollectionId();
 
   const { passage, created } = await store.addPassage(
     {
-      collectionId,
+      collectionId: targetCollectionId,
       moduleId,
       startVerseId: resolved.startVerseId,
       endVerseId: resolved.endVerseId,
@@ -661,10 +1036,11 @@ async function addPassageFromVerseId(
 ): Promise<void> {
   const moduleId = await activeModuleId(preferredModule ?? activeModule);
   const now = Date.now();
+  const targetCollectionId = await resolveAddTargetCollectionId();
 
   const { created } = await store.addPassage(
     {
-      collectionId,
+      collectionId: targetCollectionId,
       moduleId,
       startVerseId,
       endVerseId,
@@ -696,12 +1072,25 @@ async function addPassageFromVerseId(
  * There is no more `replay` distinction: nothing is locked, so every attempt
  * here is a live one and reschedules its card in `finishSession`.
  */
-async function startSession(passageId: number, rung: Rung | undefined, restart: boolean) {
+async function startSession(
+  passageId: number,
+  rung: Rung | undefined,
+  restart: boolean,
+  tier?: number,
+) {
   const passage = await store.getPassage(passageId);
   if (!passage) throw new Error('That passage is no longer in your plan.');
 
-  const siblings = (await store.listPassages(collectionId)).filter((p) => p.id !== passageId);
-  const applicable = applicableRungs(passage.verseCount, siblings.length + 1);
+  // The passage's own list, not the panel's current browsing scope - see
+  // `buildPassageView`'s doc comment for why applicability is anchored to a
+  // passage's actual list (D2(i)) rather than to whatever is being viewed.
+  const all = await store.listPassages(passage.collectionId);
+  const scope = scopeOf(all);
+  const applicable = applicableRungs(
+    passage.verseCount,
+    scope.siblingCount,
+    scope.scopeVerseCount,
+  );
 
   const now = Date.now();
   const chosen = rung ?? (await suggestedRungForPassage(passage, applicable, now));
@@ -712,20 +1101,102 @@ async function startSession(passageId: number, rung: Rung | undefined, restart: 
   const card = await store.getCard(passageId, chosen);
   if (!card) throw new Error('That exercise has not been set up for this passage.');
 
-  if (restart) await store.clearResume(card.id);
-  const resumeRow = restart ? undefined : await store.getResume(card.id);
+  // Resolved decision D4: omitted, serve the lowest tier not yet passed (or
+  // the hardest tier once every tier has been passed) - the same computation
+  // `RungView.nextTier` exposes for display, via the same `summarizeActivity`
+  // helper. Given explicitly, the tier is validated rather than clamped: a
+  // stale or malicious panel request for a tier that does not exist gets a
+  // readable error, not a silently different exercise.
+  const totalTiers = TIERS[chosen];
+  let selectedTier: number;
+  if (tier !== undefined) {
+    if (!Number.isInteger(tier) || tier < 0 || tier >= totalTiers) {
+      throw new Error(
+        `That difficulty tier does not exist for this exercise ` +
+          `(it has ${totalTiers} tier${totalTiers === 1 ? '' : 's'}).`,
+      );
+    }
+    selectedTier = tier;
+  } else {
+    const tierRows = byCard(await store.listTierProgress([passageId]));
+    selectedTier = summarizeActivity(chosen, tierRows.get(card.id) ?? []).nextTier;
+  }
 
-  const verses = await fetchVerses(passage.startVerseId, passage.endVerseId, passage.moduleId);
+  if (restart) await store.clearResume(card.id);
+  let resumeRow = restart ? undefined : await store.getResume(card.id);
+  // A resume point taken at a different tier cannot be reapplied here: tiers
+  // can have different step counts and different candidate sets (`ordering`,
+  // `blanks`), so its `cursor` would either be misinterpreted or point past
+  // an activity that no longer has that many steps. Switching tier drops the
+  // stale resume rather than misapplying it - the user restarts that tier's
+  // activity from the top, same as an explicit `restart`.
+  if (resumeRow && resumeRow.tier !== selectedTier) {
+    await store.clearResume(card.id);
+    resumeRow = undefined;
+  }
+
+  const verses = await fetchVerses(
+    passage.startVerseId,
+    passage.endVerseId,
+    passage.moduleId,
+    makeLabeller(passage.startVerseId, passage.endVerseId),
+  );
   const answerMode: AnswerMode = passage.answerMode ?? (await store.getDefaultAnswerMode());
+
+  // `refmatch` needs a pre-fetched distractor pool (see `buildReferenceCatalog`)
+  // and a sanity check that the pool is not degenerate; `refprovide` needs the
+  // host's own reference parser, injected rather than reached into directly so
+  // grading stays inside `Session` alongside every other rung's grading. Both
+  // are built here, in the worker, from the worker's own host API access -
+  // never something the panel could supply or fake.
+  let referencePoints: ReferencePoint[] | undefined;
+  let referenceCatalog: ReferenceCatalog | undefined;
+  let parseReferenceFn: ((input: string) => Promise<ParsedReferenceDto | null>) | undefined;
+
+  if (chosen === 'refmatch') {
+    referencePoints = referencePointsFor(verses);
+    const correctBook = referencePoints[0]?.bookNumber;
+    if (correctBook === undefined) {
+      throw new Error('That passage has no verses to match a reference against.');
+    }
+    referenceCatalog = await buildReferenceCatalog(
+      correctBook,
+      selectedTier,
+      makeRng(now ^ passageId ^ 0x5eed),
+    );
+    // Item 4 of the task: `applicableRungs` cannot know how many distinct
+    // references its own pool can generate (it has no host access), so the
+    // floor it is gated on there is only a cheap proxy. This is the real
+    // check, against the actual fetched pool, right before a session that
+    // could not be answered meaningfully would otherwise be served.
+    const sample = buildReferenceDistractors({
+      correct: referencePoints[0] as ReferencePoint,
+      tier: selectedTier,
+      books: referenceCatalog.books,
+      chapters: referenceCatalog.chapters,
+      bookNames: referenceCatalog.bookNames,
+      count: 3,
+      rng: makeRng(now ^ passageId ^ 0xc0ffee),
+    });
+    if (sample.length < 3) {
+      throw new Error(
+        'Not enough distinct references are available for this exercise yet.',
+      );
+    }
+  } else if (chosen === 'refprovide') {
+    parseReferenceFn = (input: string) => api.bible.parseReference(input);
+  }
 
   const session = new Session({
     sessionId: nextSessionId(),
     passageId,
     cardId: card.id,
     rung: chosen,
+    tier: selectedTier,
     verses,
-    siblings: siblings.map((p) => ({ passageId: p.id, reference: p.reference })),
-    self: { passageId, reference: passage.reference },
+    referencePoints,
+    referenceCatalog,
+    parseReference: parseReferenceFn,
     answerMode,
     rng: makeRng(now ^ passageId),
     resume: resumeRow
@@ -757,11 +1228,15 @@ async function suggestedRungForPassage(
 ): Promise<Rung> {
   let dueBest: { rung: Rung; dueAt: number } | null = null;
   const levels = new Map<Rung, number>();
+  const tierRows = byCard(await store.listTierProgress([passage.id]));
 
   for (const rung of applicable) {
     const card = await store.getCard(passage.id, rung);
     if (!card) continue;
-    levels.set(rung, levelFromScore(card.lastScore));
+    // The same derived level the plan screen shows. Reading `lastScore` here
+    // instead would suggest an activity the user's own screen says is
+    // finished, on the strength of one bad session.
+    levels.set(rung, levelForActivity(summarizeActivity(rung, tierRows.get(card.id) ?? [])));
     if (isDue(card.dueAt, now) && (dueBest === null || (card.dueAt as number) < dueBest.dueAt)) {
       dueBest = { rung, dueAt: card.dueAt as number };
     }
@@ -778,7 +1253,13 @@ async function submitStep(sessionId: string, answer: StepAnswer) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('That practice session has ended. Start it again.');
 
-  const result = session.submit(answer);
+  // `submit` is async because `refprovide` grades against a host round trip
+  // (`api.bible.parseReference`) - see `session.ts#Session.submit`. A parse
+  // failure thrown by the host is not caught here: it propagates out of this
+  // function, back through `dispatch`, to `handlePanelMessage`'s top-level
+  // catch, which turns it into a readable `{ ok: false }` reply without
+  // losing the session - the same path every other worker-side error uses.
+  const result = await session.submit(answer);
   let summary: SessionSummary | null = null;
 
   if (session.isFinished) {
@@ -794,6 +1275,7 @@ async function submitStep(sessionId: string, answer: StepAnswer) {
         cursor: session.cursorIndex,
         correctFirst: session.correctFirst,
         gradedUnits: session.gradedTotal,
+        tier: session.tier,
       },
       Date.now(),
     );
@@ -821,6 +1303,7 @@ async function finishSession(session: Session): Promise<SessionSummary> {
     correctFirst: session.correctFirst,
     totalSteps: session.gradedTotal,
     durationMs: Math.max(0, now - startedAt),
+    tier: session.tier,
   });
   await store.clearResume(session.cardId);
 
@@ -839,39 +1322,50 @@ async function finishSession(session: Session): Promise<SessionSummary> {
   await refreshStatusBar();
   void api.panels.postMessage({ type: 'planChanged' });
 
+  // Read back AFTER the attempt row was written, so the level reported here
+  // is the same one the plan view will show a moment later. Reporting
+  // `levelFromScore(score)` - what v1 did - would now contradict the screen
+  // the user lands on: this attempt's score is only one input to the level.
+  const tierRows = byCard(await store.listTierProgress([session.passageId]));
+  const level = levelForActivity(
+    summarizeActivity(session.rung, tierRows.get(card.id) ?? []),
+  );
+
   return {
     passageId: session.passageId,
     rung: session.rung,
+    tier: session.tier,
+    tiers: TIERS[session.rung],
     score,
     correctFirst: session.correctFirst,
     totalSteps: session.gradedTotal,
     nextDueAt: result.dueAt,
-    level: levelFromScore(score),
-    passageWellLearned: await isPassageWellLearned(session.passageId, session.rung, score),
+    level,
+    passageWellLearned: await isPassageWellLearned(session.passageId),
   };
 }
 
 /**
- * Whether the passage is "well learned" after this attempt - the highest
- * level across every applicable rung, this attempt's included. See
- * `PassageView.bestLevel`: a level earned on one rung counts for the whole
- * passage without being written onto the others.
+ * Whether the passage is "well learned" - EVERY applicable activity
+ * satisfied, over a non-empty set.
+ *
+ * This replaces v1's "the best applicable rung reached level 4". The old rule
+ * let one mastered activity speak for activities the user had never opened;
+ * the new one only lets a *harder* activity speak for an easier one, and only
+ * inside the text-recall chain (`ladder.ts#TEXT_RECALL_CHAIN`), because
+ * reciting a passage from first letters really does demonstrate the ordering
+ * and the missing words, while knowing its words says nothing about knowing
+ * its address.
+ *
+ * Called after the attempt has been recorded, so nothing needs to be passed
+ * in about the session that just finished - it is already part of the
+ * history this reads.
  */
-async function isPassageWellLearned(
-  passageId: number,
-  justAttempted: Rung,
-  justAttemptedScore: number,
-): Promise<boolean> {
+async function isPassageWellLearned(passageId: number): Promise<boolean> {
   const passage = await store.getPassage(passageId);
   if (!passage) return false;
-  const siblingCount = (await store.listPassages(collectionId)).length;
-  const applicable = applicableRungs(passage.verseCount, siblingCount);
-
-  let bestLevel = levelFromScore(justAttemptedScore);
-  for (const rung of applicable) {
-    if (rung === justAttempted) continue;
-    const card = await store.getCard(passageId, rung);
-    if (card) bestLevel = Math.max(bestLevel, levelFromScore(card.lastScore));
-  }
-  return bestLevel >= WELL_LEARNED_LEVEL;
+  const scope = scopeOf(await store.listPassages(passage.collectionId));
+  const cards = await store.listCards(passageId);
+  const tierRows = byCard(await store.listTierProgress([passageId]));
+  return passageWellLearned(activityLevels(passage, cards, tierRows, scope));
 }

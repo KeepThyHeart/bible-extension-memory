@@ -61,7 +61,20 @@ export const PREVIEW_MAX_LINES = 3;
  * string. The panel owns pixels, and how a cut is signalled - a fading edge, a
  * character, nothing at all - is a pixel decision.
  */
-export function preview(verse: VerseText): { preview: string; truncated: boolean } {
+export interface PreviewOptions {
+  /** Word cap. Defaults to `PREVIEW_MAX_WORDS`. */
+  maxWords?: number;
+  /** Poetic-line cap, applied before the word cap. Defaults to `PREVIEW_MAX_LINES`. */
+  maxLines?: number;
+}
+
+export function preview(
+  verse: VerseText,
+  options: PreviewOptions = {},
+): { preview: string; truncated: boolean } {
+  const maxWords = options.maxWords ?? PREVIEW_MAX_WORDS;
+  const maxLines = options.maxLines ?? PREVIEW_MAX_LINES;
+
   const words = verse.words;
   if (!words || words.length === 0) return { preview: '', truncated: false };
 
@@ -70,8 +83,8 @@ export function preview(verse: VerseText): { preview: string; truncated: boolean
   // The line cut comes first, so that a verse of four short lines is cut at a
   // line boundary rather than 25 words into the fourth one.
   const lines = verse.lines;
-  if (lines && lines.length > PREVIEW_MAX_LINES) {
-    const lastKept = lines[PREVIEW_MAX_LINES - 1];
+  if (lines && lines.length > maxLines) {
+    const lastKept = lines[maxLines - 1];
     // `end` is inclusive, so the exclusive slice bound is `end + 1`. Guard
     // against a malformed range rather than producing an empty preview: a
     // module with bad formatting data should degrade to "no line cut", not to
@@ -80,13 +93,25 @@ export function preview(verse: VerseText): { preview: string; truncated: boolean
     if (bound > 0 && bound < limit) limit = bound;
   }
 
-  if (limit > PREVIEW_MAX_WORDS) limit = PREVIEW_MAX_WORDS;
+  if (limit > maxWords) limit = maxWords;
 
   return {
     preview: words.slice(0, limit).join(' '),
     truncated: limit < words.length,
   };
 }
+
+/**
+ * Which verses a picker step's distractors are drawn from - the ordering
+ * rung's own tiers (`ladder.ts#TIERS.ordering`).
+ *
+ *   - `'scattered'`   - tier 0, today's behaviour: distractors are drawn from
+ *     anywhere in the unplaced remainder of the passage.
+ *   - `'contiguous'`  - tier 1: distractors are the verses immediately
+ *     FOLLOWING the correct one in sequence - the ones most likely to be
+ *     confused with it - rather than a random draw from the whole remainder.
+ */
+export type CandidateMode = 'scattered' | 'contiguous';
 
 /**
  * Build the candidate list for one picker step.
@@ -103,15 +128,26 @@ export function preview(verse: VerseText): { preview: string; truncated: boolean
  * @param rng  Injected for reproducibility. The default is seeded from the
  *   step's own identity, so re-serving the same step after a wrong pick
  *   produces the identical list in the identical order - see `rng.ts`.
+ * @param previewOptions  Passed straight through to `preview`. Omit for the
+ *   normal capped preview; a caller that wants the full verse text (the
+ *   ordering rung's own candidates - see `Session.prepareStep`) passes
+ *   `{ maxWords: Infinity, maxLines: Infinity }`.
+ * @param mode  `'scattered'` (default, tier 0) or `'contiguous'` (tier 1) -
+ *   see `CandidateMode`. Near the end of a passage, fewer than `count - 1`
+ *   verses may remain after the correct one in `'contiguous'` mode; that
+ *   yields a shorter-than-usual list rather than an error, same as
+ *   `'scattered'` running short - the correct answer is always present.
  */
 export function buildCandidates(
   remaining: VerseText[],
   correctVerseId: number,
   count: number,
   rng: Rng = mulberry32(seedFrom(correctVerseId, count, remaining.length)),
+  previewOptions?: PreviewOptions,
+  mode: CandidateMode = 'scattered',
 ): PickerCandidate[] {
-  const correct = remaining.find((v) => v.verseId === correctVerseId);
-  if (!correct) {
+  const correctIndex = remaining.findIndex((v) => v.verseId === correctVerseId);
+  if (correctIndex === -1) {
     // A programming error in the session runner, not user input. Throwing is
     // right: the worker turns it into `{ ok: false, error }` at the RPC edge,
     // and a picker silently missing its answer would be unwinnable.
@@ -119,6 +155,7 @@ export function buildCandidates(
       `buildCandidates: correct verse ${correctVerseId} is not in the remaining verses`,
     );
   }
+  const correct = remaining[correctIndex] as VerseText;
 
   // At least the correct verse; asking for more than exist is not an error,
   // it just yields a shorter list. The last step of a passage necessarily has
@@ -126,16 +163,23 @@ export function buildCandidates(
   // that policy belongs to the runner, not here.
   const wanted = Math.max(1, Math.floor(count));
 
-  const distractors = shuffled(
-    remaining.filter((v) => v.verseId !== correctVerseId),
-    rng,
-  ).slice(0, wanted - 1);
+  const distractors =
+    mode === 'contiguous'
+      ? // The next `wanted - 1` verses in sequence after the correct one -
+        // deliberately NOT shuffled before this slice, so "contiguous" means
+        // what it says: the verses that actually follow, not a random subset
+        // of them.
+        remaining.slice(correctIndex + 1, correctIndex + wanted)
+      : shuffled(
+          remaining.filter((v) => v.verseId !== correctVerseId),
+          rng,
+        ).slice(0, wanted - 1);
 
   // Shuffle again with the correct verse mixed in. Without this second pass
   // the answer's position would be a function of how many distractors were
   // available, which a user notices within about three steps.
   return shuffled([correct, ...distractors], rng).map((verse) => {
-    const p = preview(verse);
+    const p = preview(verse, previewOptions);
     return { verseId: verse.verseId, preview: p.preview, truncated: p.truncated };
   });
 }

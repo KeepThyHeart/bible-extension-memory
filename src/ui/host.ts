@@ -51,9 +51,11 @@ export interface PanelHost {
    * can start one, and because a failure to start has to be reported
    * somewhere that survives the view being replaced. `restart` clears any
    * paused position on that activity first - the passage screen's "Restart"
-   * button, as opposed to "Resume" or an ordinary "Practice".
+   * button, as opposed to "Resume" or an ordinary "Practice". `tier` picks a
+   * specific difficulty tier of `rung`; omitted, the worker auto-selects one
+   * (see `PanelRequest`'s `startSession` variant in `types.ts`).
    */
-  startSession(passageId: number, rung?: Rung, restart?: boolean): Promise<void>;
+  startSession(passageId: number, rung?: Rung, restart?: boolean, tier?: number): Promise<void>;
 
   /** Asks the main app to move its Bible pane to a verse. */
   openInBible(verseId: number): void;

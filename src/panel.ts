@@ -23,7 +23,7 @@
 import { BibleExtUI } from '@bible/extension-ui';
 import type { ThemeInfo } from '@bible/extension-ui';
 
-import type { PanelReply, PanelRequest, PassageView, RequestMap, Rung } from './types';
+import type { PanelReply, PanelRequest, RequestMap, Rung } from './types';
 import { clear, el } from './ui/dom';
 import { errorBanner } from './ui/components';
 import type { PanelHost } from './ui/host';
@@ -32,6 +32,7 @@ import { PracticeView } from './ui/practiceView';
 import { renderPlan } from './ui/planView';
 import { renderAnalytics } from './ui/analyticsView';
 import { renderPassageScreen } from './ui/passageView';
+import { renderManagePassages } from './ui/managePassagesView';
 import { renderSettings } from './ui/settingsView';
 import { call } from './ui/rpc';
 import { INITIAL_NAV, navReduce, sameView } from './ui/state';
@@ -104,7 +105,7 @@ const host: PanelHost = {
     return activeReference;
   },
 
-  async startSession(passageId: number, rung?: Rung, restart?: boolean): Promise<void> {
+  async startSession(passageId: number, rung?: Rung, restart?: boolean, tier?: number): Promise<void> {
     // Optional keys are omitted entirely rather than sent as `undefined`.
     // `types.ts` requires structured-cloneable JSON, and an explicit
     // `undefined` is the one value that does not survive that trip intact -
@@ -114,6 +115,7 @@ const host: PanelHost = {
       passageId,
       ...(rung !== undefined ? { rung } : {}),
       ...(restart ? { restart: true } : {}),
+      ...(tier !== undefined ? { tier } : {}),
     };
 
     const reply = await call(bible, request);
@@ -183,24 +185,29 @@ async function buildScreen(): Promise<HTMLElement> {
     }
 
     case 'passage': {
-      // There is no `getPassage` in the protocol, so this screen reads the
-      // plan and picks its passage out of it. That is a larger reply than this
-      // screen needs, but it is one request rather than two and it guarantees
-      // this screen and the plan can never disagree about a passage's levels.
+      // T5 added `getPassageView` to the protocol specifically so this screen
+      // no longer has to read the *whole* plan and pick its passage out of it
+      // by id - the previous approach here, kept only in spirit by this
+      // comment now that it is gone. A dedicated request is smaller, and it
+      // still needs `getSettings` only for `defaultAnswerMode`, which
+      // `getPlan` used to carry along for free; `getPassageView` does not
+      // return it, so it is fetched alongside.
       const passageId = nav.view.passageId;
-      const reply = await host.request({ type: 'getPlan' });
-      if (!reply.ok) return failure(reply.error);
-
-      const found: PassageView | undefined = reply.data.passages.find(
-        (p) => p.passage.id === passageId,
-      );
-      if (!found) {
-        // Removed elsewhere between the click and the fetch.
+      const [passageReply, settingsReply] = await Promise.all([
+        host.request({ type: 'getPassageView', passageId }),
+        host.request({ type: 'getSettings' }),
+      ]);
+      if (!passageReply.ok) {
+        // Removed elsewhere between the click and the fetch reads the same as
+        // any other failure to the worker, but this one has a specific,
+        // friendlier story: fall back to the plan rather than an error banner.
         announce('That passage is no longer in your plan.');
         nav = navReduce(nav, { type: 'passageRemoved', passageId });
-        return renderPlan(host, reply.data);
+        const planReply = await host.request({ type: 'getPlan' });
+        return planReply.ok ? renderPlan(host, planReply.data) : failure(planReply.error);
       }
-      return renderPassageScreen(host, found, reply.data.defaultAnswerMode);
+      if (!settingsReply.ok) return failure(settingsReply.error);
+      return renderPassageScreen(host, passageReply.data, settingsReply.data.defaultAnswerMode);
     }
 
     case 'analytics': {
@@ -216,6 +223,11 @@ async function buildScreen(): Promise<HTMLElement> {
       if (!settingsReply.ok) return failure(settingsReply.error);
       if (!planReply.ok) return failure(planReply.error);
       return renderSettings(host, settingsReply.data, planReply.data);
+    }
+
+    case 'managePassages': {
+      const reply = await host.request({ type: 'getPlan' });
+      return reply.ok ? renderManagePassages(host, reply.data) : failure(reply.error);
     }
 
     default:

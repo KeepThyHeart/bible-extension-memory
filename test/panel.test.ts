@@ -57,6 +57,11 @@ function rung(over: Partial<RungView> & Pick<RungView, 'rung'>): RungView {
     lastScore: null,
     applicable: true,
     resume: null,
+    tiers: 2,
+    tiersPassed: 0,
+    bestScore: null,
+    attempts: 0,
+    nextTier: 0,
     ...over,
   };
 }
@@ -433,6 +438,15 @@ describe('navReduce', () => {
     expect(state.returnTo).toEqual({ name: 'plan' });
   });
 
+  it('clears a stale return target when Manage Passages is opened', () => {
+    // Same leaf-screen discipline as Analytics and Settings: it starts no
+    // sessions, so it must never become a return target either.
+    let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
+    state = navReduce(state, { type: 'goManagePassages' });
+    expect(state.view).toEqual({ name: 'managePassages' });
+    expect(state.returnTo).toEqual({ name: 'plan' });
+  });
+
   it('leaves a passage screen for a removed passage', () => {
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
     state = navReduce(state, { type: 'passageRemoved', passageId: 7 });
@@ -573,5 +587,18 @@ describe('blankWidthFor', () => {
 
   it('is monotonic, so a longer word never gets a narrower box', () => {
     expect(blankWidthFor(120)).toBeGreaterThanOrEqual(blankWidthFor(80));
+  });
+});
+
+describe('blank width floor (T17: slot and input share one number)', () => {
+  it('one- and two-letter words land exactly on MIN_BLANK_WIDTH_PX at 16px', () => {
+    for (const w of ['a', 'I', 'is', 'in', 'of', 'he']) {
+      expect(blankWidthFor(estimateTextWidth(w, 16))).toBe(MIN_BLANK_WIDTH_PX);
+    }
+  });
+
+  it('is deterministic, so a slot sized before reveal equals one sized after', () => {
+    expect(blankWidthFor(estimateTextWidth('shepherd', 16))).toBe(blankWidthFor(estimateTextWidth('shepherd', 16)));
+    expect(blankWidthFor(0)).toBe(MIN_BLANK_WIDTH_PX);
   });
 });
