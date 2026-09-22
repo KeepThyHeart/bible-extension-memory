@@ -11,9 +11,11 @@
 
 import type { Passage, PassageView, PlanView } from '../types';
 import { append, button, el, focusQuietly, replace } from './dom';
-import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner } from './components';
-import { RUNG_LABEL, countLabel, pickStartTarget } from './format';
+import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner, icon } from './components';
+import { RUNG_LABEL, activityAvailability, countLabel, pickStartTarget } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
+import { ACTIVITY_TILES, type ActivityTile } from './activities';
+import type { Flow } from './state';
 import type { PanelHost } from './host';
 
 export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
@@ -37,6 +39,10 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
   root.appendChild(renderAddPassage(host));
 
   if (plan.passages.length === 0) {
+    // `format.ts#activityAvailability`'s own note: an empty plan replaces the
+    // whole tile grid with this empty state, rather than showing six
+    // disabled tiles beside it - the empty state already offers the one
+    // thing to do next.
     root.appendChild(
       emptyState(
         'Nothing in your plan yet.',
@@ -45,6 +51,8 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
     );
     return root;
   }
+
+  root.appendChild(renderActivityTiles(host, plan, now));
 
   root.appendChild(
     el(
@@ -376,6 +384,66 @@ function renderAddPassage(host: PanelHost): HTMLElement {
   });
 
   return el('div', { class: 'sm-add-wrapper' }, [form, batchConfirmSlot]);
+}
+
+// ---------------------------------------------------------------------------
+// Activity tiles (round-2 UI review, decisions 6-8)
+// ---------------------------------------------------------------------------
+
+/**
+ * "Practice by Activity" - the six-tile grid, one tile per
+ * `activities.ts#ACTIVITY_TILES` entry in catalogue order.
+ *
+ * Only reached with a non-empty plan - see the note at its call site in
+ * `renderPlan` for why an empty plan shows `emptyState()` instead.
+ */
+function renderActivityTiles(host: PanelHost, plan: PlanView, now: number): HTMLElement {
+  return el('section', { class: 'sm-tile-section' }, [
+    el('h2', { class: 'sm-block-title', text: 'Practice by Activity' }),
+    el(
+      'div',
+      { class: 'sm-tile-grid' },
+      ACTIVITY_TILES.map((tile) => renderActivityTile(host, plan, tile, now)),
+    ),
+  ]);
+}
+
+/**
+ * One tile: icon, title, subtext and - when the tile is not available right
+ * now - a third warning line, per decision 7. The tile stays visible and
+ * merely disabled rather than being hidden, so a gap in the grid never reads
+ * as a bug.
+ *
+ * `provideref` needs no special case here: `activityAvailability` already
+ * reports it as always unavailable (M7 has not landed the exercise), and that
+ * falls out of calling it uniformly for every tile.
+ */
+function renderActivityTile(host: PanelHost, plan: PlanView, tile: ActivityTile, now: number): HTMLElement {
+  const availability = activityAvailability(plan, tile, now);
+
+  const tileButton = button(
+    tile.title,
+    () => {
+      // `variety` has no `Rung` of its own (see `ActivityTile.rung`'s note);
+      // every other tile's `rung` is non-null by construction, and this
+      // handler only ever runs on an available tile, so `provideref` (also
+      // `rung: null`) can never reach it - `disabled` keeps it unpressable.
+      const flow: Flow = tile.id === 'variety' ? { kind: 'variety' } : { kind: 'activity', rung: tile.rung! };
+      void host.startFlow(flow);
+    },
+    { class: 'sm-tile', text: '', disabled: !availability.available },
+  );
+
+  append(tileButton, [
+    icon(tile.id),
+    el('span', { class: 'sm-tile-title', text: tile.title }),
+    el('span', { class: 'sm-tile-sub', text: tile.subtext }),
+    availability.available || availability.warning === null
+      ? null
+      : el('span', { class: 'sm-tile-warning', text: availability.warning }),
+  ]);
+
+  return tileButton;
 }
 
 // ---------------------------------------------------------------------------

@@ -76,6 +76,7 @@ import type { PanelHost } from '../src/ui/host';
 import type { Flow, NavAction } from '../src/ui/state';
 import { breadcrumb, icon, type Crumb, type IconName } from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
+import { ACTIVITY_TILES } from '../src/ui/activities';
 import { renderPassage } from '../src/ui/scripture';
 import { PracticeView } from '../src/ui/practiceView';
 import { renderPlan } from '../src/ui/planView';
@@ -1504,6 +1505,117 @@ describe('the plan row', () => {
 
     row.querySelector<HTMLButtonElement>('button')!.click();
     expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: pv.passage.id });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7b. The home screen's activity tile grid (round-2 UI review, M2)
+// ---------------------------------------------------------------------------
+
+describe('the activity tile grid', () => {
+  function planWithPassages(passages: PassageView[]): PlanView {
+    return {
+      collectionId: 1,
+      collectionName: 'My plan',
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      passages,
+    };
+  }
+
+  /**
+   * Two passages, each with the default fixture's six verses - enough to
+   * satisfy every tile's own availability rule except `provideref`, which
+   * `activityAvailability` reports as unavailable regardless of the plan
+   * (M7 has not landed the exercise).
+   */
+  function fullyAvailablePlan(): PlanView {
+    return planWithPassages([
+      passageViewFixture({ passage: passageFixture({ id: 10, reference: 'Psalm 23:1-6' }) }),
+      passageViewFixture({ passage: passageFixture({ id: 11, reference: 'Psalm 1:1-6' }) }),
+    ]);
+  }
+
+  function tileButtons(root: HTMLElement): HTMLButtonElement[] {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-tile'));
+  }
+
+  function findTile(root: HTMLElement, title: string): HTMLButtonElement {
+    return tileButtons(root).find((t) => spokenText(t.querySelector('.sm-tile-title')!) === title)!;
+  }
+
+  it('renders all six tiles, in catalogue order, with their title, subtext and icon', () => {
+    const root = renderPlan(host, fullyAvailablePlan());
+    container.appendChild(root);
+
+    const tiles = tileButtons(root);
+    expect(tiles.length).toBe(ACTIVITY_TILES.length);
+
+    tiles.forEach((tileEl, i) => {
+      const tile = ACTIVITY_TILES[i]!;
+      expect(spokenText(tileEl.querySelector('.sm-tile-title')!)).toBe(tile.title);
+      expect(spokenText(tileEl.querySelector('.sm-tile-sub')!)).toBe(tile.subtext);
+      expect(tileEl.querySelector(`.sm-icon-${tile.id}`)).not.toBeNull();
+    });
+  });
+
+  it('starts the variety flow, with no rung, when the Variety tile is pressed', () => {
+    const root = renderPlan(host, fullyAvailablePlan());
+    container.appendChild(root);
+
+    const tile = findTile(root, 'Variety');
+    expect(tile.disabled).toBe(false);
+
+    tile.click();
+    expect(host.flowsStarted).toEqual([{ flow: { kind: 'variety' }, exclude: undefined }]);
+  });
+
+  it("starts an explicit activity flow naming the tile's own rung when a rung-backed tile is pressed", () => {
+    const root = renderPlan(host, fullyAvailablePlan());
+    container.appendChild(root);
+
+    const tile = findTile(root, 'Fill in the Blanks');
+    expect(tile.disabled).toBe(false);
+
+    tile.click();
+    expect(host.flowsStarted).toEqual([{ flow: { kind: 'activity', rung: 'blanks' }, exclude: undefined }]);
+  });
+
+  it('keeps an unavailable tile visible but disabled, shows its warning as a third line, and does nothing when pressed', () => {
+    // One passage only - below `MIN_PASSAGES_FOR_REFMATCH` (2), so "Match
+    // References" is unavailable.
+    const root = renderPlan(host, planWithPassages([passageViewFixture()]));
+    container.appendChild(root);
+
+    const tile = findTile(root, 'Match References');
+    expect(tile.disabled).toBe(true);
+
+    const warning = tile.querySelector('.sm-tile-warning');
+    expect(warning).not.toBeNull();
+    expect(spokenText(warning!)).toContain('Requires at least 2 passages');
+
+    tile.click();
+    expect(host.flowsStarted).toEqual([]);
+  });
+
+  it('shows the Provide Reference tile as always unavailable, with "Not available yet.", regardless of the plan', () => {
+    const root = renderPlan(host, fullyAvailablePlan());
+    container.appendChild(root);
+
+    const tile = findTile(root, 'Provide Reference');
+    expect(tile.disabled).toBe(true);
+    expect(spokenText(tile.querySelector('.sm-tile-warning')!)).toBe('Not available yet.');
+
+    tile.click();
+    expect(host.flowsStarted).toEqual([]);
+  });
+
+  it('shows no tile grid at all on an empty plan - the empty state replaces it', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    expect(root.querySelector('.sm-tile-grid')).toBeNull();
+    expect(root.querySelector('.sm-empty')).not.toBeNull();
   });
 });
 

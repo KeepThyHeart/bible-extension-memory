@@ -703,6 +703,69 @@ ul, ol {
   max-width: 34em;
 }
 
+/* "Practice by Activity" (round-2 UI review, decisions 6-8): the six-tile
+   grid. Two columns at the panel's usual width, one column in the narrow
+   docked pane - see the `.sm-tile-grid` override in the `(max-width: 30rem)`
+   block below, which mirrors `.sm-row`'s own single-column drop at that same
+   breakpoint. */
+.sm-tile-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sm-s2);
+}
+
+.sm-tile {
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sm-s1);
+  text-align: left;
+  padding: var(--sm-s3);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+  color: inherit;
+  cursor: pointer;
+}
+
+.sm-tile:hover:not(:disabled) {
+  background: var(--sm-hover);
+  border-color: var(--sm-accent);
+}
+
+/* Dimmed and inert, the same treatment `.sm-btn:disabled` already gives an
+   unavailable action elsewhere in the panel - not an error look, since an
+   unavailable tile is a normal, expected state (decision 7), not a fault. */
+.sm-tile:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sm-tile-title {
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-tile-sub {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+/* A gentle warning, not an error banner (decision 7) - the same warning
+   token `--sm-warning-text` already carries elsewhere in the theme layer,
+   rather than the danger tokens `.sm-error` uses. */
+.sm-tile-warning {
+  color: var(--sm-warning-text);
+  font-size: 0.92em;
+}
+
 /* ==========================================================================
    Badges, pills, chips, bars
    ========================================================================== */
@@ -1537,6 +1600,10 @@ ul, ol {
   .sm-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .sm-tile-grid {
+    grid-template-columns: 1fr;
   }
 
   .sm-row-main {
