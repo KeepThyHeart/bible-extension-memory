@@ -2337,9 +2337,10 @@ describe('the crumb trail on each screen', () => {
     const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
 
     expect(crumbLabels(practice.root)).toEqual(['Home', 'Psalm 1:2-3']);
-    // The activity is the selected tab, shown elsewhere (`.sm-practice-rung`)
-    // - naming it again as a crumb would duplicate it, which item 10 rules
-    // out explicitly.
+    // The activity is the selected tab, shown elsewhere (the `[role="tab"]`
+    // strip under the breadcrumb, see the "activity tab strip" tests below) -
+    // naming it again as a crumb would duplicate it, which item 10 rules out
+    // explicitly.
     expect(spokenText(practice.root.querySelector('.sm-crumb-list')!)).not.toContain('Fill in the blanks');
   });
 
@@ -2378,5 +2379,88 @@ describe('the crumb trail on each screen', () => {
     const practiceHeadings = practice.root.querySelectorAll('h1');
     expect(practiceHeadings.length).toBe(1);
     expect(practiceHeadings[0]!.classList.contains('sm-crumb-current')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. The practice screen's activity tab strip (N5)
+// ---------------------------------------------------------------------------
+
+describe("the practice screen's activity tab strip", () => {
+  function planWith(pv: PassageView): PlanView {
+    return {
+      collectionId: 1,
+      collectionName: 'My plan',
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      passages: [pv],
+    };
+  }
+
+  it("renders one tab per applicable activity, with the session's own rung selected", async () => {
+    // Same fixture the passage-screen tab-strip tests use: four rungs, one
+    // (`refmatch`) inapplicable.
+    const pv = passageViewFixture();
+    host.handlers.getPlan = () => ({ ok: true, data: planWith(pv) });
+
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), {
+      rung: 'blanks',
+      passageId: pv.passage.id,
+    });
+
+    const tabButtons = Array.from(practice.root.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabButtons.map((t) => t.textContent)).toEqual([
+      'Put in order',
+      'Fill in the blanks',
+      'First letters only',
+    ]);
+
+    const selected = tabButtons.filter((t) => t.getAttribute('aria-selected') === 'true');
+    expect(selected.map((t) => t.textContent)).toEqual(['Fill in the blanks']);
+  });
+
+  it('starts the clicked activity for the same passage, without restarting it', async () => {
+    const pv = passageViewFixture();
+    host.handlers.getPlan = () => ({ ok: true, data: planWith(pv) });
+
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), {
+      rung: 'blanks',
+      passageId: pv.passage.id,
+    });
+
+    const orderingTab = Array.from(practice.root.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(
+      (t) => t.textContent === 'Put in order',
+    )!;
+    orderingTab.click();
+
+    // No `restart` - the design doc is explicit that the resume point of the
+    // activity being left is already on disk, so switching tabs loses
+    // nothing and must not force a restart.
+    expect(host.sessionsStarted).toEqual([{ passageId: pv.passage.id, rung: 'ordering', restart: undefined }]);
+  });
+
+  it('degrades to no tab strip, without throwing, when the plan fetch fails', async () => {
+    const reason = 'Could not reach the Scripture Memory worker (getPlan): Timeout';
+    host.handlers.getPlan = () => ({ ok: false, error: reason });
+
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+
+    expect(practice.root.querySelectorAll('[role="tab"]').length).toBe(0);
+    expect(host.announcements).toContain(reason);
+    // Not fatal: the exercise itself is unaffected by the missing strip.
+    expect(practice.root.querySelectorAll('.sm-blank').length).toBe(2);
+  });
+
+  it('draws no tab strip before the plan fetch resolves', () => {
+    // No `getPlan` handler registered at all: the request never settles
+    // within this synchronous assertion, mirroring how `loadContext`'s own
+    // context arrives after the first paint.
+    const practice = new PracticeView(host, session(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' }));
+    practice.mount(container);
+    view = practice;
+
+    expect(practice.root.querySelectorAll('[role="tab"]').length).toBe(0);
+    // The exercise itself is already usable.
+    expect(practice.root.querySelectorAll('.sm-blank').length).toBe(2);
   });
 });

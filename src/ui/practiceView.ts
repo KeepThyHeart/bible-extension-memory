@@ -56,14 +56,22 @@ import type {
   OrderingStep,
   PassageContext,
   RefMatchStep,
+  RungView,
   SessionSummary,
   SessionView,
   StepAnswer,
   StepResult,
 } from '../types';
 import { append, button, clear, el, focusQuietly, replace, textNode } from './dom';
-import { breadcrumb, errorBanner, levelBoxes } from './components';
-import { RUNG_LABEL, formatScore, formatStepProgress, matchesFirstLetter, pickDueTarget } from './format';
+import { breadcrumb, errorBanner, levelBoxes, tabs } from './components';
+import {
+  RUNG_LABEL,
+  applicableRungs,
+  formatScore,
+  formatStepProgress,
+  matchesFirstLetter,
+  pickDueTarget,
+} from './format';
 import type { PanelHost } from './host';
 import { plainWord, renderPassage } from './scripture';
 import type { WordRenderer } from './scripture';
@@ -88,6 +96,16 @@ export class PracticeView {
   private session: SessionView;
   private context: PassageContext | null = null;
   private summary: SessionSummary | null = null;
+
+  /**
+   * The passage's applicable activities, for the tab strip under the
+   * breadcrumb (see `loadActivityTabs`). `null` until that fetch resolves -
+   * distinct from `[]`, which is a resolved fetch that found no applicable
+   * activity at all (unreachable in practice, since a session could not have
+   * started on one) - so `renderHead` knows to draw no strip rather than an
+   * empty one while the fetch is still in flight or failed.
+   */
+  private activityRungs: RungView[] | null = null;
 
   /** Guards against a second submission while one is in flight. */
   private busy = false;
@@ -148,6 +166,7 @@ export class PracticeView {
     container.appendChild(this.root);
     this.render();
     void this.loadContext();
+    void this.loadActivityTabs();
   }
 
   destroy(): void {
@@ -206,6 +225,34 @@ export class PracticeView {
     focusQuietly(this.contextEl.querySelector<HTMLInputElement>('.sm-blank, .sm-fl'));
   }
 
+  /**
+   * Fetches the passage's other applicable activities, for the tab strip
+   * `renderHead` draws under the breadcrumb (N5).
+   *
+   * `SessionView` carries only this session's own `rung`, not the full
+   * `RungView[]` a tab strip needs, and there is no single-passage fetch for
+   * it - `getPlan` is the one existing request that returns `RungView[]` per
+   * passage, so this fetches the whole plan and keeps only this session's own
+   * passage. Deliberately not awaited before the first paint, for the same
+   * reason as `loadContext`: the exercise itself needs none of this, and the
+   * strip arrives and slots in above once it does.
+   */
+  private async loadActivityTabs(): Promise<void> {
+    const reply = await this.host.request({ type: 'getPlan' });
+    if (this.disposed) return;
+    if (!reply.ok) {
+      // Not fatal, same as `loadContext`: the exercise works with no tab
+      // strip at all, so this degrades to showing none rather than an error
+      // screen.
+      this.host.announce(reply.error);
+      return;
+    }
+
+    const pv = reply.data.passages.find((p) => p.passage.id === this.session.passageId);
+    this.activityRungs = pv ? applicableRungs(pv.rungs) : [];
+    this.renderHead();
+  }
+
   // -------------------------------------------------------------------------
   // Rendering
   // -------------------------------------------------------------------------
@@ -241,9 +288,7 @@ export class PracticeView {
         ],
         actions: step !== null ? [el('span', { class: 'sm-crumbs-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })] : [],
       }),
-      el('div', { class: 'sm-practice-sub' }, [
-        el('span', { class: 'sm-practice-rung', text: RUNG_LABEL[this.session.rung] }),
-      ]),
+      this.renderActivityTabs(),
       step !== null
         ? el('div', { class: 'sm-practice-progress' }, [
             el(
@@ -273,6 +318,32 @@ export class PracticeView {
           ])
         : null,
     ]);
+  }
+
+  /**
+   * The activity tab strip, shared with the passage screen (Decision 2 of the
+   * nav/chrome redesign): one tab per applicable activity, the session's own
+   * `rung` selected. Picking a different tab starts that activity for the
+   * same passage - `host.startSession` with no `restart`, so a paused
+   * position on the activity being left is resumed rather than lost, matching
+   * the passage screen's own Resume behaviour. Replaces the old
+   * `.sm-practice-sub`/`.sm-practice-rung` line, which only ever named the
+   * current activity; the tab strip both names it and offers the rest.
+   *
+   * Draws nothing while `activityRungs` has not arrived yet (`loadActivityTabs`
+   * fills it in after the first paint) or if the fetch failed - degrading
+   * without a placeholder, the same way `renderContext` treats a missing
+   * `PassageContext.after`.
+   */
+  private renderActivityTabs(): HTMLElement | null {
+    if (this.activityRungs === null || this.activityRungs.length === 0) return null;
+
+    return tabs({
+      items: this.activityRungs.map((rv) => ({ value: rv.rung, label: RUNG_LABEL[rv.rung] })),
+      selected: this.session.rung,
+      onSelect: (rung) => void this.host.startSession(this.session.passageId, rung),
+      ariaLabel: 'Activity',
+    });
   }
 
   /**

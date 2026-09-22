@@ -362,9 +362,9 @@ ul, ol {
    not a link - there is nowhere further to go from here. Sizing carried over
    from the old `.sm-toolbar-title` - bumped from 1.05em because a review
    round found the reference on the passage and practice screens not
-   prominent enough next to the activity name beneath it
-   (`.sm-practice-rung`, `.sm-activity-title`), both smaller and dimmer than
-   this already. */
+   prominent enough next to the activity name beneath it, once shown smaller
+   and dimmer on its own line (now the `.sm-tab-selected` activity tab, on
+   both screens - see N5). */
 .sm-crumb-current {
   display: inline-flex;
   align-items: center;
@@ -1150,18 +1150,6 @@ ul, ol {
   gap: var(--sm-s2);
   padding-bottom: var(--sm-s2);
   border-bottom: 1px solid var(--sm-border);
-}
-
-.sm-practice-sub {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sm-s2);
-  flex-wrap: wrap;
-}
-
-.sm-practice-rung {
-  color: var(--sm-text-dim);
-  font-size: 0.92em;
 }
 
 .sm-practice-progress {
