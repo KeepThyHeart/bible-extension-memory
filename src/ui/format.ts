@@ -15,8 +15,10 @@
  * by freezing time globally, which makes the test order-dependent.
  */
 
-import type { AnalyticsView, PlanView, Rung, RungView } from '../types';
+import type { AnalyticsView, PassageView, PlanView, Rung, RungView } from '../types';
 import { RUNG_ORDER } from '../types';
+import { MIN_PASSAGES_FOR_REFMATCH } from '../ladder';
+import type { ActivityTile } from './activities';
 
 /**
  * The level at and above which an activity counts as mastered.
@@ -198,11 +200,16 @@ export interface PracticeTarget {
  * since the ordering card is the one holding up its own passage's progress.
  * The passage id is the final tiebreak purely so the button is deterministic;
  * a "random due card" button is one the user cannot form a habit around.
+ *
+ * `exclude`, when given, is a set of passage ids to leave out of the search
+ * entirely - the Variety flow's Next/skip control (N6) uses it to avoid
+ * re-offering a passage the user just skipped past.
  */
-export function pickDueTarget(plan: PlanView, now: number): PracticeTarget | null {
+export function pickDueTarget(plan: PlanView, now: number, exclude?: ReadonlySet<number>): PracticeTarget | null {
   let best: PracticeTarget | null = null;
 
   for (const pv of plan.passages) {
+    if (exclude?.has(pv.passage.id)) continue;
     for (const rv of pv.rungs) {
       if (!isDue(rv, now)) continue;
       const candidate: PracticeTarget = {
@@ -259,13 +266,19 @@ export function suggestedRungFor(rungs: RungView[], now: number): Rung | null {
  * What "Start practicing" on the home screen offers: the plan's highest-
  * priority due activity, or - when nothing is due - the suggested activity of
  * the most recently added passage, so the button always does something.
+ *
+ * `exclude` is forwarded to `pickDueTarget` and also applied to the
+ * most-recently-added fallback below, for the same reason - see its note
+ * on `pickDueTarget`.
  */
-export function pickStartTarget(plan: PlanView, now: number): PracticeTarget | null {
-  const due = pickDueTarget(plan, now);
+export function pickStartTarget(plan: PlanView, now: number, exclude?: ReadonlySet<number>): PracticeTarget | null {
+  const due = pickDueTarget(plan, now, exclude);
   if (due) return due;
-  if (plan.passages.length === 0) return null;
 
-  const latest = [...plan.passages].sort((a, b) => b.passage.addedAt - a.passage.addedAt)[0]!;
+  const candidates = exclude ? plan.passages.filter((pv) => !exclude.has(pv.passage.id)) : plan.passages;
+  if (candidates.length === 0) return null;
+
+  const latest = [...candidates].sort((a, b) => b.passage.addedAt - a.passage.addedAt)[0]!;
   const rung = suggestedRungFor(latest.rungs, now);
   if (!rung) return null;
   const rv = latest.rungs.find((r) => r.rung === rung);
@@ -309,6 +322,215 @@ export function inLadderOrder(rungs: RungView[]): RungView[] {
  */
 export function applicableRungs(rungs: RungView[]): RungView[] {
   return inLadderOrder(rungs).filter((r) => r.applicable);
+}
+
+// ---------------------------------------------------------------------------
+// Activity tiles (round-2 UI review, decisions 6-8)
+// ---------------------------------------------------------------------------
+
+/**
+ * The smallest longest-passage verse count that makes "Put in Order"
+ * worthwhile as a tile - deliberately higher than `ladder.ts#applicableRungs`'s
+ * own per-passage `verseCount > 1` rule, which stays as-is and governs
+ * whether an individual passage's `ordering` rung exists at all.
+ *
+ * `session.ts`'s `PICKER_CHOICES` is 4, and the first verse of a passage is
+ * now a real pick too (bug-fix item 4), so the first step's candidate pool is
+ * the whole passage: a 4-or-more-verse passage is the smallest that offers a
+ * genuine four-way choice at every step. This is a *tile*-level threshold for
+ * "is this activity worth offering from the home screen right now", not a
+ * change to which passages ever get an `ordering` rung.
+ */
+const MIN_VERSES_FOR_ORDERING_TILE = 4;
+
+/** What `activityAvailability` reports for one tile. */
+export interface ActivityAvailability {
+  available: boolean;
+  /** Why the tile is greyed out, or what it needs. `null` when nothing need be said. */
+  warning: string | null;
+}
+
+/**
+ * Whether a tile catalogue entry (`activities.ts#ACTIVITY_TILES`) can be
+ * pressed right now, and the warning copy to show when it cannot.
+ *
+ * Pure and computed from the plan, not hard-coded per tile - see the round-2
+ * UI review's decision 7. `now` is accepted for signature symmetry with the
+ * file's other selection helpers (and so a future, genuinely time-dependent
+ * rule can be added here without changing every call site); none of the
+ * current rules are clock-dependent, so it goes unused today.
+ */
+export function activityAvailability(
+  plan: PlanView,
+  tile: ActivityTile,
+  _now: number,
+): ActivityAvailability {
+  const passageCount = plan.passages.length;
+
+  switch (tile.id) {
+    case 'provideref':
+      // The exercise itself does not exist yet (M7) - always unavailable,
+      // regardless of the plan's contents, until it lands.
+      return { available: false, warning: 'Not available yet.' };
+
+    case 'refmatch': {
+      if (passageCount >= MIN_PASSAGES_FOR_REFMATCH) return { available: true, warning: null };
+      return {
+        available: false,
+        warning: `Requires at least ${MIN_PASSAGES_FOR_REFMATCH} passages; you have ${passageCount} so far.`,
+      };
+    }
+
+    case 'ordering': {
+      const longest = plan.passages.reduce((max, pv) => Math.max(max, pv.passage.verseCount), 0);
+      if (longest >= MIN_VERSES_FOR_ORDERING_TILE) return { available: true, warning: null };
+      const tail = passageCount === 0 ? 'you have none yet.' : `your longest is ${longest} so far.`;
+      return {
+        available: false,
+        warning: `Put in Order needs a passage of at least ${MIN_VERSES_FOR_ORDERING_TILE} verses; ${tail}`,
+      };
+    }
+
+    case 'variety':
+    case 'blanks':
+    case 'firstletters':
+      // Available as soon as there is anything to practise. An empty plan
+      // replaces the whole tile grid with `emptyState()` (M2's job), so no
+      // warning copy is needed here for that case.
+      return { available: passageCount >= 1, warning: null };
+  }
+}
+
+/**
+ * A user-initiated run through the plan: either "give me whatever needs
+ * practice most" (Variety) or "start this one activity" (an explicit tile
+ * press).
+ *
+ * This is deliberately a *local, minimal* type - N6 formalises `Flow` for
+ * real in `state.ts`/`NavState` once the Next/skip control needs to carry one
+ * around as navigation state. Kept here, and exported, only so this
+ * subtask's own signature is expressible and so N6 has a shape to start
+ * from rather than inventing one from scratch.
+ */
+export type Flow = { kind: 'variety' } | { kind: 'activity'; rung: Rung };
+
+/**
+ * What a tile press should start.
+ *
+ * `variety`: reuses `pickDueTarget` then, if nothing is due, `pickStartTarget`
+ * - exactly the composition `planView.ts#renderStartPracticing` already uses
+ * for the "Start practicing" button (`pickStartTarget` itself is due-target-
+ * first, add-fallback-second; the two are composed again here, rather than
+ * called once, only so `exclude` can be threaded through both).
+ *
+ * `activity`: an explicit tile names one `Rung`. Judgment call from the
+ * round-2 review, kept as given: among passages where that rung is
+ * *applicable* (`RungView.applicable`, the same flag `applicableRungs`
+ * filters on), pick by due first (earliest `dueAt`), then never-attempted,
+ * then lowest level, then oldest `addedAt`. This ladder-order preference only
+ * orders among already-applicable passages - it does not gate eligibility the
+ * way Variety's "hasn't passed the easier steps first" reasoning does. An
+ * explicit tile press is not re-subjected to that.
+ *
+ * `exclude` is applied to both flows alike, for a Next/skip control (N6) that
+ * should be able to skip the currently-offered passage regardless of which
+ * flow is running.
+ */
+export function pickFlowTarget(
+  plan: PlanView,
+  flow: Flow,
+  now: number,
+  exclude?: ReadonlySet<number>,
+): PracticeTarget | null {
+  if (flow.kind === 'variety') {
+    return pickDueTarget(plan, now, exclude) ?? pickStartTarget(plan, now, exclude);
+  }
+
+  const rung = flow.rung;
+  const candidates = plan.passages.filter((pv) => {
+    if (exclude?.has(pv.passage.id)) return false;
+    const rv = pv.rungs.find((r) => r.rung === rung);
+    return rv !== undefined && rv.applicable;
+  });
+  if (candidates.length === 0) return null;
+
+  let best = candidates[0]!;
+  let bestRung = best.rungs.find((r) => r.rung === rung)!;
+  for (const pv of candidates.slice(1)) {
+    const rv = pv.rungs.find((r) => r.rung === rung)!;
+    if (compareActivityCandidate(pv, rv, best, bestRung, now) < 0) {
+      best = pv;
+      bestRung = rv;
+    }
+  }
+
+  return { passageId: best.passage.id, rung, reference: best.passage.reference, dueAt: bestRung.dueAt };
+}
+
+/** Priority order for `pickFlowTarget`'s `activity` case - see its docstring. */
+function compareActivityCandidate(
+  a: PassageView,
+  aRung: RungView,
+  b: PassageView,
+  bRung: RungView,
+  now: number,
+): number {
+  const aDue = isDue(aRung, now);
+  const bDue = isDue(bRung, now);
+  if (aDue !== bDue) return aDue ? -1 : 1;
+  if (aDue && aRung.dueAt !== bRung.dueAt) return (aRung.dueAt ?? 0) - (bRung.dueAt ?? 0);
+
+  const aNeverAttempted = aRung.dueAt === null;
+  const bNeverAttempted = bRung.dueAt === null;
+  if (aNeverAttempted !== bNeverAttempted) return aNeverAttempted ? -1 : 1;
+
+  if (aRung.level !== bRung.level) return aRung.level - bRung.level;
+  return a.passage.addedAt - b.passage.addedAt;
+}
+
+/**
+ * Sorts passages by how much they need practice: due first by earliest
+ * `dueAt`, then never-attempted (`bestLevel === 0`), then ascending
+ * `bestLevel`, then descending `dueCount`, then ascending `addedAt` as the
+ * deterministic tiebreak.
+ *
+ * Pure - returns a new array, per the file's convention (`inLadderOrder`
+ * above does the same). Wiring this into an actual sort `<select>` is M4's
+ * job; this is only the ordering function.
+ */
+export function sortPassagesByNeed(passages: PassageView[], now: number): PassageView[] {
+  return [...passages].sort((a, b) => comparePassageNeed(a, b, now));
+}
+
+function comparePassageNeed(a: PassageView, b: PassageView, now: number): number {
+  const dueDelta = compareEarliestDueAt(earliestDueAt(a, now), earliestDueAt(b, now));
+  if (dueDelta !== 0) return dueDelta;
+
+  const aNeverAttempted = a.bestLevel === 0;
+  const bNeverAttempted = b.bestLevel === 0;
+  if (aNeverAttempted !== bNeverAttempted) return aNeverAttempted ? -1 : 1;
+
+  if (a.bestLevel !== b.bestLevel) return a.bestLevel - b.bestLevel;
+  if (a.dueCount !== b.dueCount) return b.dueCount - a.dueCount;
+  return a.passage.addedAt - b.passage.addedAt;
+}
+
+/** The soonest `dueAt` among a passage's due rungs, or `null` if none is due. */
+function earliestDueAt(pv: PassageView, now: number): number | null {
+  let best: number | null = null;
+  for (const rv of pv.rungs) {
+    if (!isDue(rv, now)) continue;
+    if (best === null || (rv.dueAt ?? 0) < best) best = rv.dueAt ?? 0;
+  }
+  return best;
+}
+
+/** `null` (not due) always sorts after any due timestamp; earlier timestamps sort first. */
+function compareEarliestDueAt(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a - b;
 }
 
 // ---------------------------------------------------------------------------

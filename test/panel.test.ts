@@ -22,8 +22,18 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { AnalyticsView, BlanksStep, PlanView, RungView, StepResult, VerseText } from '../src/types';
+import type {
+  AnalyticsView,
+  BlanksStep,
+  Passage,
+  PassageView,
+  PlanView,
+  RungView,
+  StepResult,
+  VerseText,
+} from '../src/types';
 import {
+  activityAvailability,
   applicableRungs,
   calendarDaysBetween,
   calendarWeeks,
@@ -36,9 +46,15 @@ import {
   isDue,
   matchesFirstLetter,
   pickDueTarget,
+  pickFlowTarget,
+  pickStartTarget,
+  sortPassagesByNeed,
   suggestedRungFor,
   wordCore,
 } from '../src/ui/format';
+import type { Flow } from '../src/ui/format';
+import { ACTIVITY_TILES } from '../src/ui/activities';
+import { MIN_PASSAGES_FOR_REFMATCH } from '../src/ladder';
 import { blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { INITIAL_NAV, navReduce, sameView } from '../src/ui/state';
 import { resolveWrongPositions, revealedWord } from '../src/ui/stepResult';
@@ -59,6 +75,43 @@ function rung(over: Partial<RungView> & Pick<RungView, 'rung'>): RungView {
     applicable: true,
     resume: null,
     ...over,
+  };
+}
+
+function passage(over: Partial<Passage> & Pick<Passage, 'id'>): Passage {
+  return {
+    collectionId: 1,
+    moduleId: 'kjv',
+    startVerseId: 1,
+    endVerseId: 1,
+    reference: `Passage ${over.id}`,
+    verseCount: 1,
+    addedAt: 0,
+    answerMode: null,
+    ...over,
+  };
+}
+
+function passageView(
+  over: Partial<Omit<PassageView, 'passage'>> & { passage: Partial<Passage> & Pick<Passage, 'id'> },
+): PassageView {
+  return {
+    dueCount: 0,
+    bestLevel: 0,
+    wellLearned: false,
+    rungs: [],
+    ...over,
+    passage: passage(over.passage),
+  };
+}
+
+function planOf(passages: PassageView[]): PlanView {
+  return {
+    collectionId: 1,
+    collectionName: 'My plan',
+    totalDue: 0,
+    defaultAnswerMode: 'firstLetter',
+    passages,
   };
 }
 
@@ -290,6 +343,396 @@ describe('pickDueTarget', () => {
     ];
     p.passages[1]!.rungs = [];
     expect(pickDueTarget(p, now)).toBeNull();
+  });
+
+  it('leaves out an excluded passage even when it is the most overdue', () => {
+    const p = plan(now);
+    // Passage 20 is normally the winner (see above) - exclude it.
+    const target = pickDueTarget(p, now, new Set([20]));
+    expect(target?.passageId).toBe(10);
+    expect(target?.rung).toBe('blanks');
+  });
+
+  it('returns null when every due passage is excluded', () => {
+    const p = plan(now);
+    expect(pickDueTarget(p, now, new Set([10, 20]))).toBeNull();
+  });
+});
+
+describe('pickStartTarget', () => {
+  const now = Date.UTC(2026, 5, 1, 12, 0, 0);
+
+  it('falls back to the most recently added passage when nothing is due', () => {
+    const p = plan(now);
+    for (const pv of p.passages) {
+      pv.rungs = pv.rungs.map((r) => rung({ ...r, dueAt: now + 5 * DAY }));
+    }
+    // Passage 20 was added more recently (10 days ago vs. 30).
+    const target = pickStartTarget(p, now);
+    expect(target?.passageId).toBe(20);
+  });
+
+  it('applies exclude to both the due target and the added-passage fallback', () => {
+    const p = plan(now);
+    for (const pv of p.passages) {
+      pv.rungs = pv.rungs.map((r) => rung({ ...r, dueAt: now + 5 * DAY }));
+    }
+    // With 20 excluded, the fallback must land on 10, not return null.
+    const target = pickStartTarget(p, now, new Set([20]));
+    expect(target?.passageId).toBe(10);
+  });
+
+  it('returns null when every passage is excluded', () => {
+    const p = plan(now);
+    expect(pickStartTarget(p, now, new Set([10, 20]))).toBeNull();
+  });
+});
+
+describe('pickFlowTarget', () => {
+  const now = Date.UTC(2026, 5, 1, 12, 0, 0);
+  const variety: Flow = { kind: 'variety' };
+
+  it('for a variety flow, matches pickDueTarget when something is due', () => {
+    const p = plan(now);
+    expect(pickFlowTarget(p, variety, now)).toEqual(pickDueTarget(p, now));
+  });
+
+  it('for a variety flow, falls back to pickStartTarget when nothing is due', () => {
+    const p = plan(now);
+    for (const pv of p.passages) {
+      pv.rungs = pv.rungs.map((r) => rung({ ...r, dueAt: now + 5 * DAY }));
+    }
+    expect(pickFlowTarget(p, variety, now)).toEqual(pickStartTarget(p, now));
+  });
+
+  it('for a variety flow, respects exclude', () => {
+    const p = plan(now);
+    const target = pickFlowTarget(p, variety, now, new Set([20]));
+    expect(target?.passageId).toBe(10);
+  });
+
+  it('for an explicit activity, only considers passages where that rung is applicable', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1, addedAt: 100 },
+        rungs: [rung({ rung: 'refmatch', applicable: false, level: 3 })],
+      }),
+      passageView({
+        passage: { id: 2, addedAt: 200 },
+        rungs: [rung({ rung: 'refmatch', applicable: true, level: 1 })],
+      }),
+    ]);
+    const target = pickFlowTarget(p, { kind: 'activity', rung: 'refmatch' }, now);
+    expect(target?.passageId).toBe(2);
+  });
+
+  it('for an explicit activity, prefers the due passage, earliest dueAt first', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1, addedAt: 100 },
+        rungs: [rung({ rung: 'blanks', dueAt: now - DAY })],
+      }),
+      passageView({
+        passage: { id: 2, addedAt: 200 },
+        rungs: [rung({ rung: 'blanks', dueAt: now - 3 * DAY })],
+      }),
+      passageView({
+        passage: { id: 3, addedAt: 300 },
+        rungs: [rung({ rung: 'blanks', dueAt: null })],
+      }),
+    ]);
+    const target = pickFlowTarget(p, { kind: 'activity', rung: 'blanks' }, now);
+    expect(target?.passageId).toBe(2);
+  });
+
+  it('for an explicit activity, prefers never-attempted over a scheduled-but-not-due rung', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1, addedAt: 100 },
+        rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 1 })],
+      }),
+      passageView({
+        passage: { id: 2, addedAt: 200 },
+        rungs: [rung({ rung: 'blanks', dueAt: null, level: 0 })],
+      }),
+    ]);
+    const target = pickFlowTarget(p, { kind: 'activity', rung: 'blanks' }, now);
+    expect(target?.passageId).toBe(2);
+  });
+
+  it('for an explicit activity, then prefers the lowest level among scheduled, not-yet-due rungs', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1, addedAt: 100 },
+        rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 3 })],
+      }),
+      passageView({
+        passage: { id: 2, addedAt: 200 },
+        rungs: [rung({ rung: 'blanks', dueAt: now + 2 * DAY, level: 1 })],
+      }),
+    ]);
+    const target = pickFlowTarget(p, { kind: 'activity', rung: 'blanks' }, now);
+    expect(target?.passageId).toBe(2);
+  });
+
+  it('for an explicit activity, finally breaks a tie by oldest addedAt', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1, addedAt: 500 },
+        rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 2 })],
+      }),
+      passageView({
+        passage: { id: 2, addedAt: 100 },
+        rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 2 })],
+      }),
+    ]);
+    const target = pickFlowTarget(p, { kind: 'activity', rung: 'blanks' }, now);
+    expect(target?.passageId).toBe(2);
+  });
+
+  it('for an explicit activity, respects exclude', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1, addedAt: 100 },
+        rungs: [rung({ rung: 'blanks', dueAt: now - DAY })],
+      }),
+      passageView({
+        passage: { id: 2, addedAt: 200 },
+        rungs: [rung({ rung: 'blanks', dueAt: now - 3 * DAY })],
+      }),
+    ]);
+    // Passage 2 is normally the winner (see above) - exclude it.
+    const target = pickFlowTarget(p, { kind: 'activity', rung: 'blanks' }, now, new Set([2]));
+    expect(target?.passageId).toBe(1);
+  });
+
+  it('for an explicit activity, returns null when no passage has it applicable', () => {
+    const p = planOf([
+      passageView({
+        passage: { id: 1 },
+        rungs: [rung({ rung: 'ordering', applicable: false })],
+      }),
+    ]);
+    expect(pickFlowTarget(p, { kind: 'activity', rung: 'ordering' }, now)).toBeNull();
+  });
+});
+
+describe('sortPassagesByNeed', () => {
+  const now = Date.UTC(2026, 5, 1, 12, 0, 0);
+
+  it('orders by earliest dueAt, then never-attempted, then level, then dueCount, then addedAt', () => {
+    // Due one day ago - overdue, but less so than the next one.
+    const dueOneDayAgo = passageView({
+      passage: { id: 1, addedAt: 900 },
+      dueCount: 1,
+      bestLevel: 3,
+      rungs: [rung({ rung: 'blanks', dueAt: now - DAY, level: 3 })],
+    });
+    // Due five days ago - the smallest (earliest) dueAt of the two, so this
+    // one sorts first despite its lower bestLevel: due status and recency
+    // outrank level entirely.
+    const dueFiveDaysAgo = passageView({
+      passage: { id: 2, addedAt: 800 },
+      dueCount: 1,
+      bestLevel: 2,
+      rungs: [rung({ rung: 'blanks', dueAt: now - 5 * DAY, level: 2 })],
+    });
+    const neverAttempted = passageView({
+      passage: { id: 3, addedAt: 700 },
+      dueCount: 0,
+      bestLevel: 0,
+      rungs: [rung({ rung: 'blanks', dueAt: null, level: 0 })],
+    });
+    const lowLevel = passageView({
+      passage: { id: 4, addedAt: 600 },
+      dueCount: 0,
+      bestLevel: 1,
+      rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 1 })],
+    });
+    const higherLevel = passageView({
+      passage: { id: 5, addedAt: 500 },
+      dueCount: 0,
+      bestLevel: 2,
+      rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 2 })],
+    });
+
+    // Not due, not never-attempted, same bestLevel (2) as `higherLevel` -
+    // tiebreak on dueCount (higher first).
+    const sameLevelMoreDue = passageView({
+      passage: { id: 6, addedAt: 400 },
+      dueCount: 3,
+      bestLevel: 2,
+      rungs: [rung({ rung: 'blanks', dueAt: now + DAY, level: 2 })],
+    });
+
+    const sorted = sortPassagesByNeed(
+      [higherLevel, dueOneDayAgo, lowLevel, neverAttempted, sameLevelMoreDue, dueFiveDaysAgo],
+      now,
+    );
+
+    expect(sorted.map((pv) => pv.passage.id)).toEqual([
+      // Due, earliest dueAt first: id 2 (five days ago) before id 1 (one day ago).
+      2, 1,
+      // Never attempted.
+      3,
+      // Ascending bestLevel among the rest.
+      4,
+      // bestLevel ties at 2 between `sameLevelMoreDue` (dueCount 3) and
+      // `higherLevel` (dueCount 0) - descending dueCount wins.
+      6, 5,
+    ]);
+  });
+
+  it('breaks a full tie by oldest addedAt', () => {
+    const a = passageView({ passage: { id: 1, addedAt: 200 }, dueCount: 0, bestLevel: 2 });
+    const b = passageView({ passage: { id: 2, addedAt: 100 }, dueCount: 0, bestLevel: 2 });
+    expect(sortPassagesByNeed([a, b], now).map((pv) => pv.passage.id)).toEqual([2, 1]);
+  });
+
+  it('does not mutate its argument', () => {
+    const a = passageView({ passage: { id: 1, addedAt: 200 }, bestLevel: 2 });
+    const b = passageView({ passage: { id: 2, addedAt: 100 }, bestLevel: 1 });
+    const original = [a, b];
+    sortPassagesByNeed(original, now);
+    expect(original.map((pv) => pv.passage.id)).toEqual([1, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity tiles (round-2 UI review)
+// ---------------------------------------------------------------------------
+
+describe('ACTIVITY_TILES', () => {
+  it('lists the six tiles in the design doc order, with verbatim copy', () => {
+    expect(ACTIVITY_TILES.map((t) => t.id)).toEqual([
+      'variety',
+      'refmatch',
+      'ordering',
+      'blanks',
+      'firstletters',
+      'provideref',
+    ]);
+
+    const byId = Object.fromEntries(ACTIVITY_TILES.map((t) => [t.id, t]));
+
+    expect(byId.variety).toMatchObject({
+      rung: null,
+      title: 'Variety',
+      subtext: "A mix of activities based on what's next in better learning your verse list.",
+    });
+    expect(byId.refmatch).toMatchObject({
+      rung: 'refmatch',
+      title: 'Match References',
+      subtext: "Match a passage's text to its reference.",
+    });
+    expect(byId.ordering).toMatchObject({
+      rung: 'ordering',
+      title: 'Put in Order',
+      subtext: 'A passage has its verses shuffled, and you put them in order.',
+    });
+    expect(byId.blanks).toMatchObject({
+      rung: 'blanks',
+      title: 'Fill in the Blanks',
+      subtext: 'A passage is shown with blanks, and you provide the first letter or the entire word for each blank.',
+    });
+    expect(byId.firstletters).toMatchObject({
+      rung: 'firstletters',
+      title: 'First Letters',
+      subtext: 'A passage reference is given, and you type the first letter of each word, in order.',
+    });
+    expect(byId.provideref).toMatchObject({
+      // No Rung exists for this exercise yet - see the design doc's finding.
+      rung: null,
+      title: 'Provide Reference',
+      subtext: 'The passage text is shown, and you type its reference.',
+    });
+  });
+});
+
+describe('activityAvailability', () => {
+  const now = Date.UTC(2026, 5, 1, 12, 0, 0);
+  const tile = (id: string) => ACTIVITY_TILES.find((t) => t.id === id)!;
+
+  it('Provide Reference is always unavailable, regardless of the plan', () => {
+    expect(activityAvailability(planOf([]), tile('provideref'), now)).toEqual({
+      available: false,
+      warning: 'Not available yet.',
+    });
+    const full = planOf([
+      passageView({ passage: { id: 1 } }),
+      passageView({ passage: { id: 2 } }),
+      passageView({ passage: { id: 3 } }),
+    ]);
+    expect(activityAvailability(full, tile('provideref'), now)).toEqual({
+      available: false,
+      warning: 'Not available yet.',
+    });
+  });
+
+  describe('Match References', () => {
+    it('is unavailable below the passage-count threshold, with the exact count filled in', () => {
+      const p = planOf([passageView({ passage: { id: 1 } })]);
+      expect(activityAvailability(p, tile('refmatch'), now)).toEqual({
+        available: false,
+        warning: `Requires at least ${MIN_PASSAGES_FOR_REFMATCH} passages; you have 1 so far.`,
+      });
+    });
+
+    it('is unavailable on an empty plan', () => {
+      expect(activityAvailability(planOf([]), tile('refmatch'), now)).toEqual({
+        available: false,
+        warning: 'Requires at least 2 passages; you have 0 so far.',
+      });
+    });
+
+    it('is available once the plan reaches the threshold', () => {
+      const p = planOf([
+        passageView({ passage: { id: 1 } }),
+        passageView({ passage: { id: 2 } }),
+      ]);
+      expect(activityAvailability(p, tile('refmatch'), now)).toEqual({ available: true, warning: null });
+    });
+  });
+
+  describe('Put in Order', () => {
+    it('is unavailable on an empty plan, with "you have none yet"', () => {
+      expect(activityAvailability(planOf([]), tile('ordering'), now)).toEqual({
+        available: false,
+        warning: 'Put in Order needs a passage of at least 4 verses; you have none yet.',
+      });
+    });
+
+    it('is unavailable when the longest passage is short of the threshold, with the actual count', () => {
+      const p = planOf([
+        passageView({ passage: { id: 1, verseCount: 2 } }),
+        passageView({ passage: { id: 2, verseCount: 1 } }),
+      ]);
+      expect(activityAvailability(p, tile('ordering'), now)).toEqual({
+        available: false,
+        warning: 'Put in Order needs a passage of at least 4 verses; your longest is 2 so far.',
+      });
+    });
+
+    it('is available once the longest passage reaches 4 verses', () => {
+      const p = planOf([
+        passageView({ passage: { id: 1, verseCount: 4 } }),
+        passageView({ passage: { id: 2, verseCount: 1 } }),
+      ]);
+      expect(activityAvailability(p, tile('ordering'), now)).toEqual({ available: true, warning: null });
+    });
+  });
+
+  describe('Variety, Fill in the Blanks, First Letters', () => {
+    for (const id of ['variety', 'blanks', 'firstletters']) {
+      it(`${id}: unavailable with no warning on an empty plan`, () => {
+        expect(activityAvailability(planOf([]), tile(id), now)).toEqual({ available: false, warning: null });
+      });
+
+      it(`${id}: available as soon as the plan has one passage`, () => {
+        const p = planOf([passageView({ passage: { id: 1 } })]);
+        expect(activityAvailability(p, tile(id), now)).toEqual({ available: true, warning: null });
+      });
+    }
   });
 });
 

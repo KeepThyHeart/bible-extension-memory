@@ -49,8 +49,12 @@ import type { Rung } from './types';
  * Two total: the passage itself and at least one other to be confused with. A
  * picker with one option is not an exercise. This applies regardless of how
  * many verses the passage itself spans - see the file header.
+ *
+ * Exported so `format.ts#activityAvailability` can compose its "not enough
+ * passages yet" warning from the real constant instead of repeating the
+ * number - the round-2 UI review's Match References / Provide Reference tile.
  */
-const MIN_PASSAGES_FOR_REFMATCH = 2;
+export const MIN_PASSAGES_FOR_REFMATCH = 2;
 
 /**
  * Which rungs apply to this passage, in ladder order.
