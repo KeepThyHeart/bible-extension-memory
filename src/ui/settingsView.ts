@@ -10,13 +10,20 @@
 
 import type { AnswerMode, PlanView, SettingsView } from '../types';
 import { button, el } from './dom';
-import { toolbar } from './components';
+import { breadcrumb } from './components';
 import type { PanelHost } from './host';
 
 export function renderSettings(host: PanelHost, settings: SettingsView, plan: PlanView): HTMLElement {
   const root = el('section', { class: 'sm-screen sm-screen-settings' });
 
-  root.appendChild(toolbar({ title: 'Settings', onBack: () => host.go({ type: 'goPlan' }) }));
+  root.appendChild(
+    breadcrumb({
+      crumbs: [
+        { label: 'Home', onClick: () => host.go({ type: 'goPlan' }) },
+        { label: 'Settings' },
+      ],
+    }),
+  );
 
   root.appendChild(
     el('section', { class: 'sm-block' }, [

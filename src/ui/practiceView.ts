@@ -62,7 +62,7 @@ import type {
   StepResult,
 } from '../types';
 import { append, button, clear, el, focusQuietly, replace, textNode } from './dom';
-import { errorBanner, levelBoxes, toolbar } from './components';
+import { breadcrumb, errorBanner, levelBoxes } from './components';
 import { RUNG_LABEL, formatScore, formatStepProgress, matchesFirstLetter, pickDueTarget } from './format';
 import type { PanelHost } from './host';
 import { plainWord, renderPassage } from './scripture';
@@ -221,14 +221,25 @@ export class PracticeView {
     const reference = this.context?.reference ?? '';
 
     replace(this.headEl, [
-      toolbar({
-        title: reference,
-        // Leaving mid-exercise is not "ending" anything any more: the resume
-        // point is written to disk after every verse (see `main.ts`), so
-        // going back genuinely does what task 0004 asked for - "a way to go
-        // back from an activity to the passage" that picks up later.
-        onBack: () => void this.endSession(),
-        actions: step !== null ? [el('span', { class: 'sm-toolbar-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })] : [],
+      breadcrumb({
+        crumbs: [
+          {
+            label: 'Home',
+            // Leaving mid-exercise is not "ending" anything any more: the
+            // resume point is written to disk after every verse (see
+            // `main.ts`), so going back genuinely does what task 0004 asked
+            // for - "a way to go back from an activity to the passage" that
+            // picks up later. `endSession` (not a plain `goPlan`) is what
+            // saves that resume point and returns to `returnTo` - the plan or
+            // the passage screen, whichever this session was started from.
+            onClick: () => void this.endSession(),
+          },
+          // The activity itself (blanks, ordering, ...) is deliberately not a
+          // third crumb - it is the selected tab below, and the design doc
+          // asks that the activity name not be duplicated beside it.
+          { label: reference },
+        ],
+        actions: step !== null ? [el('span', { class: 'sm-crumbs-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })] : [],
       }),
       el('div', { class: 'sm-practice-sub' }, [
         el('span', { class: 'sm-practice-rung', text: RUNG_LABEL[this.session.rung] }),

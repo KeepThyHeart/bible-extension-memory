@@ -1,5 +1,5 @@
 /**
- * The small, repeated pieces: the toolbar, level boxes, bars, empty states.
+ * The small, repeated pieces: the breadcrumb, level boxes, bars, empty states.
  *
  * Collected here rather than repeated in each view so that a level box means
  * one thing everywhere. The plan row's boxes and the passage screen's boxes
@@ -9,21 +9,27 @@
  * Everything returns a detached element. Nothing here reads state, schedules
  * work, or touches the worker.
  *
- * ## Toolbar styling
+ * ## Breadcrumb styling
  *
  * The host gives extension panels colour and font tokens only - no button,
  * toolbar or back-icon styles (see `styles.css`'s header note). Task 0004
  * asked this panel to look like the rest of the app in the meantime: a
- * full-width toolbar band, a plain back arrow at the left, and small flat
- * buttons rather than v0's rounded filled ones and text-link "Back to plan".
- * `toolbar()` and `.sm-toolbar*` in `styles.css` are that local approximation.
- * The proper fix is a shared stylesheet from the host (`ext-ui://host/controls.css`,
- * raised as a separate Bible-repo task per that review) that this panel would
- * then consume instead of maintaining its own copy.
+ * full-width band and small flat controls rather than v0's rounded filled
+ * ones and text-link "Back to plan". `breadcrumb()` and `.sm-crumbs*` in
+ * `styles.css` are that local approximation. The proper fix is a shared
+ * stylesheet from the host (`ext-ui://host/controls.css`, raised as a
+ * separate Bible-repo task per that review) that this panel would then
+ * consume instead of maintaining its own copy.
+ *
+ * `breadcrumb()` itself replaced an earlier `toolbar()` with a plain back
+ * arrow (Decision 1 of the nav/chrome redesign): a breadcrumb satisfies both
+ * "a back control that matches the app's visual language" and "a
+ * breadcrumb" with one control, and needs no icon shared from the host repo
+ * since Home is drawn locally with `icon('home')` below.
  */
 
 import type { Rung, RungView } from '../types';
-import { button, el } from './dom';
+import { append, button, el } from './dom';
 import {
   MASTERED_LEVEL,
   RUNG_LABEL,
@@ -35,23 +41,65 @@ import {
   inLadderOrder,
 } from './format';
 
+/** One entry in a `breadcrumb()` trail. */
+export interface Crumb {
+  label: string;
+  /** Omitted on the final crumb - it is the current screen, not a link. */
+  onClick?: () => void;
+}
+
 /**
- * The toolbar band at the top of every screen.
+ * The breadcrumb band at the top of every screen, replacing the old
+ * `toolbar()`'s back arrow.
  *
- * `onBack` is omitted only on the home screen, which is the one place there
- * is nowhere further back to go.
+ * Every non-final crumb is a real `<button>`; the final one is the screen's
+ * own `<h1>`, given `aria-current="page"` instead of a click handler - there
+ * is nowhere further to go from the current screen, and `panel.ts#render`
+ * keeps focusing `main.querySelector('h1')` after every navigation without
+ * needing to know that heading now lives inside a crumb trail.
+ *
+ * Crumb 1 is always Home - a house glyph (`icon('home')`) plus the word
+ * "Home" - whether or not it is also the final crumb (the home screen itself
+ * has a single, unclickable "Home" crumb).
+ *
+ * `menu` is a left-most slot for the hamburger the home screen will get
+ * later (item 16); it is unused by every call site today and exists only so
+ * that a later change does not have to touch this signature. `actions`
+ * mirrors `toolbar()`'s own slot, e.g. the passage screen's "Show in Bible"
+ * and answer-mode gear, or the plan screen's "Analytics" / "Settings" links.
  */
-export function toolbar(opts: {
-  title: string;
-  onBack?: () => void;
+export function breadcrumb(opts: {
+  crumbs: Crumb[];
+  menu?: HTMLElement;
   actions?: (HTMLElement | null)[];
 }): HTMLElement {
-  return el('header', { class: 'sm-toolbar' }, [
-    opts.onBack
-      ? button('←', opts.onBack, { class: 'sm-back', attrs: { 'aria-label': 'Back' } })
-      : el('span', { class: 'sm-toolbar-spacer', attrs: { 'aria-hidden': 'true' } }),
-    el('h1', { class: 'sm-toolbar-title', text: opts.title }),
-    el('div', { class: 'sm-toolbar-actions' }, opts.actions ?? []),
+  const list = el('ol', { class: 'sm-crumb-list' });
+
+  opts.crumbs.forEach((crumb, index) => {
+    const isFirst = index === 0;
+    const isLast = index === opts.crumbs.length - 1;
+    const content: (Node | string)[] = isFirst ? [icon('home'), crumb.label] : [crumb.label];
+
+    const crumbEl: HTMLElement = isLast
+      ? el('h1', { class: 'sm-crumb-current', attrs: { 'aria-current': 'page' } })
+      : button(crumb.label, crumb.onClick ?? (() => {}), { class: 'sm-crumb', text: '' });
+    append(crumbEl, content);
+
+    list.appendChild(el('li', { class: 'sm-crumb-item' }, [crumbEl]));
+
+    if (!isLast) {
+      list.appendChild(
+        el('li', { class: 'sm-crumb-sep' }, [
+          el('span', { attrs: { 'aria-hidden': 'true' } }, ['›']),
+        ]),
+      );
+    }
+  });
+
+  return el('nav', { class: 'sm-crumbs', attrs: { 'aria-label': 'Breadcrumb' } }, [
+    opts.menu ?? null,
+    list,
+    el('div', { class: 'sm-crumbs-actions' }, opts.actions ?? []),
   ]);
 }
 

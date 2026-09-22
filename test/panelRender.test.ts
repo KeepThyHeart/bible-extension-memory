@@ -74,7 +74,7 @@ import type {
 } from '../src/types';
 import type { PanelHost } from '../src/ui/host';
 import type { NavAction } from '../src/ui/state';
-import { icon, type IconName } from '../src/ui/components';
+import { breadcrumb, icon, type Crumb, type IconName } from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { renderPassage } from '../src/ui/scripture';
 import { PracticeView } from '../src/ui/practiceView';
@@ -747,7 +747,7 @@ describe('the working verse among its context', () => {
     // being prominent on this screen.
     const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
 
-    const title = practice.root.querySelector<HTMLElement>('.sm-toolbar-title')!;
+    const title = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
     expect(title.textContent).toBe('Psalm 1:2-3');
   });
 
@@ -2106,5 +2106,203 @@ describe('icon()', () => {
     expect(a).not.toBe(b);
     a.setAttribute('data-marker', 'x');
     expect(b.hasAttribute('data-marker')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. breadcrumb() - replaces the old toolbar()'s back arrow
+// ---------------------------------------------------------------------------
+
+describe('breadcrumb()', () => {
+  it('renders a nav landmark labelled Breadcrumb, holding an ordered list', () => {
+    const trail = breadcrumb({ crumbs: [{ label: 'Home', onClick: () => {} }, { label: 'Settings' }] });
+    container.appendChild(trail);
+
+    expect(trail.tagName).toBe('NAV');
+    expect(trail.classList.contains('sm-crumbs')).toBe(true);
+    expect(trail.getAttribute('aria-label')).toBe('Breadcrumb');
+    expect(trail.querySelector('ol')).not.toBeNull();
+  });
+
+  it('renders the final crumb as the screen\'s own <h1>, marked current', () => {
+    const trail = breadcrumb({ crumbs: [{ label: 'Home', onClick: () => {} }, { label: 'Analytics' }] });
+    container.appendChild(trail);
+
+    const current = trail.querySelector('h1')!;
+    expect(current).not.toBeNull();
+    expect(current.classList.contains('sm-crumb-current')).toBe(true);
+    expect(current.getAttribute('aria-current')).toBe('page');
+    expect(spokenText(current)).toBe('Analytics');
+
+    // Exactly one - a second `<h1>` would break `panel.ts#render`'s
+    // "focus `main.querySelector('h1')`" contract.
+    expect(trail.querySelectorAll('h1').length).toBe(1);
+  });
+
+  it('renders every non-final crumb as a real <button>, and clicking one navigates', () => {
+    const clicked: string[] = [];
+    const crumbs: Crumb[] = [
+      { label: 'Home', onClick: () => clicked.push('Home') },
+      { label: 'Middle', onClick: () => clicked.push('Middle') },
+      { label: 'Current' },
+    ];
+    const trail = breadcrumb({ crumbs });
+    container.appendChild(trail);
+
+    const buttons = Array.from(trail.querySelectorAll<HTMLButtonElement>('button.sm-crumb'));
+    expect(buttons.length).toBe(2);
+    expect(buttons.every((b) => b.type === 'button')).toBe(true);
+    expect(spokenText(buttons[1]!)).toBe('Middle');
+
+    buttons[1]!.click();
+    expect(clicked).toEqual(['Middle']);
+
+    buttons[0]!.click();
+    expect(clicked).toEqual(['Middle', 'Home']);
+
+    // The final crumb is never itself a button - there is nowhere further to
+    // go from the current screen.
+    expect(trail.querySelector('h1')!.tagName).not.toBe('BUTTON');
+  });
+
+  it('draws crumb 1 as a house glyph plus the word "Home", whether or not it is also the final crumb', () => {
+    const linked = breadcrumb({ crumbs: [{ label: 'Home', onClick: () => {} }, { label: 'Settings' }] });
+    const homeCrumb = linked.querySelector('.sm-crumb')!;
+    expect(homeCrumb.querySelector('svg.sm-icon-home')).not.toBeNull();
+    expect(spokenText(homeCrumb)).toBe('Home');
+
+    // The home screen itself: a single crumb that is both crumb 1 and final.
+    const sole = breadcrumb({ crumbs: [{ label: 'Home' }] });
+    const heading = sole.querySelector('h1')!;
+    expect(heading.querySelector('svg.sm-icon-home')).not.toBeNull();
+    expect(spokenText(heading)).toBe('Home');
+    expect(heading.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('separates crumbs with a "›", hidden from assistive tech', () => {
+    const trail = breadcrumb({ crumbs: [{ label: 'Home', onClick: () => {} }, { label: 'Settings' }] });
+    container.appendChild(trail);
+
+    const sep = trail.querySelector('.sm-crumb-sep')!;
+    expect(sep.textContent).toBe('›');
+    expect(sep.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    // The accessible name of the whole trail skips it entirely.
+    expect(spokenText(trail)).not.toContain('›');
+  });
+
+  it('places an optional menu slot and action elements where given', () => {
+    const menu = document.createElement('button');
+    menu.textContent = 'Menu';
+    const action = document.createElement('button');
+    action.textContent = 'Extra';
+
+    const trail = breadcrumb({ crumbs: [{ label: 'Home' }], menu, actions: [action] });
+
+    expect(trail.contains(menu)).toBe(true);
+    expect(trail.contains(action)).toBe(true);
+  });
+
+  it('leaves the menu slot out entirely when not given, as every current call site does', () => {
+    const trail = breadcrumb({ crumbs: [{ label: 'Home' }] });
+    // Nothing beyond the crumb list and the (empty) actions slot.
+    expect(trail.children.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. The crumb trail on each screen
+// ---------------------------------------------------------------------------
+
+describe('the crumb trail on each screen', () => {
+  /** The crumbs in document order, read the way a user would. */
+  function crumbLabels(root: HTMLElement): string[] {
+    return Array.from(root.querySelectorAll('.sm-crumb, .sm-crumb-current')).map(spokenText);
+  }
+
+  it('plan (home): a single, unclickable "Home" crumb', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    expect(crumbLabels(root)).toEqual(['Home']);
+    // Nowhere further "home" to go from the home screen itself.
+    expect(root.querySelector('button.sm-crumb')).toBeNull();
+    const heading = root.querySelector<HTMLElement>('h1.sm-crumb-current')!;
+    expect(heading.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('passage: Home > the passage\'s own reference, and Home goes to the plan', () => {
+    const pv = passageViewFixture({ passage: passageFixture({ reference: 'Psalm 23:1-6' }) });
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    expect(crumbLabels(root)).toEqual(['Home', 'Psalm 23:1-6']);
+
+    root.querySelector<HTMLButtonElement>('button.sm-crumb')!.click();
+    expect(host.navigations).toContainEqual({ type: 'goPlan' });
+  });
+
+  it('analytics: Home > Analytics, and Home goes to the plan', () => {
+    const root = renderAnalytics(host, emptyAnalytics());
+    container.appendChild(root);
+
+    expect(crumbLabels(root)).toEqual(['Home', 'Analytics']);
+    root.querySelector<HTMLButtonElement>('button.sm-crumb')!.click();
+    expect(host.navigations).toContainEqual({ type: 'goPlan' });
+  });
+
+  it('settings: Home > Settings, and Home goes to the plan', () => {
+    const root = renderSettings(host, { defaultAnswerMode: 'firstLetter' }, emptyPlan());
+    container.appendChild(root);
+
+    expect(crumbLabels(root)).toEqual(['Home', 'Settings']);
+    root.querySelector<HTMLButtonElement>('button.sm-crumb')!.click();
+    expect(host.navigations).toContainEqual({ type: 'goPlan' });
+  });
+
+  it('practice: Home > the passage reference, with the activity NOT a third crumb', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+
+    expect(crumbLabels(practice.root)).toEqual(['Home', 'Psalm 1:2-3']);
+    // The activity is the selected tab, shown elsewhere (`.sm-practice-rung`)
+    // - naming it again as a crumb would duplicate it, which item 10 rules
+    // out explicitly.
+    expect(spokenText(practice.root.querySelector('.sm-crumb-list')!)).not.toContain('Fill in the blanks');
+  });
+
+  it('practice: the Home crumb ends the session (saving progress) instead of abandoning it', async () => {
+    let endSessionCalled = false;
+    host.handlers.endSession = () => {
+      endSessionCalled = true;
+      return { ok: true, data: {} };
+    };
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+
+    practice.root.querySelector<HTMLButtonElement>('button.sm-crumb')!.click();
+    await settle();
+
+    // Not a bare `goPlan`: leaving mid-exercise has to write the resume point
+    // first (see `practiceView.ts#endSession`'s own header), and only then
+    // does it navigate - to `returnTo` (the plan here), via `sessionEnded`.
+    expect(endSessionCalled).toBe(true);
+    expect(host.navigations).toContainEqual({ type: 'sessionEnded' });
+  });
+
+  it('keeps exactly one <h1> per screen, as the final crumb - what panel.ts#render focuses', async () => {
+    const staticScreens = [
+      renderPlan(host, emptyPlan()),
+      renderPassageScreen(host, passageViewFixture(), 'firstLetter'),
+      renderAnalytics(host, emptyAnalytics()),
+      renderSettings(host, { defaultAnswerMode: 'firstLetter' }, emptyPlan()),
+    ];
+    for (const root of staticScreens) {
+      const headings = root.querySelectorAll('h1');
+      expect(headings.length).toBe(1);
+      expect(headings[0]!.classList.contains('sm-crumb-current')).toBe(true);
+    }
+
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+    const practiceHeadings = practice.root.querySelectorAll('h1');
+    expect(practiceHeadings.length).toBe(1);
+    expect(practiceHeadings[0]!.classList.contains('sm-crumb-current')).toBe(true);
   });
 });

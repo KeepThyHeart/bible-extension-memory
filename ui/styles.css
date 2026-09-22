@@ -294,16 +294,20 @@ ul, ol {
 }
 
 /* ==========================================================================
-   Toolbar
+   Breadcrumb
 
-   A local approximation of the host's own `PaneToolbar` look, described in
-   the task 0004 review: a full-width band, a plain back arrow at the left,
-   and small flat buttons rather than v0's rounded filled ones. The host
-   serves no button/toolbar tokens of its own yet (see `components.ts`'s file
-   header) - once it does, this block is what gets replaced.
+   Replaces the old toolbar's plain back arrow (Decision 1 of the nav/chrome
+   redesign): a breadcrumb trail satisfies both "a back control that matches
+   the app's visual language" and "a breadcrumb" with one control, and needs
+   no icon shared from the host repo since Home is drawn locally with
+   `components.ts#icon('home')`. Still a local approximation of a look the
+   host serves no button/toolbar tokens for yet (see `components.ts`'s file
+   header) - a full-width band and small flat controls, the same reasoning
+   `.sm-toolbar` used to carry here - once the host does, this block is what
+   gets replaced.
    ========================================================================== */
 
-.sm-toolbar {
+.sm-crumbs {
   display: flex;
   align-items: center;
   gap: var(--sm-s2);
@@ -313,75 +317,80 @@ ul, ol {
   border-bottom: 1px solid var(--sm-border);
 }
 
-.sm-toolbar-title {
+.sm-crumb-list {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;
-  /* Bumped from 1.05em - a review round found the reference on the passage
-     and practice screens not prominent enough next to the activity name
-     beneath it (`.sm-practice-rung`, `.sm-activity-title`), both smaller and
-     dimmer than this already. */
+  gap: var(--sm-s1);
+}
+
+.sm-crumb-item {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.sm-crumb-sep {
+  color: var(--sm-text-muted);
+}
+
+/* A crumb that still links back to an earlier screen - flat and quiet, the
+   same treatment every other secondary control in the panel gets
+   (`.sm-btn-quiet`), rather than a distinct back-arrow look of its own. */
+.sm-crumb {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: var(--sm-s1) var(--sm-s2);
+  margin: calc(-1 * var(--sm-s1)) calc(-1 * var(--sm-s2));
+  border: 0;
+  border-radius: var(--sm-radius);
+  background: transparent;
+  color: var(--sm-accent);
+  cursor: pointer;
+}
+
+.sm-crumb:hover {
+  background: var(--sm-accent-light);
+}
+
+/* The final crumb: the screen's own `<h1>` (see `components.ts#breadcrumb`),
+   not a link - there is nowhere further to go from here. Sizing carried over
+   from the old `.sm-toolbar-title` - bumped from 1.05em because a review
+   round found the reference on the passage and practice screens not
+   prominent enough next to the activity name beneath it
+   (`.sm-practice-rung`, `.sm-activity-title`), both smaller and dimmer than
+   this already. */
+.sm-crumb-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  min-width: 0;
   font-size: 1.2em;
   font-weight: 600;
   color: var(--sm-heading);
   overflow-wrap: break-word;
 }
 
-.sm-toolbar-title:focus-visible {
+.sm-crumb-current:focus-visible {
   outline-offset: 4px;
 }
 
-.sm-toolbar-actions {
+.sm-crumbs-actions {
   display: flex;
   align-items: center;
   gap: var(--sm-s1);
   flex: 0 0 auto;
 }
 
-.sm-toolbar-meta {
+.sm-crumbs-meta {
   color: var(--sm-text-dim);
   font-size: 0.85em;
   white-space: nowrap;
-}
-
-/* The back arrow at the toolbar's left edge - the only place in the panel
-   that is an arrow rather than a word. A review round found the original,
-   fully transparent version "kind of hard to see": it read as blank space
-   until hovered, with nothing to say a control was even there. A second
-   round, on the practice screen specifically, still found it too easy to
-   miss ("so user doesn't feel trapped ever") - so it is bigger again and,
-   critically, filled with `--sm-control-bg`, the same solid fill every other
-   `.sm-btn` actually uses (the surface-raised fill this carried before was
-   nearly the toolbar's own background and read as barely there). */
-.sm-back {
-  flex: 0 0 auto;
-  width: 2.3em;
-  height: 2.3em;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.4em;
-  font-weight: 700;
-  line-height: 1;
-  padding: 0;
-  border: 1px solid var(--sm-border-strong);
-  border-radius: var(--sm-radius);
-  background: var(--sm-control-bg);
-  color: var(--sm-control-text);
-  cursor: pointer;
-}
-
-.sm-back:hover {
-  background: var(--sm-control-hover);
-  border-color: var(--sm-accent);
-  color: var(--sm-accent);
-}
-
-/* Reserves the same width as `.sm-back` on the one screen with nowhere
-   further back to go, so the title still lines up across every screen. */
-.sm-toolbar-spacer {
-  flex: 0 0 auto;
-  width: 2.3em;
-  height: 2.3em;
 }
 
 /* ==========================================================================
@@ -1511,9 +1520,9 @@ ul, ol {
     padding: var(--sm-s3);
   }
 
-  /* Keeps the toolbar band flush with the pane's edges as `.sm-main`'s own
-     padding shrinks - see `.sm-toolbar`'s negative margin. */
-  .sm-toolbar {
+  /* Keeps the crumb band flush with the pane's edges as `.sm-main`'s own
+     padding shrinks - see `.sm-crumbs`'s negative margin. */
+  .sm-crumbs {
     margin: calc(-1 * var(--sm-s3)) calc(-1 * var(--sm-s3)) 0;
   }
 
@@ -1559,7 +1568,7 @@ ul, ol {
     padding: var(--sm-s5);
   }
 
-  .sm-toolbar {
+  .sm-crumbs {
     margin: calc(-1 * var(--sm-s5)) calc(-1 * var(--sm-s5)) 0;
   }
 

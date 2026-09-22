@@ -17,12 +17,12 @@
 import type { AnswerMode, PassageView, Rung, RungView } from '../types';
 import { button, el, replace } from './dom';
 import {
+  breadcrumb,
   errorBanner,
   inapplicabilityNote,
   levelBoxes,
   scheduleLine,
   suggestedBadge,
-  toolbar,
 } from './components';
 import { RUNG_LABEL, countLabel, inLadderOrder, isDue, suggestedRungFor } from './format';
 import type { PanelHost } from './host';
@@ -63,9 +63,11 @@ export function renderPassageScreen(
   );
 
   root.appendChild(
-    toolbar({
-      title: pv.passage.reference,
-      onBack: () => host.go({ type: 'goPlan' }),
+    breadcrumb({
+      crumbs: [
+        { label: 'Home', onClick: () => host.go({ type: 'goPlan' }) },
+        { label: pv.passage.reference },
+      ],
       actions: [
         button('Show in Bible', () => host.openInBible(pv.passage.startVerseId), {
           class: 'sm-btn sm-btn-quiet sm-btn-small',

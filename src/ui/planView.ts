@@ -11,7 +11,7 @@
 
 import type { Passage, PassageView, PlanView } from '../types';
 import { append, button, el, focusQuietly, replace } from './dom';
-import { activitySquares, dueBadge, emptyState, errorBanner, toolbar } from './components';
+import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner } from './components';
 import { RUNG_LABEL, countLabel, pickStartTarget } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
 import type { PanelHost } from './host';
@@ -21,8 +21,11 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
   const root = el('section', { class: 'sm-screen sm-screen-plan' });
 
   root.appendChild(
-    toolbar({
-      title: plan.collectionName,
+    breadcrumb({
+      // The home screen's own crumb trail is just "Home" - a single,
+      // unclickable crumb (design doc's crumb-trail table) - not the plan's
+      // own name, which nothing else on this screen shows either.
+      crumbs: [{ label: 'Home' }],
       actions: [
         button('Analytics', () => host.go({ type: 'goAnalytics' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
         button('Settings', () => host.go({ type: 'goSettings' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
