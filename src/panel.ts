@@ -123,7 +123,12 @@ const host: PanelHost = {
     }
     const session = reply.data as RequestMap['startSession'];
 
-    host.go({ type: 'sessionStarted', sessionId: session.sessionId });
+    host.go({
+      type: 'sessionStarted',
+      sessionId: session.sessionId,
+      passageId: session.passageId,
+      rung: session.rung,
+    });
 
     // `render()` deliberately leaves the practice screen alone - that view
     // owns its own DOM and its own lifetime - so the mount happens here.

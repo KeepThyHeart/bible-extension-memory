@@ -393,7 +393,7 @@ describe('calendarWeeks', () => {
 describe('navReduce', () => {
   it('returns a session started from the plan to the plan', () => {
     let state = INITIAL_NAV;
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's1' });
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 's1', passageId: 1, rung: 'blanks' });
     expect(state.view).toEqual({ name: 'practice', sessionId: 's1' });
 
     state = navReduce(state, { type: 'sessionEnded' });
@@ -405,20 +405,55 @@ describe('navReduce', () => {
     // the top level afterwards loses their place, which is the whole reason
     // this reducer holds a `returnTo` at all.
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 42 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's2' });
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 's2', passageId: 42, rung: 'ordering' });
     state = navReduce(state, { type: 'sessionEnded' });
 
-    expect(state.view).toEqual({ name: 'passage', passageId: 42 });
+    expect(state.view).toEqual({ name: 'passage', passageId: 42, rung: 'ordering' });
+  });
+
+  it('remembers the tab (rung) the session was on, not the tab the passage screen last showed', () => {
+    // The passage screen was showing "suggested" (no explicit rung), but the
+    // activity actually practiced was `blanks` - `sessionEnded` should land
+    // back on `blanks`, not on `null`/suggested again.
+    let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 42 });
+    expect(state.view).toEqual({ name: 'passage', passageId: 42, rung: null });
+
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 's3', passageId: 42, rung: 'blanks' });
+    expect(state.returnTo).toEqual({ name: 'passage', passageId: 42, rung: 'blanks' });
+
+    state = navReduce(state, { type: 'sessionEnded' });
+    expect(state.view).toEqual({ name: 'passage', passageId: 42, rung: 'blanks' });
   });
 
   it('does not let practice become its own return target', () => {
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'a' });
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 'a', passageId: 7, rung: 'ordering' });
     // A second session started without ending the first - "Practice again".
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'b' });
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 'b', passageId: 7, rung: 'ordering' });
 
     expect(state.view).toEqual({ name: 'practice', sessionId: 'b' });
-    expect(state.returnTo).toEqual({ name: 'passage', passageId: 7 });
+    expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
+  });
+
+  it('keeps the original return target when a later session (mid-practice) switches rung or passage', () => {
+    // "Next due" from the summary screen can start a session for a different
+    // passage and rung entirely, without ever leaving practice. `returnTo`
+    // must still point at wherever the *first* session in the chain was
+    // launched from - not be overwritten with the second session's passage
+    // or rung, and not become practice itself either.
+    let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 'a', passageId: 7, rung: 'ordering' });
+    expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
+
+    // Switch rung mid-flow on the same passage.
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 'b', passageId: 7, rung: 'blanks' });
+    expect(state.view).toEqual({ name: 'practice', sessionId: 'b' });
+    expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
+
+    // "Next due" moves to an entirely different passage.
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 'c', passageId: 99, rung: 'refmatch' });
+    expect(state.view).toEqual({ name: 'practice', sessionId: 'c' });
+    expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
   });
 
   it('clears a stale return target when Analytics is opened', () => {
@@ -448,7 +483,7 @@ describe('navReduce', () => {
     // Mid-answer is the worst possible moment to replace the screen. Only the
     // destination is repaired.
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's' });
+    state = navReduce(state, { type: 'sessionStarted', sessionId: 's', passageId: 7, rung: 'ordering' });
     state = navReduce(state, { type: 'passageRemoved', passageId: 7 });
 
     expect(state.view).toEqual({ name: 'practice', sessionId: 's' });
@@ -458,13 +493,40 @@ describe('navReduce', () => {
   it('ignores sessionEnded when no session is running', () => {
     expect(navReduce(INITIAL_NAV, { type: 'sessionEnded' })).toBe(INITIAL_NAV);
   });
+
+  it('goPassage with an explicit rung sets the view to that rung', () => {
+    const state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7, rung: 'firstletters' });
+    expect(state.view).toEqual({ name: 'passage', passageId: 7, rung: 'firstletters' });
+    expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'firstletters' });
+  });
+
+  it('goPassage without a rung sets it to null (suggested)', () => {
+    const state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
+    expect(state.view).toEqual({ name: 'passage', passageId: 7, rung: null });
+  });
 });
 
 describe('sameView', () => {
   it('distinguishes passage screens for different passages', () => {
-    expect(sameView({ name: 'passage', passageId: 1 }, { name: 'passage', passageId: 1 })).toBe(true);
-    expect(sameView({ name: 'passage', passageId: 1 }, { name: 'passage', passageId: 2 })).toBe(false);
+    expect(
+      sameView({ name: 'passage', passageId: 1, rung: null }, { name: 'passage', passageId: 1, rung: null }),
+    ).toBe(true);
+    expect(
+      sameView({ name: 'passage', passageId: 1, rung: null }, { name: 'passage', passageId: 2, rung: null }),
+    ).toBe(false);
     expect(sameView({ name: 'plan' }, { name: 'analytics' })).toBe(false);
+  });
+
+  it('distinguishes passage screens for the same passage on different rungs', () => {
+    expect(
+      sameView(
+        { name: 'passage', passageId: 1, rung: 'blanks' },
+        { name: 'passage', passageId: 1, rung: 'ordering' },
+      ),
+    ).toBe(false);
+    expect(
+      sameView({ name: 'passage', passageId: 1, rung: null }, { name: 'passage', passageId: 1, rung: 'blanks' }),
+    ).toBe(false);
   });
 });
 

@@ -12,16 +12,22 @@
  * DOM-free on purpose; see the note at the top of `format.ts`.
  */
 
+import type { Rung } from '../types';
+
 /**
  * The five screens.
  *
  * Practice carries the session id rather than the session: the worker owns the
  * session, and a copy of it stored here would be a second source of truth that
  * goes stale the moment a step is submitted.
+ *
+ * The passage screen's `rung` is which activity tab is showing - `null` means
+ * "suggested" (resolved by `suggestedRungFor` at render time, not here; see
+ * `goPassage`/`sessionStarted` below), not "no tab".
  */
 export type View =
   | { name: 'plan' }
-  | { name: 'passage'; passageId: number }
+  | { name: 'passage'; passageId: number; rung: Rung | null }
   | { name: 'analytics' }
   | { name: 'settings' }
   | { name: 'practice'; sessionId: string };
@@ -44,8 +50,8 @@ export type NavAction =
   | { type: 'goPlan' }
   | { type: 'goAnalytics' }
   | { type: 'goSettings' }
-  | { type: 'goPassage'; passageId: number }
-  | { type: 'sessionStarted'; sessionId: string }
+  | { type: 'goPassage'; passageId: number; rung?: Rung | null }
+  | { type: 'sessionStarted'; sessionId: string; passageId: number; rung: Rung }
   | { type: 'sessionEnded' }
   /**
    * The passage the current view is about has gone away - removed here, or
@@ -73,20 +79,36 @@ export function navReduce(state: NavState, action: NavAction): NavState {
     case 'goSettings':
       return { view: { name: 'settings' }, returnTo: { name: 'plan' } };
 
-    case 'goPassage':
+    case 'goPassage': {
+      // `rung` omitted means "suggested" - `null`, resolved by
+      // `suggestedRungFor` at render time (N4), not here.
+      const rung = action.rung ?? null;
       return {
-        view: { name: 'passage', passageId: action.passageId },
-        returnTo: { name: 'passage', passageId: action.passageId },
+        view: { name: 'passage', passageId: action.passageId, rung },
+        returnTo: { name: 'passage', passageId: action.passageId, rung },
       };
+    }
 
-    case 'sessionStarted':
-      // `returnTo` is deliberately *not* recomputed here. Whatever view asked
-      // for the session already set it, and practice must not become its own
-      // return target or leaving it would land back in the finished session.
-      return {
-        view: { name: 'practice', sessionId: action.sessionId },
-        returnTo: state.view.name === 'practice' ? state.returnTo : state.view,
-      };
+    case 'sessionStarted': {
+      if (state.view.name === 'practice') {
+        // Another session started without ending the first - "Practice
+        // again" or "Next due" from the summary screen. `returnTo` already
+        // points at wherever the *first* session in this chain was launched
+        // from and is deliberately left alone: practice must not become its
+        // own return target, or leaving it would land back in a
+        // just-finished session.
+        return { view: { name: 'practice', sessionId: action.sessionId }, returnTo: state.returnTo };
+      }
+      // Otherwise the view the user launched from becomes the return target,
+      // as before - except a passage screen now remembers which rung/tab
+      // this session actually practices, so `sessionEnded` reopens that tab
+      // rather than re-deriving "Practice Passage" or the suggested activity.
+      const returnTo: View =
+        state.view.name === 'passage'
+          ? { name: 'passage', passageId: action.passageId, rung: action.rung }
+          : state.view;
+      return { view: { name: 'practice', sessionId: action.sessionId }, returnTo };
+    }
 
     case 'sessionEnded':
       if (state.view.name !== 'practice') return state;
@@ -115,7 +137,11 @@ export function navReduce(state: NavState, action: NavAction): NavState {
 /** True when the two views would render the same screen. */
 export function sameView(a: View, b: View): boolean {
   if (a.name !== b.name) return false;
-  if (a.name === 'passage' && b.name === 'passage') return a.passageId === b.passageId;
+  // `rung` is compared too: it picks which tab the passage screen shows, so
+  // two passage views that differ only in `rung` are not the same screen.
+  if (a.name === 'passage' && b.name === 'passage') {
+    return a.passageId === b.passageId && a.rung === b.rung;
+  }
   if (a.name === 'practice' && b.name === 'practice') return a.sessionId === b.sessionId;
   return true;
 }
