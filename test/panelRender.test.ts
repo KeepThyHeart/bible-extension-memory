@@ -1420,17 +1420,6 @@ describe('accessibility', () => {
     expect(label).toBe('Missing word 1 of 13');
   });
 
-  it('associates the add-passage field with a real label', () => {
-    const root = renderPlan(host, emptyPlan());
-    container.appendChild(root);
-
-    const input = root.querySelector<HTMLInputElement>('input')!;
-    const label = root.querySelector<HTMLLabelElement>('label')!;
-    expect(input.id).not.toBe('');
-    expect(label.getAttribute('for')).toBe(input.id);
-    expect(spokenText(label)).not.toBe('');
-  });
-
   it('marks the working verse in the accessibility tree, not only in colour', async () => {
     const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
 
@@ -2248,55 +2237,35 @@ describe('the manage passages screen', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Empty and error states
+// 7b. The add-passage form (moved to Manage Passages, M5)
 // ---------------------------------------------------------------------------
 
-describe('empty and error states', () => {
-  it('gives an empty plan something to read and something to do', () => {
-    const root = renderPlan(host, emptyPlan());
+/**
+ * Decision 10: `renderAddPassage` and its batch-paste UI moved off the home
+ * screen to Manage Passages; `renderAddAndStart`'s empty-plan one-click
+ * callout is the only add-related thing that stayed on home (covered above,
+ * under "empty and error states"). These tests are the same behaviours P3
+ * originally proved against `renderPlan`'s output, now asserted against
+ * `renderManage`'s instead - nothing about the behaviour itself changed.
+ */
+describe('the add-passage form on Manage Passages (M5)', () => {
+  it('no longer renders on the home screen once the plan has a passage in it', () => {
+    const root = renderPlan(host, { ...emptyPlan(), passages: [passageViewFixture()] });
     container.appendChild(root);
 
-    const text = spokenText(root);
-    expect(text).not.toBe('');
-    expect(text).toContain('Nothing in your plan yet.');
-    // Not a dead end: the empty state says what to type, and the field to type
-    // it into is on the same screen.
-    expect(text).toContain('Psalm 1:1-6');
-    expect(root.querySelector('input')).not.toBeNull();
-
-    // Announced as a status rather than left as anonymous text.
-    expect(root.querySelector('[role="status"]')).not.toBeNull();
+    expect(root.querySelector('#sm-add-reference')).toBeNull();
+    expect(root.querySelector('form.sm-add')).toBeNull();
   });
 
-  it('offers one-click add-and-start once the reader has a verse open, even with an empty plan', () => {
-    host.activeReference = 'John 3:16';
-    const root = renderPlan(host, emptyPlan());
+  it('associates the add-passage field with a real label', () => {
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
 
-    // Task 0004: a first-time user should never see an empty list with
-    // nothing to press. With a verse already open, one button both adds it
-    // and starts practising it.
-    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
-    expect(labels.some((l) => (l ?? '').includes('Add John 3:16 and start'))).toBe(true);
-  });
-
-  it('does not offer a start button at all with an empty plan and nothing being read', () => {
-    const root = renderPlan(host, emptyPlan());
-    container.appendChild(root);
-
-    // A disabled primary button with no explanation looks broken. The screen
-    // points at the Add field instead.
-    expect(spokenText(root)).toContain('Add a verse below to get started.');
-    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
-    expect(labels.some((l) => (l ?? '').includes('Start practicing'))).toBe(false);
-  });
-
-  it('gives an empty analytics screen a way back rather than a wall of zeroes', () => {
-    const root = renderAnalytics(host, emptyAnalytics());
-    container.appendChild(root);
-
-    expect(spokenText(root)).toContain('Nothing to show yet.');
-    expect(root.querySelectorAll('button').length).toBeGreaterThan(0);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+    const label = root.querySelector<HTMLLabelElement>('label')!;
+    expect(input.id).not.toBe('');
+    expect(label.getAttribute('for')).toBe(input.id);
+    expect(spokenText(label)).not.toBe('');
   });
 
   it('shows the worker\'s reason for a rejected reference, word for word', async () => {
@@ -2307,7 +2276,7 @@ describe('empty and error states', () => {
     const reason = '"Psalm 151:1" is not a passage in this Bible - Psalms ends at 150.';
     host.handlers.addPassage = () => ({ ok: false, error: reason });
 
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
 
     const input = root.querySelector<HTMLInputElement>('input')!;
@@ -2328,7 +2297,7 @@ describe('empty and error states', () => {
 
   it('refuses an empty reference without asking the worker', async () => {
     host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
 
     root.querySelector('form')!.dispatchEvent(
@@ -2372,7 +2341,7 @@ describe('empty and error states', () => {
   }
 
   it('opens the batch modal, blank, with the exact hint text, from the "Add several passages at once…" link', () => {
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
 
     addSeveralLink(root).click();
@@ -2389,7 +2358,7 @@ describe('empty and error states', () => {
   });
 
   it('parses the textarea and shows the confirm list, with the right count and lines, when Find references is pressed', () => {
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
 
     addSeveralLink(root).click();
@@ -2406,7 +2375,7 @@ describe('empty and error states', () => {
   });
 
   it('returns to the textarea, with its text preserved, when Back is pressed from the confirm view', () => {
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
 
     addSeveralLink(root).click();
@@ -2428,7 +2397,7 @@ describe('empty and error states', () => {
 
   it('opens the batch modal, pre-filled and already parsed, when a multi-candidate paste lands on the field', async () => {
     host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2474,7 +2443,7 @@ describe('empty and error states', () => {
       };
     };
 
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2494,7 +2463,7 @@ describe('empty and error states', () => {
 
   it('adds nothing, and leaves the modal open on the textarea, when Cancel is pressed', () => {
     host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2508,7 +2477,7 @@ describe('empty and error states', () => {
 
   it('does not let a multi-line paste land in the single-line field as concatenated text', async () => {
     host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2523,7 +2492,7 @@ describe('empty and error states', () => {
 
   it('finds several references sprinkled in one pasted line, not just one per line', async () => {
     host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2550,7 +2519,7 @@ describe('empty and error states', () => {
     };
     host.handlers.removePassage = () => ({ ok: true, data: {} });
 
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2578,7 +2547,7 @@ describe('empty and error states', () => {
       return { ok: true, data: { passage: passageFixture({ reference: req.reference }) } };
     };
 
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2596,7 +2565,7 @@ describe('empty and error states', () => {
 
   it('leaves a single-line paste to the field\'s normal behaviour, without opening the modal', async () => {
     host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2611,7 +2580,7 @@ describe('empty and error states', () => {
 
   it('opens the same batch modal, pre-filled and parsed, when Enter is pressed on typed text naming more than one reference', async () => {
     host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
-    const root = renderPlan(host, emptyPlan());
+    const root = renderManage(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
@@ -2624,6 +2593,58 @@ describe('empty and error states', () => {
     const text = spokenText(batchDialog(root));
     expect(text).toContain('John 3:16');
     expect(text).toContain('Romans 8:28');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Empty and error states
+// ---------------------------------------------------------------------------
+
+describe('empty and error states', () => {
+  it('gives an empty plan something to read and something to do', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    const text = spokenText(root);
+    expect(text).not.toBe('');
+    expect(text).toContain('Nothing in your plan yet.');
+    // Not a dead end: the empty state says what to type, even though (M5) the
+    // field itself has moved off this screen to Manage Passages.
+    expect(text).toContain('Psalm 1:1-6');
+
+    // Announced as a status rather than left as anonymous text.
+    expect(root.querySelector('[role="status"]')).not.toBeNull();
+  });
+
+  it('offers one-click add-and-start once the reader has a verse open, even with an empty plan', () => {
+    host.activeReference = 'John 3:16';
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    // Task 0004: a first-time user should never see an empty list with
+    // nothing to press. With a verse already open, one button both adds it
+    // and starts practising it.
+    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels.some((l) => (l ?? '').includes('Add John 3:16 and start'))).toBe(true);
+  });
+
+  it('does not offer a start button at all with an empty plan and nothing being read', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    // A disabled primary button with no explanation looks broken. The screen
+    // points at Manage Passages instead (M5 moved the add field there).
+    expect(spokenText(root)).toContain('Add a verse from Manage Passages to get started.');
+    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels.some((l) => (l ?? '').includes('Start practicing'))).toBe(false);
+  });
+
+  it('gives an empty analytics screen a way back rather than a wall of zeroes', () => {
+    const root = renderAnalytics(host, emptyAnalytics());
+    container.appendChild(root);
+
+    expect(spokenText(root)).toContain('Nothing to show yet.');
+    expect(root.querySelectorAll('button').length).toBeGreaterThan(0);
   });
 
   it('keeps the exercise usable when the surrounding context cannot be fetched', async () => {
