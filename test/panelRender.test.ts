@@ -75,7 +75,14 @@ import type {
 } from '../src/types';
 import type { PanelHost } from '../src/ui/host';
 import type { Flow, NavAction } from '../src/ui/state';
-import { breadcrumb, icon, menu as menuComponent, type Crumb, type IconName } from '../src/ui/components';
+import {
+  breadcrumb,
+  icon,
+  menu as menuComponent,
+  modal,
+  type Crumb,
+  type IconName,
+} from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { ACTIVITY_TILES } from '../src/ui/activities';
 import { renderPassage } from '../src/ui/scripture';
@@ -2889,6 +2896,199 @@ describe('menu()', () => {
 
     items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     expect(items.map((b) => b.tabIndex)).toEqual([-1, 0, -1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9c. modal() - the one modal component for everything (P2)
+// ---------------------------------------------------------------------------
+
+describe('modal()', () => {
+  /** A modal with one focusable body control and a two-button action row. */
+  function buildModal(): {
+    handle: ReturnType<typeof modal>;
+    input: HTMLInputElement;
+    cancelBtn: HTMLButtonElement;
+    saveBtn: HTMLButtonElement;
+  } {
+    const input = document.createElement('input');
+    input.type = 'text';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+
+    const handle = modal({
+      title: 'Rename passage',
+      body: [input],
+      actions: [cancelBtn, saveBtn],
+    });
+    return { handle, input, cancelBtn, saveBtn };
+  }
+
+  function dialogOf(handleEl: HTMLElement): HTMLElement {
+    return handleEl.querySelector<HTMLElement>('[role="dialog"]')!;
+  }
+
+  it('renders a hidden dialog with aria-modal and aria-labelledby pointing at a real title element', () => {
+    const { handle } = buildModal();
+    container.appendChild(handle.element);
+
+    const dialog = dialogOf(handle.element);
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    const labelledBy = dialog.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    const titleEl = document.getElementById(labelledBy!);
+    expect(titleEl).not.toBeNull();
+    expect(titleEl!.textContent).toBe('Rename passage');
+    // Not in the accessibility tree / interactable until opened.
+    expect(handle.element.hidden).toBe(true);
+  });
+
+  it('gives each modal instance its own title id, so aria-labelledby is never shared', () => {
+    const first = buildModal();
+    const second = buildModal();
+    container.appendChild(first.handle.element);
+    container.appendChild(second.handle.element);
+
+    expect(dialogOf(first.handle.element).getAttribute('aria-labelledby')).not.toBe(
+      dialogOf(second.handle.element).getAttribute('aria-labelledby'),
+    );
+  });
+
+  it('opening un-hides the dialog and moves focus to the first focusable control in body', () => {
+    const { handle, input } = buildModal();
+    container.appendChild(handle.element);
+
+    handle.open();
+
+    expect(handle.element.hidden).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('falls back to the first action button when body has no focusable content', () => {
+    const message = document.createElement('p');
+    message.textContent = 'Delete this passage? This cannot be undone.';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = 'Delete';
+    const handle = modal({ title: 'Delete passage?', body: [message], actions: [cancelBtn, deleteBtn] });
+    container.appendChild(handle.element);
+
+    handle.open();
+
+    expect(document.activeElement).toBe(cancelBtn);
+  });
+
+  it('falls back to focusing the dialog itself when neither body nor actions has a focusable control', () => {
+    const message = document.createElement('p');
+    message.textContent = 'Nothing to focus here.';
+    const handle = modal({ title: 'Notice', body: [message], actions: [] });
+    container.appendChild(handle.element);
+
+    handle.open();
+
+    expect(document.activeElement).toBe(dialogOf(handle.element));
+  });
+
+  it('Escape closes the modal and returns focus to whatever had focus before it opened', () => {
+    const { handle, input } = buildModal();
+    const opener = document.createElement('button');
+    opener.textContent = 'Rename';
+    container.appendChild(opener);
+    container.appendChild(handle.element);
+
+    opener.focus();
+    handle.open();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(handle.element.hidden).toBe(true);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('Tab cycles forward through the focusable elements and wraps from the last back to the first', () => {
+    const { handle, input, cancelBtn, saveBtn } = buildModal();
+    container.appendChild(handle.element);
+    handle.open();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(cancelBtn);
+
+    cancelBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(saveBtn);
+
+    saveBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('Shift+Tab cycles backward and wraps from the first element back to the last', () => {
+    const { handle, input, cancelBtn, saveBtn } = buildModal();
+    container.appendChild(handle.element);
+    handle.open();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(saveBtn);
+
+    saveBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(cancelBtn);
+  });
+
+  it('never lets Tab move focus outside the dialog, even to an element right after it in the DOM', () => {
+    const { handle, input } = buildModal();
+    const outsideButton = document.createElement('button');
+    outsideButton.textContent = 'Outside';
+    container.appendChild(outsideButton);
+    container.appendChild(handle.element);
+    handle.open();
+
+    const dialog = dialogOf(handle.element);
+    const seen: (Element | null)[] = [];
+    for (let i = 0; i < 6; i++) {
+      seen.push(document.activeElement);
+      (document.activeElement as HTMLElement).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+      );
+    }
+
+    expect(seen.every((activeEl) => activeEl !== null && dialog.contains(activeEl))).toBe(true);
+    expect(seen).not.toContain(outsideButton);
+    // Two full cycles of the three focusable elements land back where they started.
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('clicking the backdrop closes the modal', () => {
+    const { handle } = buildModal();
+    container.appendChild(handle.element);
+    handle.open();
+
+    handle.element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(handle.element.hidden).toBe(true);
+  });
+
+  it('clicking inside the dialog box does not close the modal', () => {
+    const { handle, input } = buildModal();
+    container.appendChild(handle.element);
+    handle.open();
+
+    input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(handle.element.hidden).toBe(false);
+  });
+
+  it('close() closes the modal directly, without requiring Escape or a backdrop click', () => {
+    const { handle } = buildModal();
+    container.appendChild(handle.element);
+    handle.open();
+
+    handle.close();
+
+    expect(handle.element.hidden).toBe(true);
   });
 });
 

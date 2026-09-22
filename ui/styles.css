@@ -455,6 +455,76 @@ ul, ol {
 }
 
 /* ==========================================================================
+   Modal dialog (P2, `components.ts#modal()`)
+
+   The other floating/popover surface in this file, next to `.sm-menu-panel`
+   above - a full-viewport overlay plus a centred panel, both drawn from the
+   same `--sm-*` layer, since Decision 19 rejected the native
+   `<dialog>`/`::backdrop` pair specifically so a modal would stay inside it
+   rather than needing `::backdrop` styling of its own. `.sm-modal` reuses
+   `.sm-menu-panel`'s "raised card" tokens (`--sm-surface-raised`,
+   `--sm-border`, `--sm-radius-lg`); the overlay tint has no host token to
+   reach for either (same reasoning as that panel's shadow), so it is a plain
+   local `rgba(0, 0, 0, ...)` value, darker than the menu's shadow because it
+   has to read as "everything behind this is inactive," not just lift one
+   panel off the page. The panel's max-width is well under the `30rem`
+   narrow-pane breakpoint below, so it never itself forces that breakpoint's
+   layout.
+   ========================================================================== */
+
+.sm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sm-s4);
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.sm-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s3);
+  width: 100%;
+  max-width: 24rem;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--sm-s4);
+  background: var(--sm-surface-raised);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.sm-modal-title {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s3);
+  color: var(--sm-text);
+}
+
+/* Right-aligned rather than full-width: `actions` is typically a two-button
+   Save/Cancel row, and a right-aligned row reads as "these are the dialog's
+   final controls" the way a full-width block of two half-width buttons
+   would not at this panel's narrow widths. Wraps rather than overflowing if
+   a caller ever passes more buttons than fit on one line. */
+.sm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
    Icons
 
    `components.ts#icon()` returns a bare `<svg>` sized to `1em` by `1em` via

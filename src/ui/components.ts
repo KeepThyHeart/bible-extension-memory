@@ -357,6 +357,173 @@ function attachTabKeys(list: HTMLElement, tabButtons: HTMLButtonElement[]): void
   });
 }
 
+// ---------------------------------------------------------------------------
+// Modal dialog
+// ---------------------------------------------------------------------------
+
+/** What `modal()` hands back: the detached element to mount, and open/close controls. */
+export interface ModalHandle {
+  /**
+   * The whole `.sm-modal-backdrop` subtree, detached and starting `hidden`.
+   * Append it wherever the caller wants it mounted - once, typically - and
+   * drive visibility from then on with `open()`/`close()` rather than
+   * rebuilding it: the same "build once, toggle a hidden panel" shape
+   * `menu()` uses for its own popover, kept here even though a modal is
+   * usually mounted once per screen rather than once per render.
+   */
+  element: HTMLElement;
+  open: () => void;
+  close: () => void;
+}
+
+let modalIdSeq = 0;
+
+const MODAL_FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * One modal component for everything (design doc, Decision 19): a plain
+ * `<div class="sm-modal-backdrop">` wrapping a `<div role="dialog"
+ * aria-modal="true">`, not the native `<dialog>`/`showModal()` - jsdom's
+ * `HTMLDialogElement` support is partial and `panelRender.test.ts` is the
+ * suite that would have to assert on it, and `::backdrop` styling would sit
+ * outside the `--sm-*` token layer this file otherwise keeps everything in.
+ *
+ * Nothing calls this yet. P3's "add several passages at once" popup and P5's
+ * rename/delete flows are the first real callers, still to come, so the shape
+ * here is a guess at what those two want rather than something proven by a
+ * caller: a component built once with fixed content (`modal({ title, body,
+ * actions })`) and then opened and closed many times via the handle it
+ * returns, the way a caller with no per-open re-render to hang state on
+ * (a confirm dialog fired from a row's button) can hold `{ open, close }` in
+ * a closure and call `open()` straight from that button's `onClick`.
+ * `element` is exposed separately, rather than the handle mounting itself,
+ * because this file's other components never reach into the DOM themselves
+ * either - `menu()` and `tabs()` both hand back a detached node and leave
+ * `append`ing it to the caller, and a modal built long before anything opens
+ * it (P3/P5 will likely build theirs once up front, alongside their other
+ * screen furniture) needs that same "here is the node, put it where you
+ * like" contract.
+ *
+ * `body` and `actions` are fixed at construction, not re-passed to `open()`:
+ * nothing here needs the content to vary across opens, and a caller that
+ * does want fresh content each time (P3's form, reset between uses) can build
+ * a fresh `modal()` right before showing it and let the previous instance and
+ * its listeners go, the same tradeoff `tabs()` and `menu()` already make
+ * since neither is built to be handed new items in place either. If P3/P5
+ * turn out to want one long-lived modal whose body is replaced in place
+ * instead, that is the one shape change likely to be worth revisiting then
+ * rather than guessed at now.
+ */
+export function modal(opts: {
+  title: string;
+  body: (HTMLElement | string)[];
+  actions: HTMLElement[];
+}): ModalHandle {
+  modalIdSeq += 1;
+  const titleId = `sm-modal-title-${modalIdSeq}`;
+
+  const titleEl = el('h2', { class: 'sm-modal-title', id: titleId, text: opts.title });
+  const bodyEl = el('div', { class: 'sm-modal-body' }, opts.body);
+  const actionsEl = el('div', { class: 'sm-modal-actions' }, opts.actions);
+
+  // `tabindex="-1"` on the dialog itself is not part of the tab order - it
+  // exists only so `openModal` has something to focus when neither `body`
+  // nor `actions` contains a single focusable control, which is otherwise a
+  // dead end: `HTMLElement.focus()` is a no-op on an element nothing makes
+  // focusable.
+  const dialog = el(
+    'div',
+    {
+      class: 'sm-modal',
+      attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: '-1' },
+    },
+    [titleEl, bodyEl, actionsEl],
+  );
+
+  const backdrop = el('div', { class: 'sm-modal-backdrop', hidden: true }, [dialog]);
+
+  // Captured on open, restored on close (by whichever route closes it) -
+  // never assumed to still be the trigger the way `menu()` can assume,
+  // because a modal can just as easily be opened from a table row's own
+  // "Rename" button as from a fixed trigger, and only the caller's own
+  // element at the moment of `open()` knows which.
+  let opener: HTMLElement | null = null;
+
+  function focusableElements(): HTMLElement[] {
+    return Array.from(dialog.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE_SELECTOR));
+  }
+
+  function openModal(): void {
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    backdrop.hidden = false;
+    focusQuietly(focusableElements()[0] ?? dialog);
+  }
+
+  function closeModal(): void {
+    if (backdrop.hidden) return;
+    backdrop.hidden = true;
+    focusQuietly(opener);
+    opener = null;
+  }
+
+  // Only a direct click on the backdrop itself closes the modal - a click
+  // that bubbles up from inside `dialog` has `ev.target` set to whatever was
+  // actually clicked there, never `backdrop`, so the dialog's own content is
+  // never mistaken for "outside" and no `stopPropagation` juggling is needed
+  // on the dialog's side.
+  backdrop.addEventListener('click', (ev) => {
+    if (ev.target === backdrop) closeModal();
+  });
+
+  attachModalKeys(dialog, focusableElements, closeModal);
+
+  return { element: backdrop, open: openModal, close: closeModal };
+}
+
+/**
+ * Escape plus a full Tab/Shift+Tab focus trap over an open dialog - the
+ * `role="dialog"` analogue of `attachTabKeys`/`attachMenuKeys` above (same
+ * "keyboard behaviour lives next to the component it belongs to" split), but
+ * unlike either of those this one takes over Tab itself rather than only the
+ * arrow keys. A real Tab press must never be allowed to leave the dialog
+ * while it is modal, and jsdom - this file's own test environment - does not
+ * move focus on Tab the way a browser does, so every Tab and Shift+Tab here
+ * is resolved by hand (current index in, wrapped neighbour out) rather than
+ * left to native behaviour everywhere except the two wrap points. That keeps
+ * one handler correct in both the browser and the test suite instead of
+ * needing browser-only behaviour the tests could never exercise.
+ */
+function attachModalKeys(
+  dialog: HTMLElement,
+  focusableElements: () => HTMLElement[],
+  onEscape: () => void,
+): void {
+  dialog.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      onEscape();
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+
+    ev.preventDefault();
+    const focusables = focusableElements();
+    if (focusables.length === 0) {
+      focusQuietly(dialog);
+      return;
+    }
+
+    const current = focusables.indexOf(document.activeElement as HTMLElement);
+    const last = focusables.length - 1;
+    const target = ev.shiftKey
+      ? focusables[current <= 0 ? last : current - 1]!
+      : focusables[current === -1 || current === last ? 0 : current + 1]!;
+
+    focusQuietly(target);
+  });
+}
+
 /**
  * The "there is nothing here yet" panel.
  *
