@@ -74,6 +74,7 @@ import type {
 } from '../src/types';
 import type { PanelHost } from '../src/ui/host';
 import type { NavAction } from '../src/ui/state';
+import { icon, type IconName } from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { renderPassage } from '../src/ui/scripture';
 import { PracticeView } from '../src/ui/practiceView';
@@ -2029,5 +2030,81 @@ describe('empty and error states', () => {
 
     expect(spokenText(practice.root)).toContain(reason);
     expect(practice.root.querySelector('[role="alert"]')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. icon()
+// ---------------------------------------------------------------------------
+
+describe('icon()', () => {
+  const NAMES: IconName[] = [
+    'home',
+    'menu',
+    'variety',
+    'refmatch',
+    'ordering',
+    'blanks',
+    'firstletters',
+    'provideref',
+  ];
+
+  it('builds a real, namespaced <svg> rather than an HTML element', () => {
+    const svg = icon('home');
+    expect(svg.tagName).toBe('svg');
+    expect(svg.namespaceURI).toBe('http://www.w3.org/2000/svg');
+  });
+
+  it('is decorative - aria-hidden, with no accessible name of its own', () => {
+    for (const name of NAMES) {
+      const svg = icon(name);
+      expect(svg.getAttribute('aria-hidden')).toBe('true');
+      expect(svg.getAttribute('role')).not.toBe('img');
+      expect(svg.hasAttribute('aria-label')).toBe(false);
+    }
+  });
+
+  it('takes its colour from the surrounding text rather than a fixed one', () => {
+    for (const name of NAMES) {
+      expect(icon(name).getAttribute('stroke')).toBe('currentColor');
+    }
+  });
+
+  it('shares one viewBox and stroke width across every name', () => {
+    for (const name of NAMES) {
+      const svg = icon(name);
+      expect(svg.getAttribute('viewBox')).toBe('0 0 24 24');
+      expect(svg.getAttribute('stroke-width')).toBe('2');
+      // Line icons only - a filled icon here would look like a different set
+      // the moment it sat next to the other seven.
+      expect(svg.getAttribute('fill')).toBe('none');
+    }
+  });
+
+  it('draws something - every name renders at least one path', () => {
+    for (const name of NAMES) {
+      const paths = icon(name).querySelectorAll('path');
+      expect(paths.length).toBeGreaterThan(0);
+      for (const path of Array.from(paths)) {
+        expect(path.getAttribute('d')).toBeTruthy();
+      }
+    }
+  });
+
+  it('draws a different icon for every name - none share their path data', () => {
+    const signatures = NAMES.map((name) =>
+      Array.from(icon(name).querySelectorAll('path'))
+        .map((p) => p.getAttribute('d'))
+        .join('|'),
+    );
+    expect(new Set(signatures).size).toBe(NAMES.length);
+  });
+
+  it('renders fresh, unshared nodes on every call', () => {
+    const a = icon('menu');
+    const b = icon('menu');
+    expect(a).not.toBe(b);
+    a.setAttribute('data-marker', 'x');
+    expect(b.hasAttribute('data-marker')).toBe(false);
   });
 });

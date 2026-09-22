@@ -228,6 +228,103 @@ export function scheduleLine(rung: { dueAt: number | null; lastScore: number | n
   return el('p', { class: 'sm-schedule', text: parts.join(' · ') });
 }
 
+// ---------------------------------------------------------------------------
+// Icons
+// ---------------------------------------------------------------------------
+
+/**
+ * The names `icon()` knows how to draw.
+ *
+ * `home` and `menu` are chrome, not activities. The other six are activity
+ * icons: `ordering`, `refmatch`, `blanks` and `firstletters` name the
+ * existing rungs (see `Rung` in `types.ts`); `variety` and `provideref` are
+ * two more the design doc introduces ahead of any rung or exercise of their
+ * own, which is why this is its own union rather than `Rung` plus two - this
+ * file should not have to change again the day their exercises land.
+ */
+export type IconName =
+  | 'home'
+  | 'menu'
+  | 'variety'
+  | 'refmatch'
+  | 'ordering'
+  | 'blanks'
+  | 'firstletters'
+  | 'provideref';
+
+/**
+ * The strokes each icon is built from, one `<path>` per entry.
+ *
+ * All eight share a 24x24 viewBox and a 2px round-capped stroke so that
+ * mixing them in one row (the nav, an activity tile grid) never reads as two
+ * icon sets. A couple of names could not be told apart by shape alone at this
+ * size, so the choices are deliberate: `variety`'s crossing diagonals read as
+ * "shuffle/mix" where `refmatch`'s two opposing horizontal arrows read as
+ * "match this to that"; `ordering`'s up/down arrow beside ranked lines reads
+ * as "put these in order" where plain `menu` is three even, unranked ones.
+ */
+const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
+  // A house: roof, walls, and a door - the one non-abstract icon here, since
+  // it names a screen ("Home") rather than an activity.
+  home: ['M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', 'M9 22V12h6v10'],
+  // Three even bars - the nav's own "more" affordance, unranked on purpose so
+  // it never doubles as a fourth activity icon.
+  menu: ['M3 6h18', 'M3 12h18', 'M3 18h18'],
+  // A shuffle glyph: two crossing diagonals, each with its own arrowhead.
+  variety: ['M16 3h5v5', 'M4 20L21 3', 'M21 16v5h-5', 'M15 15l6 6', 'M4 4l5 5'],
+  // Two arrows pointing at each other, top-right and bottom-left - matching
+  // one thing to another rather than a single directional move.
+  refmatch: ['M3 7h11', 'M10 3l4 4-4 4', 'M21 17H10', 'M14 13l-4 4 4 4'],
+  // A vertical up/down arrow beside three lines of increasing length - lines
+  // that have a rank, and an affordance for moving one up or down it.
+  ordering: ['M4 5v14', 'M2 8l2-3 2 3', 'M2 16l2 3 2-3', 'M10 6h8', 'M10 12h10', 'M10 18h6'],
+  // Two short word-strokes with a longer underline between them - the blank
+  // sitting where a word has been removed.
+  blanks: ['M3 9h4', 'M9 14h6', 'M17 9h4'],
+  // A capital "A", stroked rather than set as text so it is one more path
+  // among equals rather than a font dependency.
+  firstletters: ['M4 19L10 4L16 19', 'M6.5 13h7'],
+  // A bookmark - the passage's own place kept, which is what "provide the
+  // reference" is asking the user to recall.
+  provideref: ['M6 3h12v18l-6-4-6 4z'],
+};
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * A small inline icon, built with `createElementNS` rather than a markup
+ * string - `dom.ts`'s header explains why there is no `innerHTML` path
+ * anywhere in this bundle, and an icon set is not worth being the exception.
+ *
+ * `stroke="currentColor"` so an icon always matches the text colour of
+ * whatever control it sits in without a per-caller override, and
+ * `aria-hidden="true"` because every call site pairs an icon with visible
+ * text (a toolbar title, an activity label) - the icon is decoration, and a
+ * screen reader announcing "home icon, Home" on top of that text would be
+ * noise, not help.
+ */
+export function icon(name: IconName): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '1em');
+  svg.setAttribute('height', '1em');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', `sm-icon sm-icon-${name}`);
+
+  for (const d of ICON_PATHS[name]) {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    svg.appendChild(path);
+  }
+
+  return svg;
+}
+
 /**
  * A short caption naming an activity that does not apply and why.
  *
