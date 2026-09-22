@@ -29,7 +29,7 @@
  */
 
 import type { Rung, RungView } from '../types';
-import { append, button, el } from './dom';
+import { append, button, el, focusQuietly } from './dom';
 import {
   MASTERED_LEVEL,
   RUNG_LABEL,
@@ -101,6 +101,103 @@ export function breadcrumb(opts: {
     list,
     el('div', { class: 'sm-crumbs-actions' }, opts.actions ?? []),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Tab strip
+// ---------------------------------------------------------------------------
+
+/**
+ * The activity tab strip under the breadcrumb, on both the passage and
+ * practice screens (Decision 2 of the nav/chrome redesign): `role="tablist"`
+ * of `role="tab"` buttons, one per applicable activity, an underline rather
+ * than a filled pill marking the selected one - "not pills" is the decision's
+ * own wording, and a bottom border is the one treatment this file does not
+ * already use for something else (badges are pills, `.sm-choice` is a filled
+ * card).
+ *
+ * Generic over `T` rather than typed to `Rung` directly: both call sites pass
+ * `Rung` values today, but nothing here needs to know that, and a component
+ * this small gains nothing from repeating the union.
+ */
+export function tabs<T extends string>(opts: {
+  items: readonly { value: T; label: string }[];
+  selected: T;
+  onSelect: (value: T) => void;
+  ariaLabel?: string;
+}): HTMLElement {
+  const list = el('div', {
+    class: 'sm-tabs',
+    attrs: { role: 'tablist', ...(opts.ariaLabel !== undefined ? { 'aria-label': opts.ariaLabel } : {}) },
+  });
+
+  const tabButtons = opts.items.map((item) => {
+    const isSelected = item.value === opts.selected;
+    return button(item.label, () => opts.onSelect(item.value), {
+      class: `sm-tab${isSelected ? ' sm-tab-selected' : ''}`,
+      attrs: {
+        role: 'tab',
+        'aria-selected': String(isSelected),
+        // Roving tabindex: only the selected tab sits in the page's own Tab
+        // order, so tabbing into the strip lands on it directly rather than
+        // on whichever tab happens to be first - see `attachTabKeys` below
+        // for how the arrows keep this in sync as focus moves.
+        tabindex: isSelected ? '0' : '-1',
+      },
+    });
+  });
+
+  append(list, tabButtons);
+  attachTabKeys(list, tabButtons);
+
+  return list;
+}
+
+/**
+ * Left/Right/Home/End over a tab strip, wrapping at the ends - adapted from
+ * the picker's own `attachListKeys` in `practiceView.ts` (~lines 1170-1210):
+ * the same roving-focus idea, narrowed to the two horizontal arrows a
+ * tablist's own ARIA pattern calls for (no up/down, no digit shortcut) and
+ * extended to move `tabindex` itself, which the picker's plain buttons never
+ * needed because they were never taken out of the normal Tab order.
+ *
+ * The arrows move focus only; they do not select. Selecting a tab on the
+ * passage screen re-fetches and redraws the whole screen (`goPassage`), and
+ * firing that on every arrow press would tear out the very strip the
+ * keyboard focus is moving through. A `<button>` already turns Enter/Space
+ * into a click, so activating the focused tab needs no extra handling here.
+ */
+function attachTabKeys(list: HTMLElement, tabButtons: HTMLButtonElement[]): void {
+  if (tabButtons.length === 0) return;
+
+  list.addEventListener('keydown', (ev) => {
+    const current = tabButtons.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0) return;
+
+    let target = -1;
+    switch (ev.key) {
+      case 'ArrowRight':
+        target = (current + 1) % tabButtons.length;
+        break;
+      case 'ArrowLeft':
+        target = (current - 1 + tabButtons.length) % tabButtons.length;
+        break;
+      case 'Home':
+        target = 0;
+        break;
+      case 'End':
+        target = tabButtons.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    ev.preventDefault();
+    tabButtons.forEach((t, i) => {
+      t.tabIndex = i === target ? 0 : -1;
+    });
+    focusQuietly(tabButtons[target] ?? null);
+  });
 }
 
 /**

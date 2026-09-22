@@ -1,17 +1,19 @@
 /**
- * One passage: its activities, laid out linearly, each always practisable.
+ * One passage: its activities, one at a time behind a tab strip, each always
+ * practisable.
  *
- * "Linearly" is still the point - the three activities are a suggested
- * progression, and any layout that puts them in a grid or a ring loses the
- * one fact worth communicating: that blanks comes after ordering and before
- * first-letters in difficulty, even though nothing here enforces that order
- * any more.
+ * "Linearly" is still the point behind the strip's order - the applicable
+ * activities are a suggested progression (`format.ts#inLadderOrder`), and any
+ * layout that shuffled the tabs would lose the one fact worth communicating:
+ * that blanks comes after ordering and before first-letters in difficulty,
+ * even though nothing here enforces that order any more.
  *
  * Task 0004 dropped every lock: there is no "not yet unlocked" and no
  * "replay - this will not count" qualifier left to draw, because every
  * attempt on every activity is a live one. What replaced the ladder's gating
- * is a single "Suggested" badge (`suggestedRungFor`) and, per activity, a
- * Restart/Resume pair when the user left one mid-way instead of finishing it.
+ * is `suggestedRungFor` - naming the tab selected by default and the one big
+ * Practice button's own target - and, per activity, a Restart/Resume pair
+ * when the user left one mid-way instead of finishing it.
  */
 
 import type { AnswerMode, PassageView, Rung, RungView } from '../types';
@@ -22,9 +24,9 @@ import {
   inapplicabilityNote,
   levelBoxes,
   scheduleLine,
-  suggestedBadge,
+  tabs,
 } from './components';
-import { RUNG_LABEL, countLabel, inLadderOrder, isDue, suggestedRungFor } from './format';
+import { RUNG_LABEL, applicableRungs, countLabel, inLadderOrder, isDue, suggestedRungFor } from './format';
 import type { PanelHost } from './host';
 
 /**
@@ -38,6 +40,15 @@ export function renderPassageScreen(
   host: PanelHost,
   pv: PassageView,
   defaultAnswerMode: AnswerMode,
+  /**
+   * Which activity tab is showing - `state.ts#View`'s own `rung`, `null`
+   * meaning "suggested" (resolved below via `suggestedRungFor`, the same rule
+   * that already picks the Practice callout's target and the old "Suggested"
+   * badge). Optional and defaulting to `null` so every existing call in this
+   * file's own test suite, which predates N3's `rung` and has no view state
+   * to pass, keeps behaving exactly as it did.
+   */
+  viewRung: Rung | null = null,
 ): HTMLElement {
   const now = host.now();
   const root = el('section', { class: 'sm-screen sm-screen-passage' });
@@ -91,13 +102,35 @@ export function renderPassageScreen(
   const callout = renderPracticeCallout(host, pv, suggested);
   if (callout) root.appendChild(callout);
 
-  root.appendChild(
-    el(
-      'div',
-      { class: 'sm-activities' },
-      inLadderOrder(pv.rungs).map((rv) => renderActivityCard(host, pv, rv, rv.rung === suggested, now)),
-    ),
-  );
+  const applicable = applicableRungs(pv.rungs);
+  if (applicable.length > 0) {
+    // `viewRung ?? suggested` - an explicit tab wins; otherwise the same
+    // suggestion the callout above already names. `suggested` is only `null`
+    // when nothing is applicable at all, which `applicable.length > 0` here
+    // rules out, but the fallback to the strip's first tab keeps this correct
+    // even if a stale `viewRung` ever named a rung no longer applicable.
+    const active = applicable.find((rv) => rv.rung === (viewRung ?? suggested)) ?? applicable[0]!;
+
+    root.appendChild(
+      tabs({
+        items: applicable.map((rv) => ({ value: rv.rung, label: RUNG_LABEL[rv.rung] })),
+        selected: active.rung,
+        onSelect: (rung) => host.go({ type: 'goPassage', passageId: pv.passage.id, rung }),
+        ariaLabel: 'Activity',
+      }),
+    );
+
+    root.appendChild(el('div', { class: 'sm-activities' }, [renderActivityDetail(host, pv, active, now)]));
+  }
+
+  for (const rv of inLadderOrder(pv.rungs).filter((r) => !r.applicable)) {
+    root.appendChild(
+      el('p', { class: 'sm-activity-blurb' }, [
+        el('strong', { text: RUNG_LABEL[rv.rung] }),
+        `: ${inapplicabilityNote(rv.rung)}`,
+      ]),
+    );
+  }
 
   root.appendChild(answerPanel);
   root.appendChild(renderRemoveControl(host, pv));
@@ -117,8 +150,8 @@ export function renderPassageScreen(
  * A second review round pushed back on the per-activity cards alone: "we
  * never want the user to not practice for lack of decisiveness on *what* to
  * practice." This button always starts `suggested` - the same activity the
- * "Suggested" badge below points at - so a visitor who does not want to read
- * three activity rows never has to. It says "Resume" instead of "Practice"
+ * tab strip below selects by default - so a visitor who does not want to
+ * choose a tab first never has to. It says "Resume" instead of "Practice"
  * when that activity was left mid-way, since `host.startSession` without
  * `restart` already resumes it; the button's label should not disagree with
  * what pressing it does.
@@ -144,39 +177,20 @@ function renderPracticeCallout(host: PanelHost, pv: PassageView, suggested: Rung
 // ---------------------------------------------------------------------------
 
 /**
- * One activity, drawn as a single compact, tabular row rather than a small
- * stack of its own lines - a follow-up review round asked the activity list
- * to be "more tabular, compact", the same complaint as the plan row's. Name
- * and badge on the left, level on the right of that, the paused-or-schedule
- * note taking the remaining space, and the action button(s) pinned to the
- * far right - one line at the panel's usual desktop width; `.sm-activity-card`
- * wraps at the narrow, docked width (see `styles.css`'s responsive block)
- * rather than trying to hold four columns in a pane a phone-sized fraction
- * of that.
+ * The selected tab's own activity: level boxes, the paused-or-schedule note,
+ * and the action button(s) - what used to be one row of a stacked list of
+ * every activity's card (`renderActivityCard`, task 0004's "more tabular,
+ * compact" review) is now the single card the tab strip above is choosing
+ * between (Decision 2 of the nav/chrome redesign). The activity's name is not
+ * repeated here: the selected tab already names it, and a "Suggested" badge
+ * that used to sit beside that name is dropped for the same reason - the
+ * Practice callout above already says which activity is suggested, in words,
+ * whether or not it is the one currently selected.
  */
-function renderActivityCard(
-  host: PanelHost,
-  pv: PassageView,
-  rv: RungView,
-  isSuggested: boolean,
-  now: number,
-): HTMLElement {
+function renderActivityDetail(host: PanelHost, pv: PassageView, rv: RungView, now: number): HTMLElement {
   const due = isDue(rv, now);
   const classes = ['sm-activity-card'];
-  if (!rv.applicable) classes.push('sm-activity-na');
   if (due) classes.push('sm-activity-due');
-
-  const head = el('div', { class: 'sm-activity-head' }, [
-    el('h2', { class: 'sm-activity-title', text: RUNG_LABEL[rv.rung] }),
-    isSuggested && rv.applicable ? suggestedBadge() : null,
-  ]);
-
-  if (!rv.applicable) {
-    return el('div', { class: classes.join(' ') }, [
-      head,
-      el('p', { class: 'sm-activity-blurb', text: inapplicabilityNote(rv.rung) }),
-    ]);
-  }
 
   const level = el('div', { class: 'sm-activity-level-row' }, [
     levelBoxes(rv.level, { due }),
@@ -208,7 +222,7 @@ function renderActivityCard(
         }),
       ]);
 
-  return el('div', { class: classes.join(' ') }, [head, level, status, actions]);
+  return el('div', { class: classes.join(' ') }, [level, status, actions]);
 }
 
 // ---------------------------------------------------------------------------

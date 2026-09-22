@@ -24,6 +24,7 @@
 import { describe, it, expect } from 'vitest';
 import type { AnalyticsView, BlanksStep, PlanView, RungView, StepResult, VerseText } from '../src/types';
 import {
+  applicableRungs,
   calendarDaysBetween,
   calendarWeeks,
   countLabel,
@@ -360,6 +361,18 @@ describe('inLadderOrder', () => {
     const original = [rung({ rung: 'blanks' }), rung({ rung: 'ordering' })];
     inLadderOrder(original);
     expect(original.map((r) => r.rung)).toEqual(['blanks', 'ordering']);
+  });
+});
+
+describe('applicableRungs', () => {
+  it('drops the inapplicable rungs and keeps ladder order - what the tab strip draws a tab for', () => {
+    const shuffled = [
+      rung({ rung: 'firstletters' }),
+      rung({ rung: 'refmatch', applicable: false }),
+      rung({ rung: 'blanks' }),
+      rung({ rung: 'ordering' }),
+    ];
+    expect(applicableRungs(shuffled).map((r) => r.rung)).toEqual(['ordering', 'blanks', 'firstletters']);
   });
 });
 

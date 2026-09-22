@@ -205,7 +205,7 @@ async function buildScreen(): Promise<HTMLElement> {
         nav = navReduce(nav, { type: 'passageRemoved', passageId });
         return renderPlan(host, reply.data);
       }
-      return renderPassageScreen(host, found, reply.data.defaultAnswerMode);
+      return renderPassageScreen(host, found, reply.data.defaultAnswerMode, nav.view.rung);
     }
 
     case 'analytics': {

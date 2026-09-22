@@ -889,14 +889,55 @@ ul, ol {
 }
 
 /* ==========================================================================
-   Passage screen - a table-like list of activities, all always practisable.
+   Activity tab strip - `components.ts#tabs()`. One tab per applicable
+   activity, under the breadcrumb on the passage screen (and, from N5, the
+   practice screen too). An underline on the selected tab, not a filled pill -
+   "not pills" is Decision 2's own wording, and every filled-background
+   treatment in this file already means something else (a badge, a chosen
+   picker card), so a tab needed a look of its own.
+   ========================================================================== */
 
-   Originally one boxed "card" per activity, each with its own border and
-   background - which read, in a review round's words, as "confusing" rather
-   than as "a list of peers". Sharing one border around the whole list and
-   dividing rows with a single line reads the three activities as rows of the
-   same table instead of three separate objects, while keeping the per-row
-   detail (level boxes, schedule, actions) exactly as before.
+.sm-tabs {
+  display: flex;
+  gap: var(--sm-s4);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--sm-border);
+}
+
+.sm-tab {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  font-weight: 600;
+  flex: 0 0 auto;
+  padding: var(--sm-s2) var(--sm-s1);
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--sm-text-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sm-tab:hover {
+  color: var(--sm-text);
+}
+
+.sm-tab-selected {
+  color: var(--sm-heading);
+  border-bottom-color: var(--sm-accent);
+}
+
+/* ==========================================================================
+   Passage screen - the selected activity's own detail, below the tab strip.
+
+   Was a stacked list of every activity's own card, one row each including
+   the inapplicable ones (task 0004's "more tabular, compact" review, then
+   Decision 2's tab strip replacing the whole list). `.sm-activities` now
+   wraps exactly one `.sm-activity-card` - the tab strip above already picks
+   which - but keeps its own border and background rather than being
+   flattened into the tab strip's block, so the level boxes, schedule line and
+   actions still read as one bordered panel rather than loose page content.
    ========================================================================== */
 
 .sm-activities {
@@ -908,11 +949,9 @@ ul, ol {
   overflow: hidden;
 }
 
-/* A tabular row: name+badge, level, schedule/paused note, action(s), each a
-   flex child rather than a stacked block - a follow-up review round asked
-   for the activity list to read as compact and tabular, the way the plan
-   row's squares do. Falls back to stacking at the narrow, docked width (see
-   the responsive block at the end of this file). */
+/* Level, schedule/paused note and action(s) as flex children on one row at
+   the panel's usual desktop width; falls back to stacking at the narrow,
+   docked width (see the responsive block at the end of this file). */
 .sm-activity-card {
   padding: var(--sm-s2) var(--sm-s3);
   display: flex;
@@ -931,25 +970,6 @@ ul, ol {
    card. */
 .sm-activity-due {
   box-shadow: inset 3px 0 0 var(--sm-warning);
-}
-
-.sm-activity-na {
-  opacity: 0.7;
-}
-
-.sm-activity-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sm-s2);
-  flex-wrap: wrap;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.sm-activity-title {
-  font-size: 1em;
-  font-weight: 600;
-  color: var(--sm-heading);
 }
 
 .sm-activity-blurb {

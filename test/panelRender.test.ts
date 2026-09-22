@@ -1495,10 +1495,11 @@ describe('the plan row', () => {
 
 describe('the passage screen', () => {
   it('offers one big Practice button that starts the suggested activity', () => {
-    // The fixture's suggested activity is `blanks` (see the "badges the
-    // suggested activity" test below) - a second review round asked that a
-    // decision be made *for* the user rather than only offered per-row, "so
-    // the user never has to not practice for lack of decisiveness".
+    // The fixture's suggested activity is `blanks` (see the "selects the
+    // suggested activity's tab by default" test below) - a second review
+    // round asked that a decision be made *for* the user rather than only
+    // offered per-row, "so the user never has to not practice for lack of
+    // decisiveness".
     const pv = passageViewFixture();
     const root = renderPassageScreen(host, pv, 'firstLetter');
     container.appendChild(root);
@@ -1529,28 +1530,101 @@ describe('the passage screen', () => {
     expect(practiceButton.textContent).toBe('Resume practicing');
   });
 
-  it('draws a level box row for every applicable activity, and none for one that does not apply', () => {
+  it('draws one tab per applicable activity, in ladder order, and none for one that does not apply', () => {
     const pv = passageViewFixture();
     const root = renderPassageScreen(host, pv, 'firstLetter');
     container.appendChild(root);
 
-    const cards = root.querySelectorAll('.sm-activity-card');
-    // Four rungs in the fixture; `refmatch` is inapplicable but still shown,
-    // with an explanation rather than being hidden outright.
-    expect(cards.length).toBe(4);
+    const tabLabels = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]')).map(
+      (t) => t.textContent,
+    );
+    // Four rungs in the fixture; `refmatch` is inapplicable and gets no tab
+    // at all, in ladder order rather than whatever order the worker sent.
+    expect(tabLabels).toEqual(['Put in order', 'Fill in the blanks', 'First letters only']);
+  });
+
+  it('keeps an inapplicable activity out of the tab strip, but still explains it in the body', () => {
+    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
+    container.appendChild(root);
+
+    const tabLabels = Array.from(root.querySelectorAll('[role="tab"]')).map((t) => t.textContent);
+    expect(tabLabels).not.toContain('Match the reference');
     expect(spokenText(root)).toContain('Matching a reference needs other passages');
   });
 
-  it('badges the suggested activity, and only that one', () => {
+  it("selects the suggested activity's tab by default, and shows only that activity's detail", () => {
     // The fixture's `blanks` is due; everything else is not. `suggestedRungFor`
     // is exercised for real here, not stubbed.
     const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
     container.appendChild(root);
 
-    const badges = Array.from(root.querySelectorAll('.sm-badge-suggested'));
-    expect(badges.length).toBe(1);
-    const card = badges[0]!.closest('.sm-activity-card')!;
-    expect(spokenText(card)).toContain('Fill in the blanks');
+    const tabButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const selected = tabButtons.filter((t) => t.getAttribute('aria-selected') === 'true');
+    expect(selected.map((t) => t.textContent)).toEqual(['Fill in the blanks']);
+
+    // Only the selected activity's own detail is drawn now - the old stacked
+    // list of every activity's card (one per rung, four in this fixture) is
+    // gone.
+    expect(root.querySelectorAll('.sm-activity-card')).toHaveLength(1);
+  });
+
+  it('lets an explicit view rung override which tab is selected', () => {
+    // The fixture's suggestion is `blanks`; passing `rung` explicitly (as
+    // `panel.ts` does with `state.ts#View`'s own `rung`) wins over it.
+    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter', 'ordering');
+    container.appendChild(root);
+
+    const selected = root.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')!;
+    expect(selected.textContent).toBe('Put in order');
+  });
+
+  it('dispatches goPassage with the clicked rung when a different tab is chosen', () => {
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const orderingTab = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(
+      (t) => t.textContent === 'Put in order',
+    )!;
+    orderingTab.click();
+
+    expect(host.navigations).toContainEqual({
+      type: 'goPassage',
+      passageId: pv.passage.id,
+      rung: 'ordering',
+    });
+  });
+
+  it('moves focus among tabs with Left/Right/Home/End, on a roving tabindex', () => {
+    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
+    container.appendChild(root);
+
+    const tabButtons = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    // `blanks` (index 1) is selected by default and is the only tab in the
+    // page's own Tab order until the arrows move it.
+    expect(tabButtons.map((t) => t.tabIndex)).toEqual([-1, 0, -1]);
+
+    tabButtons[1]!.focus();
+    tabButtons[1]!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
+    );
+    expect(document.activeElement).toBe(tabButtons[2]);
+    expect(tabButtons.map((t) => t.tabIndex)).toEqual([-1, -1, 0]);
+
+    tabButtons[2]!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }),
+    );
+    expect(document.activeElement).toBe(tabButtons[0]); // wraps past the end
+
+    tabButtons[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(tabButtons[2]);
+
+    tabButtons[2]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(tabButtons[0]);
+
+    // Moving focus is not itself a selection - only a click (or Enter/Space,
+    // which a `<button>` already turns into one) navigates.
+    expect(host.navigations).toEqual([]);
   });
 
   it('offers Restart and Resume, not a plain Practice, for a paused activity', () => {
@@ -1562,15 +1636,15 @@ describe('the passage screen', () => {
         rungView({ rung: 'firstletters' }),
       ],
     });
+    // Nothing is due and `ordering` is the first applicable rung below
+    // mastered, so it is the suggested - and so default-selected - activity.
     const root = renderPassageScreen(host, pv, 'firstLetter');
     container.appendChild(root);
 
-    const orderingCard = Array.from(root.querySelectorAll('.sm-activity-card')).find((c) =>
-      spokenText(c).includes('Put in order'),
-    )!;
-    const labels = Array.from(orderingCard.querySelectorAll('button')).map((b) => b.textContent);
+    const card = root.querySelector('.sm-activity-card')!;
+    const labels = Array.from(card.querySelectorAll('button')).map((b) => b.textContent);
     expect(labels).toEqual(['Restart', 'Resume']);
-    expect(spokenText(orderingCard)).toContain('Paused at verse 2 of 5');
+    expect(spokenText(card)).toContain('Paused at verse 2 of 5');
   });
 
   it('starts the right activity, with restart, from the Restart button', () => {

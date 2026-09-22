@@ -299,6 +299,18 @@ export function inLadderOrder(rungs: RungView[]): RungView[] {
   return [...rungs].sort((a, b) => RUNG_ORDER.indexOf(a.rung) - RUNG_ORDER.indexOf(b.rung));
 }
 
+/**
+ * The rungs a passage's tab strip draws a tab for, in ladder order.
+ *
+ * Shared by the passage screen and, from N5, the practice screen, so the two
+ * tab strips can never quietly disagree about which activities count as
+ * "applicable" or what order they come in - the same reasoning
+ * `suggestedRungFor` already applies to picking one of them.
+ */
+export function applicableRungs(rungs: RungView[]): RungView[] {
+  return inLadderOrder(rungs).filter((r) => r.applicable);
+}
+
 // ---------------------------------------------------------------------------
 // Analytics
 // ---------------------------------------------------------------------------
