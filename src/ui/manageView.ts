@@ -1,15 +1,27 @@
 /**
- * Manage passages: the placeholder "lists table", the add-passage form and
- * the plan's passage list, each with the action this v0 shell actually
- * supports (P1, M5).
+ * Manage passages: the lists table, the add-passage form and the plan's
+ * passage list, each with the action this screen supports (P1/P4/P5, M5).
  *
- * v0 ships exactly one collection (`db.ts#ensureDefaultCollection`), so the
- * "lists table" below has exactly one row: `plan.collectionName`, with Edit
- * enabled (a real, if tiny, rename - `renameCollection` in the protocol) and
- * Delete disabled with a fixed hint, per Decision 14's own words: "Until P4
- * lands, the table renders the single default list with Edit enabled ... and
- * Delete disabled". P4 (multi-list CRUD) and P5 (the real table) replace this
- * wholesale; nothing here should grow multi-list support in the meantime.
+ * **The lists table (P5).** One row per `CollectionView` from `getCollections`
+ * - every list, not just the active one `plan` is scoped to - with Edit
+ * (rename) and Delete per row, plus a "+ New list" control. This replaces
+ * P1's placeholder wholesale: that shell rendered exactly one hardcoded row
+ * (`plan.collectionName`) with Edit enabled and Delete permanently disabled,
+ * per Decision 14's "until P4 lands" wording. P4 built the real multi-list
+ * CRUD (`getCollections`/`createCollection`/`deleteCollection` alongside the
+ * already-existing `renameCollection`); this file is P5, the screen that
+ * actually uses it.
+ *
+ * Delete is a real, immediate delete (`deleteCollection`) - not the
+ * soft-delete P6 will later add for individual *passages*, a different
+ * screen entirely. Decision 15's two-step confirmation is the interesting
+ * part: a list with no practice anywhere in it gets a plain
+ * `Delete "name"?`, but a list where any passage has `bestLevel > 0` gets a
+ * stronger warning naming exactly how much history is at stake, and requires
+ * typing the list's name before the delete button enables - see
+ * `renderListRow`'s own note for why the practice check is a lazy,
+ * per-row-on-press fetch (`getCollectionPracticeStats`) rather than eager for
+ * every row on table load.
  *
  * The add-passage form (M5, moved here from `planView.ts#renderPlan` per
  * Decision 10 - "renderAddPassage and its batch paste UI move off this
@@ -18,13 +30,13 @@
  * its only caller.
  *
  * The passage list below it reuses `plan.passages` - the same data the home
- * screen already has, so this screen needs no request of its own beyond
+ * screen already has, so that block needs no request of its own beyond
  * `getPlan` - and gives each row the same two-step Remove shape as
  * `passageView.ts#renderRemoveControl`, adapted to one row among many rather
  * than a whole screen's own slot.
  */
 
-import type { Passage, PassageView, PlanView } from '../types';
+import type { CollectionView, Passage, PassageView, PlanView } from '../types';
 import { button, el, focusQuietly, replace } from './dom';
 import { breadcrumb, emptyState, errorBanner, modal } from './components';
 import { countLabel } from './format';
@@ -43,7 +55,7 @@ export function renderManage(host: PanelHost, plan: PlanView): HTMLElement {
     }),
   );
 
-  root.appendChild(renderListsBlock(host, plan));
+  root.appendChild(renderListsBlock(host));
   root.appendChild(renderAddPassageBlock(host));
   root.appendChild(renderPassagesBlock(host, plan));
 
@@ -51,36 +63,73 @@ export function renderManage(host: PanelHost, plan: PlanView): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// The lists table (one row until P4)
+// The lists table (P5)
 // ---------------------------------------------------------------------------
 
-function renderListsBlock(host: PanelHost, plan: PlanView): HTMLElement {
+/**
+ * The lists table itself: one row per `CollectionView`, fetched fresh on
+ * every render (there is no per-list data on `plan` to reuse, since `plan` is
+ * scoped to the active list alone) plus the "+ New list" control underneath.
+ *
+ * The `<ul>` starts empty and is filled once `getCollections` replies -
+ * `renderManage` and this function both stay synchronous (nothing else on
+ * this screen has ever awaited a request before its first paint), so a
+ * loading gap of one microtask is the tradeoff, the same one `TestHost`'s own
+ * `settle()` helper exists for in the test suite.
+ */
+function renderListsBlock(host: PanelHost): HTMLElement {
+  const listEl = el('ul', { class: 'sm-list', attrs: { 'aria-label': 'Lists' } });
+  const errorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+
+  async function loadCollections(): Promise<void> {
+    const reply = await host.request({ type: 'getCollections' });
+    if (!reply.ok) {
+      replace(errorSlot, [errorBanner(reply.error)]);
+      return;
+    }
+    replace(errorSlot, []);
+    replace(listEl, reply.data.map((c) => renderListRow(host, c, loadCollections)));
+  }
+
+  void loadCollections();
+
   return el('section', { class: 'sm-block' }, [
     el('h2', { class: 'sm-block-title', text: 'Lists' }),
-    el('ul', { class: 'sm-list', attrs: { 'aria-label': 'Lists' } }, [renderListRow(host, plan)]),
+    listEl,
+    errorSlot,
+    renderNewListControl(host, loadCollections),
   ]);
 }
 
-function renderListRow(host: PanelHost, plan: PlanView): HTMLElement {
+/**
+ * One row: the list's name, Edit (rename) and Delete - generalised from P1's
+ * single hardcoded row to take any `CollectionView` rather than reading
+ * `plan.collectionName`/`plan.collectionId` directly. `reload` is
+ * `renderListsBlock`'s own `loadCollections`, passed down so a rename or
+ * delete can refresh the table itself in place, the same immediate feedback
+ * `host.reload()` gives the rest of the screen - both are called together
+ * below, matching every other setter on this screen (`renameCollection`'s own
+ * former note, still true here: trust the reload, not the locally-typed
+ * value, to match whatever the worker actually stored).
+ */
+function renderListRow(host: PanelHost, collection: CollectionView, reload: () => void): HTMLElement {
   const row = el('li', { class: 'sm-row' });
 
   const showView = (): void => {
     replace(row, [
-      el('span', { class: 'sm-row-ref', text: plan.collectionName }),
+      el('span', { class: 'sm-row-ref', text: collection.name }),
       button('Edit', showEdit, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
-      button('Delete', () => {}, {
-        class: 'sm-btn sm-btn-small sm-btn-quiet',
-        disabled: true,
-        attrs: { title: "Your only list can't be deleted." },
+      button('Delete', showDeleteChecking, {
+        class: 'sm-btn sm-btn-small sm-btn-danger-quiet',
+        attrs: { 'aria-label': `Delete ${collection.name}` },
       }),
-      el('span', { class: 'sm-hint', text: "Your only list can't be deleted." }),
     ]);
   };
 
   function showEdit(): void {
     const input = el('input', {
       class: 'sm-input',
-      value: plan.collectionName,
+      value: collection.name,
       attrs: { 'aria-label': 'List name' },
     }) as HTMLInputElement;
 
@@ -100,7 +149,7 @@ function renderListRow(host: PanelHost, plan: PlanView): HTMLElement {
       cancel.disabled = true;
       const reply = await host.request({
         type: 'renameCollection',
-        collectionId: plan.collectionId,
+        collectionId: collection.id,
         name,
       });
       if (!reply.ok) {
@@ -114,7 +163,11 @@ function renderListRow(host: PanelHost, plan: PlanView): HTMLElement {
       // Persisted - reload to see the real state, same pattern as every other
       // setter on this panel (`renderPassageListHeader`'s sort order,
       // `renderAnswerModeRow`'s answer mode), rather than trusting the local
-      // `name` to match whatever the worker actually stored.
+      // `name` to match whatever the worker actually stored. Both this row's
+      // own table (in case another row's data shifted too) and the rest of
+      // the screen (the breadcrumb reads nothing from this, but a renamed
+      // *active* list would - see `host.reload()`'s own doc) are refreshed.
+      reload();
       host.reload();
     }
 
@@ -134,8 +187,195 @@ function renderListRow(host: PanelHost, plan: PlanView): HTMLElement {
     input.select();
   }
 
+  // ---------------------------------------------------------------------
+  // Delete (Decision 15): a lazy practice-history check, then one of two
+  // confirmation shapes.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Delete is pressed: check this one list's own practice history before
+   * deciding which confirmation to show, rather than fetching it for every
+   * row up front (a table of many lists would otherwise mean many
+   * `getCollectionPracticeStats` requests for rows nobody is about to
+   * delete). A brief "Checking…" replaces the row while the request is in
+   * flight - `TestHost`'s stub replies are immediate but still a microtask
+   * away, and a real worker round-trip is slower still, so the row would
+   * otherwise sit showing its old Edit/Delete buttons as if the press had
+   * done nothing.
+   */
+  function showDeleteChecking(): void {
+    replace(row, [
+      el('span', { class: 'sm-row-ref', text: collection.name }),
+      el('span', { class: 'sm-hint', text: 'Checking…' }),
+    ]);
+    void loadStatsAndConfirm();
+  }
+
+  async function loadStatsAndConfirm(): Promise<void> {
+    const reply = await host.request({ type: 'getCollectionPracticeStats', collectionId: collection.id });
+    if (!reply.ok) {
+      replace(row, [
+        el('span', { class: 'sm-row-ref', text: collection.name }),
+        errorBanner(reply.error),
+        button('Cancel', showView, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
+      ]);
+      return;
+    }
+    if (reply.data.practiced > 0) showDeleteConfirmWithHistory(reply.data.total, reply.data.practiced);
+    else showDeleteConfirmSimple();
+  }
+
+  /** No passage in this list has ever been practised: `Delete "name"? [Yes, delete] [Cancel]`. */
+  function showDeleteConfirmSimple(): void {
+    replace(row, [
+      el('span', { class: 'sm-remove-confirm', attrs: { role: 'alert' } }, [
+        el('span', { class: 'sm-hint', text: `Delete "${collection.name}"?` }),
+        button('Yes, delete', doDelete, { class: 'sm-btn sm-btn-small sm-btn-danger' }),
+        button('Cancel', showView, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
+      ]),
+    ]);
+  }
+
+  /**
+   * At least one passage has real history: the stronger warning, with the
+   * exact N-of-M wording Decision 15 specifies, and a name-typed gate on
+   * "Yes, delete" - the only place in the panel that asks for typing, which
+   * is itself the signal (Decision 15's own words). The match is exact
+   * (case-sensitive, untrimmed): this is a deliberate speed bump, not a form
+   * field, so it should not be easier to clear than actually typing the name.
+   */
+  function showDeleteConfirmWithHistory(total: number, practiced: number): void {
+    const input = el('input', {
+      class: 'sm-input',
+      attrs: { 'aria-label': `Type "${collection.name}" to confirm deleting it` },
+    }) as HTMLInputElement;
+
+    const confirmBtn = button('Yes, delete', doDelete, {
+      class: 'sm-btn sm-btn-small sm-btn-danger',
+      disabled: true,
+    });
+    const cancelBtn = button('Cancel', showView, { class: 'sm-btn sm-btn-small sm-btn-quiet' });
+
+    input.addEventListener('input', () => {
+      confirmBtn.disabled = input.value !== collection.name;
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !confirmBtn.disabled) {
+        event.preventDefault();
+        doDelete();
+      }
+    });
+
+    replace(row, [
+      el('span', { class: 'sm-remove-confirm', attrs: { role: 'alert' } }, [
+        el('p', {
+          class: 'sm-hint',
+          text: `This list has practice history on ${practiced} of ${total} passages. Deleting it removes that history.`,
+        }),
+        input,
+        confirmBtn,
+        cancelBtn,
+      ]),
+    ]);
+    focusQuietly(input);
+  }
+
+  function doDelete(): void {
+    void host.request({ type: 'deleteCollection', collectionId: collection.id }).then((reply) => {
+      if (!reply.ok) {
+        replace(row, [
+          el('span', { class: 'sm-row-ref', text: collection.name }),
+          errorBanner(reply.error),
+          button('Cancel', showView, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
+        ]);
+        return;
+      }
+      host.announce(`Deleted ${collection.name}.`);
+      // `deleteCollection` itself moves the active-list setting off a
+      // deleted active list before returning (`main.ts`'s own handler) - so
+      // the next `getPlan` this triggers (via `host.reload()`) already
+      // reflects a real survivor, not the row just removed. `reload()` also
+      // re-fetches this table, since the deleted row is otherwise still
+      // sitting in `listEl` until something asks `getCollections` again.
+      reload();
+      host.reload();
+    });
+  }
+
   showView();
   return row;
+}
+
+/**
+ * "+ New list": the create affordance the table needs but Decision 15 itself
+ * does not mention (item 18's own wording does - "Replace the current
+ * 'Create a list' section with a table..." - a table plus a way to still
+ * create one). A fresh `modal()` per open, matching every other modal caller
+ * on this screen (`components.ts#modal`'s own note on why).
+ */
+function renderNewListControl(host: PanelHost, reload: () => void): HTMLElement {
+  const modalSlot = el('div', { class: 'sm-new-list-modal-slot' });
+
+  function openNewListModal(): void {
+    const input = el('input', {
+      class: 'sm-input',
+      id: 'sm-new-list-name',
+      attrs: { 'aria-label': 'List name' },
+    }) as HTMLInputElement;
+    const errorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+
+    const cancelBtn = button('Cancel', () => handle.close(), { class: 'sm-btn sm-btn-quiet' });
+    const createBtn = button('Create', () => void doCreate(), { class: 'sm-btn sm-btn-primary' });
+
+    const handle = modal({
+      title: 'New list',
+      body: [
+        el('label', { class: 'sm-label', text: 'List name', attrs: { for: 'sm-new-list-name' } }),
+        input,
+        errorSlot,
+      ],
+      actions: [cancelBtn, createBtn],
+    });
+
+    async function doCreate(): Promise<void> {
+      const name = input.value.trim();
+      if (name === '') {
+        replace(errorSlot, [errorBanner('Give the list a name.')]);
+        return;
+      }
+      input.disabled = true;
+      createBtn.disabled = true;
+      cancelBtn.disabled = true;
+      const reply = await host.request({ type: 'createCollection', name });
+      if (!reply.ok) {
+        input.disabled = false;
+        createBtn.disabled = false;
+        cancelBtn.disabled = false;
+        replace(errorSlot, [errorBanner(reply.error)]);
+        return;
+      }
+      handle.close();
+      host.announce(`Created ${reply.data.name}.`);
+      reload();
+      host.reload();
+    }
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        void doCreate();
+      }
+    });
+
+    replace(modalSlot, [handle.element]);
+    handle.open();
+  }
+
+  const openBtn = button('+ New list', openNewListModal, {
+    class: 'sm-btn sm-btn-quiet sm-btn-small sm-link-btn',
+  });
+
+  return el('div', { class: 'sm-new-list' }, [openBtn, modalSlot]);
 }
 
 // ---------------------------------------------------------------------------

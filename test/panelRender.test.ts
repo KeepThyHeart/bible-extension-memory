@@ -55,6 +55,7 @@ import type {
   AnalyticsView,
   AnswerMode,
   BlanksStep,
+  CollectionView,
   FirstLettersStep,
   OrderingStep,
   PanelReply,
@@ -631,6 +632,13 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   host = new TestHost();
+  // `renderManage` (P5) always fetches `getCollections` for its lists table,
+  // even on screens/tests that only care about the passage list below it - a
+  // missing stub would otherwise surface as a stray `role="alert"` error
+  // banner ("No stub registered...") ahead of whatever alert a test is
+  // actually looking for. Any test - or whole describe block - that cares
+  // about the table's own content overrides this.
+  host.handlers.getCollections = () => ({ ok: true, data: [{ id: 1, name: 'My plan', passageCount: 0 }] });
 });
 
 afterEach(() => {
@@ -2073,6 +2081,19 @@ describe('the manage passages screen', () => {
     };
   }
 
+  function collectionViewFixture(over: Partial<CollectionView> = {}): CollectionView {
+    return { id: 1, name: 'My plan', passageCount: 0, ...over };
+  }
+
+  /** The one `<li>` row for a given list name, once `getCollections` has resolved. */
+  function listRow(root: HTMLElement, name: string): HTMLElement {
+    const row = Array.from(root.querySelectorAll<HTMLElement>('ul[aria-label="Lists"] > li')).find((li) =>
+      spokenText(li).includes(name),
+    );
+    if (!row) throw new Error(`No list row found for "${name}"`);
+    return row;
+  }
+
   it('breadcrumbs Home › Manage passages, with Manage passages as the current page', () => {
     const root = renderManage(host, managePlan());
     container.appendChild(root);
@@ -2099,76 +2120,247 @@ describe('the manage passages screen', () => {
     expect(host.navigations).toContainEqual({ type: 'goPlan' });
   });
 
-  it('shows the one list with Edit enabled and Delete disabled with the required hint', () => {
-    const root = renderManage(host, managePlan([], 'Sunday memory verses'));
-    container.appendChild(root);
+  // -------------------------------------------------------------------------
+  // The lists table (P5)
+  // -------------------------------------------------------------------------
 
+  it('renders one row per collection, each with its own name, Edit and Delete enabled', async () => {
+    host.handlers.getCollections = () => ({
+      ok: true,
+      data: [
+        collectionViewFixture({ id: 1, name: 'My plan' }),
+        collectionViewFixture({ id: 2, name: 'Sunday memory verses' }),
+      ],
+    });
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    const rows = root.querySelectorAll('ul[aria-label="Lists"] > li');
+    expect(rows.length).toBe(2);
+    expect(spokenText(root)).toContain('My plan');
     expect(spokenText(root)).toContain('Sunday memory verses');
 
-    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
-    expect(edit.disabled).toBe(false);
-
-    const del = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Delete')!;
-    expect(del.disabled).toBe(true);
-
-    expect(spokenText(root)).toContain("Your only list can't be deleted.");
+    for (const name of ['My plan', 'Sunday memory verses']) {
+      const row = listRow(root, name);
+      const edit = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+      const del = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Delete')!;
+      expect(edit.disabled).toBe(false);
+      expect(del.disabled).toBe(false);
+    }
+    // A lone list works exactly the same way - `deleteCollection` does not
+    // special-case "the last list", so neither does this table any more.
+    expect(spokenText(root)).not.toContain("can't be deleted");
   });
 
-  it('renames the list on Save and reloads', async () => {
+  it('renames a row (not just the first one) on Save, and reloads both the table and the screen', async () => {
+    host.handlers.getCollections = () => ({
+      ok: true,
+      data: [
+        collectionViewFixture({ id: 1, name: 'My plan' }),
+        collectionViewFixture({ id: 2, name: 'Sunday memory verses' }),
+      ],
+    });
     host.handlers.renameCollection = () => ({ ok: true, data: {} });
-    const root = renderManage(host, managePlan([], 'My plan'));
+    const root = renderManage(host, managePlan());
     container.appendChild(root);
+    await settle();
 
-    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    const row = listRow(root, 'Sunday memory verses');
+    const edit = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
     edit.click();
 
-    const input = root.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
-    expect(input.value).toBe('My plan');
-    input.value = 'Sunday school verses';
+    const input = row.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
+    expect(input.value).toBe('Sunday memory verses');
+    input.value = 'Renamed list';
 
-    const save = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Save')!;
+    const save = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Save')!;
     save.click();
     await settle();
 
     expect(host.requests).toContainEqual({
       type: 'renameCollection',
-      collectionId: 1,
-      name: 'Sunday school verses',
+      collectionId: 2,
+      name: 'Renamed list',
     });
     expect(host.reloads).toBe(1);
   });
 
-  it('cancels an in-progress rename without sending a request', () => {
-    const root = renderManage(host, managePlan([], 'My plan'));
+  it('cancels an in-progress rename without sending a request', async () => {
+    const root = renderManage(host, managePlan());
     container.appendChild(root);
+    await settle();
 
-    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    const row = listRow(root, 'My plan');
+    const edit = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
     edit.click();
-    expect(root.querySelector('input[aria-label="List name"]')).not.toBeNull();
+    expect(row.querySelector('input[aria-label="List name"]')).not.toBeNull();
 
-    const cancel = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!;
+    const cancel = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!;
     cancel.click();
 
-    expect(root.querySelector('input[aria-label="List name"]')).toBeNull();
-    expect(spokenText(root)).toContain('My plan');
+    expect(row.querySelector('input[aria-label="List name"]')).toBeNull();
+    expect(spokenText(row)).toContain('My plan');
     expect(host.requests.filter((r) => r.type === 'renameCollection')).toEqual([]);
   });
 
   it('refuses to save a blank name', async () => {
-    const root = renderManage(host, managePlan([], 'My plan'));
+    const root = renderManage(host, managePlan());
     container.appendChild(root);
+    await settle();
 
-    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    const row = listRow(root, 'My plan');
+    const edit = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
     edit.click();
 
-    const input = root.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
+    const input = row.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
     input.value = '   ';
 
-    const save = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Save')!;
+    const save = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Save')!;
     save.click();
     await settle();
 
     expect(host.requests.filter((r) => r.type === 'renameCollection')).toEqual([]);
+    expect(spokenText(row)).toContain('Give the list a name.');
+  });
+
+  it('shows the simple confirm when a list has no practice history, and deletes it on "Yes, delete"', async () => {
+    host.handlers.getCollections = () => ({
+      ok: true,
+      data: [collectionViewFixture({ id: 1, name: 'My plan' }), collectionViewFixture({ id: 2, name: 'Empty list' })],
+    });
+    host.handlers.getCollectionPracticeStats = () => ({ ok: true, data: { total: 3, practiced: 0 } });
+    host.handlers.deleteCollection = () => ({ ok: true, data: {} });
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    const row = listRow(root, 'Empty list');
+    const del = row.querySelector<HTMLButtonElement>('button[aria-label="Delete Empty list"]')!;
+    del.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'getCollectionPracticeStats', collectionId: 2 });
+    expect(spokenText(row)).toContain('Delete "Empty list"?');
+    expect(row.querySelector('input')).toBeNull();
+
+    const confirm = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Yes, delete')!;
+    confirm.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'deleteCollection', collectionId: 2 });
+    expect(host.announcements).toContainEqual('Deleted Empty list.');
+    expect(host.reloads).toBe(1);
+  });
+
+  it('cancels the simple delete confirm without sending deleteCollection', async () => {
+    host.handlers.getCollectionPracticeStats = () => ({ ok: true, data: { total: 0, practiced: 0 } });
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    const row = listRow(root, 'My plan');
+    row.querySelector<HTMLButtonElement>('button[aria-label="Delete My plan"]')!.click();
+    await settle();
+    expect(spokenText(row)).toContain('Delete "My plan"?');
+
+    const cancel = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!;
+    cancel.click();
+
+    expect(spokenText(row)).not.toContain('Delete "My plan"?');
+    expect(spokenText(row)).toContain('My plan');
+    expect(host.requests.filter((r) => r.type === 'deleteCollection')).toEqual([]);
+  });
+
+  it('shows the stronger, name-typed warning - with the exact N-of-M wording - when a list has practice history', async () => {
+    host.handlers.getCollections = () => ({ ok: true, data: [collectionViewFixture({ id: 5, name: 'Psalm list' })] });
+    host.handlers.getCollectionPracticeStats = () => ({ ok: true, data: { total: 4, practiced: 3 } });
+    host.handlers.deleteCollection = () => ({ ok: true, data: {} });
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    const row = listRow(root, 'Psalm list');
+    row.querySelector<HTMLButtonElement>('button[aria-label="Delete Psalm list"]')!.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'getCollectionPracticeStats', collectionId: 5 });
+    expect(spokenText(row)).toContain(
+      'This list has practice history on 3 of 4 passages. Deleting it removes that history.',
+    );
+
+    const input = row.querySelector<HTMLInputElement>('input')!;
+    const confirm = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Yes, delete') as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+
+    input.value = 'wrong name';
+    input.dispatchEvent(new Event('input'));
+    expect(confirm.disabled).toBe(true);
+
+    input.value = 'Psalm list';
+    input.dispatchEvent(new Event('input'));
+    expect(confirm.disabled).toBe(false);
+
+    confirm.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'deleteCollection', collectionId: 5 });
+    expect(host.announcements).toContainEqual('Deleted Psalm list.');
+    expect(host.reloads).toBe(1);
+  });
+
+  it('cancels the history-gated delete confirm without sending deleteCollection', async () => {
+    host.handlers.getCollections = () => ({ ok: true, data: [collectionViewFixture({ id: 5, name: 'Psalm list' })] });
+    host.handlers.getCollectionPracticeStats = () => ({ ok: true, data: { total: 4, practiced: 3 } });
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    const row = listRow(root, 'Psalm list');
+    row.querySelector<HTMLButtonElement>('button[aria-label="Delete Psalm list"]')!.click();
+    await settle();
+
+    const cancel = Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!;
+    cancel.click();
+
+    expect(spokenText(row)).not.toContain('practice history');
+    expect(spokenText(row)).toContain('Psalm list');
+    expect(row.querySelector('input')).toBeNull();
+    expect(host.requests.filter((r) => r.type === 'deleteCollection')).toEqual([]);
+  });
+
+  it('creates a new list via "+ New list", and reloads', async () => {
+    host.handlers.createCollection = (req) => ({ ok: true, data: { id: 9, name: req.name } });
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    const openBtn = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === '+ New list')!;
+    openBtn.click();
+
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
+    input.value = 'Sunday memory verses';
+
+    const create = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Create')!;
+    create.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'createCollection', name: 'Sunday memory verses' });
+    expect(host.announcements).toContainEqual('Created Sunday memory verses.');
+    expect(host.reloads).toBe(1);
+  });
+
+  it('refuses to create a list with a blank name', async () => {
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+    await settle();
+
+    Array.from(root.querySelectorAll('button')).find((b) => b.textContent === '+ New list')!.click();
+    const create = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Create')!;
+    create.click();
+    await settle();
+
+    expect(host.requests.filter((r) => r.type === 'createCollection')).toEqual([]);
     expect(spokenText(root)).toContain('Give the list a name.');
   });
 

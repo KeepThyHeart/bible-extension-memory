@@ -253,9 +253,11 @@ async function buildScreen(): Promise<HTMLElement> {
     }
 
     case 'manage': {
-      // No dedicated `getCollections`/`getManage` request - the plan already
-      // has everything this shell needs (`collectionName`, `passages`), same
-      // reasoning as the passage screen's own `getPlan` reuse above.
+      // No `getManage` request of its own - the plan already has the active
+      // passage list this shell needs (`passages`), same reasoning as the
+      // passage screen's own `getPlan` reuse above. `renderManage` fetches
+      // `getCollections` itself (P5), for the lists table - every list, not
+      // just the active one `getPlan` scopes to.
       const reply = await host.request({ type: 'getPlan' });
       return reply.ok ? renderManage(host, reply.data) : failure(reply.error);
     }

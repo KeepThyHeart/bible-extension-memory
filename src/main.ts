@@ -479,10 +479,9 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       // the only mechanism) is what keeps the *stored* setting itself honest
       // rather than quietly stale. `deleteCollection` never leaves the plan
       // with zero lists: `listCollections` after the delete either names a
-      // survivor, or - the P1/P5 UI disables Delete while only one list
-      // exists, so this is not reachable through it today, but the store
-      // method itself must not leave the app broken if called directly -
-      // `ensureDefaultCollection` recreates the one v0 always shipped.
+      // survivor - the real, common case now that P5's table lets a lone
+      // list be deleted too - or, on a lone list deleted, `ensureDefaultCollection`
+      // recreates the one v0 always shipped, so the app is never left broken.
       const wasActive = (await resolveActiveCollectionId()) === req.collectionId;
       await store.deleteCollection(req.collectionId);
       if (wasActive) {
@@ -500,6 +499,9 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       await store.setActiveCollectionId(req.collectionId);
       void api.panels.postMessage({ type: 'planChanged' });
       return {};
+
+    case 'getCollectionPracticeStats':
+      return collectionPracticeStats(req.collectionId);
 
     case 'getContext':
       return buildContext(req.passageId, { withholdAfter: false });
@@ -543,6 +545,36 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
 // ---------------------------------------------------------------------------
 // Views
 // ---------------------------------------------------------------------------
+
+/**
+ * How many of a list's passages have been practised (`bestLevel > 0`), for
+ * the Manage screen's lists table (P5, Decision 15's delete-confirmation
+ * gate).
+ *
+ * Deliberately leaner than `buildPlanView`'s own per-passage loop: it needs
+ * only each passage's `bestLevel`, not the full `RungView[]` (with resume
+ * state fetched per card) that a `PassageView` carries - a list this is
+ * checking is not otherwise being rendered row-by-row. `siblingCount` still
+ * has to be plan-wide, the same as `buildPlanView`'s, so `applicableRungs`
+ * agrees with whatever rungs actually exist for these passages.
+ */
+async function collectionPracticeStats(collectionId: number): Promise<{ total: number; practiced: number }> {
+  const passages = await store.listPassages(collectionId);
+  const siblingCount = await store.countAllPassages();
+  let practiced = 0;
+
+  for (const passage of passages) {
+    const applicable = new Set(applicableRungs(passage.verseCount, siblingCount));
+    const cards = await store.listCards(passage.id);
+    const bestLevel = cards.reduce(
+      (max, c) => (applicable.has(c.rung) ? Math.max(max, levelFromScore(c.lastScore)) : max),
+      0,
+    );
+    if (bestLevel > 0) practiced += 1;
+  }
+
+  return { total: passages.length, practiced };
+}
 
 async function buildPlanView(): Promise<PlanView> {
   const now = Date.now();

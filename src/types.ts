@@ -465,6 +465,16 @@ export type PanelRequest =
   | { type: 'createCollection'; name: string }
   | { type: 'deleteCollection'; collectionId: number }
   /**
+   * How many of a list's passages have been practised (`bestLevel > 0`), for
+   * the lists table's delete-confirmation gate (P5, Decision 15). Deliberately
+   * its own lean request rather than a per-collection `getPlan` - the caller
+   * (a Delete press on the Manage screen) needs only the two counts, not a
+   * full `PassageView[]` with rungs and resume state for lists it will not
+   * otherwise render - and it is fetched lazily, only when a row's Delete is
+   * pressed, not eagerly for every row on table load.
+   */
+  | { type: 'getCollectionPracticeStats'; collectionId: number }
+  /**
    * Switches which collection `getPlan`, `addPassage` etc. act on. Persisted
    * (`MemoryStore#setActiveCollectionId`), so it survives a panel reload and a
    * worker restart, not just this session.
@@ -505,6 +515,8 @@ export interface RequestMap {
   createCollection: { id: number; name: string };
   deleteCollection: Record<string, never>;
   setActiveCollection: Record<string, never>;
+  /** `practiced` of `total` passages in the named list have `bestLevel > 0`. */
+  getCollectionPracticeStats: { total: number; practiced: number };
   getContext: PassageContext;
   addPassage: { passage: Passage };
   removePassage: Record<string, never>;
