@@ -239,9 +239,10 @@ function renderActivityTiles(host: PanelHost, plan: PlanView, now: number): HTML
  * merely disabled rather than being hidden, so a gap in the grid never reads
  * as a bug.
  *
- * `provideref` needs no special case here: `activityAvailability` already
- * reports it as always unavailable (M7 has not landed the exercise), and that
- * falls out of calling it uniformly for every tile.
+ * `provideref` needs no special case here: since M7, it has a real `Rung`
+ * like every other non-`variety` tile, and shares `refmatch`'s own
+ * availability rule (`format.ts#activityAvailability`) - both fall out of
+ * calling `activityAvailability` uniformly for every tile.
  */
 function renderActivityTile(host: PanelHost, plan: PlanView, tile: ActivityTile, now: number): HTMLElement {
   const availability = activityAvailability(plan, tile, now);
@@ -249,10 +250,9 @@ function renderActivityTile(host: PanelHost, plan: PlanView, tile: ActivityTile,
   const tileButton = button(
     tile.title,
     () => {
-      // `variety` has no `Rung` of its own (see `ActivityTile.rung`'s note);
-      // every other tile's `rung` is non-null by construction, and this
-      // handler only ever runs on an available tile, so `provideref` (also
-      // `rung: null`) can never reach it - `disabled` keeps it unpressable.
+      // `variety` is the only tile left with no `Rung` of its own (see
+      // `ActivityTile.rung`'s note) - every other tile's `rung` is non-null
+      // by construction, `tile.rung!` included.
       const flow: Flow = tile.id === 'variety' ? { kind: 'variety' } : { kind: 'activity', rung: tile.rung! };
       void host.startFlow(flow);
     },

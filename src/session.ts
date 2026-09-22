@@ -48,6 +48,19 @@ import { buildCandidates } from './exercises/ordering';
 import { selectBlanks, gradeBlanks } from './exercises/blanks';
 import { gradeFirstLetters } from './exercises/firstLetters';
 
+/**
+ * The result of resolving a `provideref` step's typed text against the host,
+ * done in `main.ts#submitStep` BEFORE `Session` is touched - see the file
+ * header on why `Session` stays synchronous and never gets a host handle.
+ * What crosses into `Session` is a resolved verse range or a resolution
+ * failure, never the raw string and never a verdict, so grading
+ * (`submitProvideRef`) is a plain numeric comparison against the passage's
+ * own `verses[0]`/`verses.at(-1)`.
+ */
+export type ResolvedTypedReference =
+  | { ok: true; startVerseId: number; endVerseId: number }
+  | { ok: false; reason: string };
+
 /** How many options a picker offers, including the correct one. */
 const PICKER_CHOICES = 4;
 
@@ -153,9 +166,20 @@ export class Session {
     this.prepareStep();
   }
 
-  /** How many verses (or ordering placements) this rung walks through. */
+  /**
+   * How many verses (or ordering placements) this rung walks through.
+   *
+   * `provideref` is graded once over the whole passage - like `refmatch` - but
+   * unlike `refmatch` (a pre-existing divergence from `totalSteps`/`verseSteps`
+   * agreeing, left alone here; not this subtask's to fix), `provideref`'s own
+   * `verseSteps` is written to already agree with `totalSteps`, so a resumed
+   * session's `cursor < this.verseSteps()` guard in the constructor behaves
+   * sensibly for it from the start.
+   */
   private verseSteps(): number {
-    return this.rung === 'ordering' ? Math.max(1, this.verses.length) : this.verses.length;
+    if (this.rung === 'ordering') return Math.max(1, this.verses.length);
+    if (this.rung === 'provideref') return 1;
+    return this.verses.length;
   }
 
   // -- presentation ---------------------------------------------------------
@@ -173,6 +197,7 @@ export class Session {
       case 'ordering':
         return Math.max(1, this.verses.length);
       case 'refmatch':
+      case 'provideref':
         return 1;
       default:
         return this.verses.length;
@@ -279,6 +304,11 @@ export class Session {
         (a, b) => a - b,
       );
     }
+
+    // `provideref` and `firstletters` need no per-step material chosen here:
+    // `provideref` shows the whole passage (`currentStep` below), and there is
+    // nothing to select ahead of time the way ordering candidates, refmatch
+    // candidates and blanks positions all need to be held for a retry.
   }
 
   private currentStep(): Step {
@@ -302,6 +332,14 @@ export class Session {
           kind: 'refmatch',
           verse: this.verses[0] as VerseText,
           candidates: this.currentRefCandidates,
+          stepNumber: 1,
+          totalSteps: 1,
+        };
+      }
+      case 'provideref': {
+        return {
+          kind: 'provideref',
+          verses: this.verses,
           stepNumber: 1,
           totalSteps: 1,
         };
@@ -349,6 +387,17 @@ export class Session {
         return this.submitOrdering(answer);
       case 'refmatch':
         return this.submitRefMatch(answer);
+      case 'provideref':
+        // Unreachable in normal operation: a typed reference has to be
+        // resolved against the host BEFORE it can be graded (see the file
+        // header and `submitProvideRef` below), and that resolution happens
+        // in `main.ts#submitStep`, which calls `submitProvideRef` directly
+        // rather than routing a `provideref` answer through this generic
+        // `submit`. Kept here only so the switch stays exhaustive and a
+        // `provideref` answer reaching this path some other way (a stale
+        // reply, say) is reported the same ordinary way `mismatch()` reports
+        // every other kind mismatch, rather than throwing.
+        return mismatch();
       case 'blanks':
         return this.submitBlanks(answer);
       case 'firstletters':
@@ -384,6 +433,58 @@ export class Session {
     if (answer.passageId !== this.self.passageId) {
       this.spoil();
       return { correct: false, wrong: [answer.passageId], blocking: true };
+    }
+
+    this.creditAndAdvanceUnit();
+    this.finished = true;
+    return { correct: true, wrong: [], blocking: false };
+  }
+
+  /**
+   * Grades a `provideref` step's already-resolved typed reference.
+   *
+   * Called directly by `main.ts#submitStep`, not reached through `submit()` -
+   * see the file header and `submit`'s own `provideref` case. `resolved` is
+   * produced by `main.ts#resolveTypedReference` (`reference.ts#resolveReference`
+   * wrapped so a `ReferenceError` becomes `{ ok: false }` instead of throwing),
+   * so this method itself never touches the host and never parses a string.
+   *
+   * Three outcomes, all one attempt:
+   *
+   *   - unrecognised text (`resolved.ok === false`) - not a graded claim, so
+   *     it is neither counted nor spoiled; `blocking: true` re-serves the same
+   *     step (there is nothing else useful to show), and `note` carries the
+   *     parser's own message verbatim for the panel to display.
+   *   - a real reference, wrong range - graded 0 of 1, finished, `blocking:
+   *     false` and the correct reference revealed. Unlike `refmatch`, a wrong
+   *     answer here does NOT block: a free-text field has no bounded number of
+   *     guesses the way a four-candidate picker does.
+   *   - a real reference, the exact range - graded 1 of 1, finished, correct.
+   *
+   * The comparison is purely numeric (`verseId` against `verseId`), which is
+   * what lets two differently-abbreviated but equal references both grade
+   * correct with no string normalisation anywhere in this method.
+   */
+  submitProvideRef(resolved: ResolvedTypedReference): StepResult {
+    if (this.finished) return { correct: false, wrong: [], blocking: false };
+
+    const first = this.verses[0];
+    const last = this.verses[this.verses.length - 1];
+    if (!first || !last) return mismatch();
+
+    if (!resolved.ok) {
+      return { correct: false, wrong: [], blocking: true, note: resolved.reason };
+    }
+
+    if (resolved.startVerseId !== first.verseId || resolved.endVerseId !== last.verseId) {
+      this.spoil();
+      this.finished = true;
+      return {
+        correct: false,
+        wrong: [],
+        blocking: false,
+        reveal: { reference: this.self.reference },
+      };
     }
 
     this.creditAndAdvanceUnit();

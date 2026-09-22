@@ -45,6 +45,7 @@ export const MASTERED_LEVEL = 4;
 export const RUNG_LABEL: Readonly<Record<Rung, string>> = {
   ordering: 'Put in order',
   refmatch: 'Match the reference',
+  provideref: 'Provide the reference',
   blanks: 'Fill in the blanks',
   firstletters: 'First letters only',
 };
@@ -53,6 +54,7 @@ export const RUNG_LABEL: Readonly<Record<Rung, string>> = {
 export const RUNG_BLURB: Readonly<Record<Rung, string>> = {
   ordering: 'Choose which verse comes next, with the earlier verses in view.',
   refmatch: 'Given the words, choose the reference they belong to.',
+  provideref: 'Given the words, type the reference they belong to.',
   blanks: 'Type the words that have been removed from the passage.',
   firstletters: 'Every word is hidden. Recall the whole verse.',
 };
@@ -372,12 +374,13 @@ export function activityAvailability(
   const passageCount = plan.passages.length;
 
   switch (tile.id) {
-    case 'provideref':
-      // The exercise itself does not exist yet (M7) - always unavailable,
-      // regardless of the plan's contents, until it lands.
-      return { available: false, warning: 'Not available yet.' };
-
-    case 'refmatch': {
+    // Match References and Provide Reference share one gate: both need
+    // another passage in the plan to distract with / be distinguished from
+    // (`ladder.ts#MIN_PASSAGES_FOR_REFMATCH`, shared by the two rungs
+    // themselves), so a tile press on either is available under exactly the
+    // same condition.
+    case 'refmatch':
+    case 'provideref': {
       if (passageCount >= MIN_PASSAGES_FOR_REFMATCH) return { available: true, warning: null };
       return {
         available: false,

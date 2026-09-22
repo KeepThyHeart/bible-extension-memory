@@ -355,6 +355,7 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
     expect(rungsOf(await store.listCards(first.id))).toEqual([
       'blanks',
       'firstletters',
+      'provideref',
       'refmatch',
     ]);
   });
@@ -448,6 +449,39 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
     await store.syncLadders(collectionId);
     expect(await store.listCards(passage.id)).toHaveLength(3);
   });
+
+  it('syncAllLadders backfills a rung added to applicableRungs after a plan already existed, across every collection', async () => {
+    // The scenario M7 (task 0028's "Provide Reference") introduced: cards are
+    // otherwise only ever created from `addPassage`/`removePassage`, and each
+    // only re-syncs the ONE collection it touched (see the "plan-wide sibling
+    // count" describe block below), so a passage sitting in a collection
+    // nothing has added to or removed from lately can be stuck with a stale
+    // ladder even under the CURRENT `applicableRungs` - exactly what a rung
+    // newly added to it (`provideref`) would do to every existing plan on
+    // upgrade day. List A here is real: it never gets its own `syncLadders`
+    // call for the plan-wide sibling count List B's `addPassage` just
+    // changed, so it genuinely lacks `provideref`/`refmatch` until something
+    // re-syncs it - `main.ts#activate`'s backfill call is that something, and
+    // this is `syncAllLadders`'s own promise that it reaches every collection,
+    // not just the one last touched.
+    const { store, collectionId } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    const { passage: inA } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    await store.addPassage(passageInput(other.id, 45008028, 1, 'Romans 8:28'));
+
+    expect(rungsOf(await store.listCards(inA.id))).toEqual(['blanks', 'firstletters']);
+
+    await store.syncAllLadders();
+
+    expect(rungsOf(await store.listCards(inA.id))).toEqual([
+      'blanks',
+      'firstletters',
+      'provideref',
+      'refmatch',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -488,12 +522,13 @@ describe('plan-wide sibling count', () => {
     // plan-wide count (2) is what `addPassage`'s own `syncLadders` call used
     // when it built List B's ladder just now.
     const listBCards = await store.listCards((await store.listPassages(other.id))[0]!.id);
-    expect(rungsOf(listBCards)).toEqual(['blanks', 'firstletters', 'refmatch']);
+    expect(rungsOf(listBCards)).toEqual(['blanks', 'firstletters', 'provideref', 'refmatch']);
 
     await store.syncLadders(collectionId);
     expect(rungsOf(await store.listCards(onlyInA.id))).toEqual([
       'blanks',
       'firstletters',
+      'provideref',
       'refmatch',
     ]);
   });

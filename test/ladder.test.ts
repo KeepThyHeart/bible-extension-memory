@@ -39,30 +39,41 @@ describe('applicableRungs - which ladder this material is on', () => {
     expect(applicableRungs(3, 1)).toEqual(['ordering', 'blanks', 'firstletters']);
   });
 
-  it('adds refmatch alongside ordering once there is something to confuse the reference with', () => {
-    // `ordering` and `refmatch` are independent, not either/or - a multi-verse
-    // passage with company in the plan gets both, because needing its own
-    // verses ordered and needing its reference recognised are two different
-    // things neither substitutes for.
-    expect(applicableRungs(3, 5)).toEqual(['ordering', 'refmatch', 'blanks', 'firstletters']);
+  it('adds refmatch and provideref alongside ordering once there is something to confuse the reference with', () => {
+    // `ordering` and `refmatch`/`provideref` are independent, not either/or -
+    // a multi-verse passage with company in the plan gets all three, because
+    // needing its own verses ordered and needing its reference recognised (or
+    // produced) are different things neither substitutes for. `refmatch` and
+    // `provideref` themselves are independent too - see `firstRungFor`'s note
+    // and M7's own doc comment on `MIN_PASSAGES_FOR_REFMATCH`.
+    expect(applicableRungs(3, 5)).toEqual([
+      'ordering',
+      'refmatch',
+      'provideref',
+      'blanks',
+      'firstletters',
+    ]);
   });
 
-  it('puts a single verse with siblings on the refmatch ladder', () => {
+  it('puts a single verse with siblings on the refmatch/provideref ladder', () => {
     // A lone verse has no internal order, but it can be confused with the
-    // other references in the plan - so the first rung becomes "which
-    // reference is this?". Two passages is the minimum: the verse itself plus
-    // one thing to be confused with.
-    expect(applicableRungs(1, 2)).toEqual(['refmatch', 'blanks', 'firstletters']);
-    expect(applicableRungs(1, 9)).toEqual(['refmatch', 'blanks', 'firstletters']);
+    // other references in the plan - so the first rungs become "which
+    // reference is this?" and "what is this passage's reference?". Two
+    // passages is the minimum: the verse itself plus one thing to be
+    // confused with.
+    expect(applicableRungs(1, 2)).toEqual(['refmatch', 'provideref', 'blanks', 'firstletters']);
+    expect(applicableRungs(1, 9)).toEqual(['refmatch', 'provideref', 'blanks', 'firstletters']);
   });
 
-  it('offers refmatch for a multi-verse passage too, matched as one passage-reference unit', () => {
-    // A 13-verse passage's `refmatch` step is exactly as meaningful as a lone
-    // verse's: match this passage's own text (a short preview) to its own
-    // whole-passage reference, never a per-verse breakdown - see
-    // `session.ts`'s `refmatch` case and `types.ts#RefMatchStep`.
+  it('offers refmatch and provideref for a multi-verse passage too, matched as one passage-reference unit', () => {
+    // A 13-verse passage's `refmatch`/`provideref` steps are exactly as
+    // meaningful as a lone verse's: match (or produce) this passage's own
+    // reference, never a per-verse breakdown - see `session.ts`'s `refmatch`
+    // case and `types.ts#RefMatchStep`/`ProvideRefStep`.
     expect(applicableRungs(13, 2)).toContain('refmatch');
+    expect(applicableRungs(13, 2)).toContain('provideref');
     expect(applicableRungs(13, 1)).not.toContain('refmatch');
+    expect(applicableRungs(13, 1)).not.toContain('provideref');
   });
 
   it('gives a single verse ALONE in the collection neither first rung', () => {

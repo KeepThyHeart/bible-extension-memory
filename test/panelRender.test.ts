@@ -65,6 +65,8 @@ import type {
   PassageSortOrder,
   PassageView,
   PlanView,
+  ProvideRefStep,
+  RefMatchStep,
   RequestMap,
   Rung,
   RungView,
@@ -439,6 +441,17 @@ function orderingStep(): OrderingStep {
     stepNumber: 2,
     totalSteps: 3,
   };
+}
+
+function provideRefStep(verses: VerseText[]): ProvideRefStep {
+  return { kind: 'provideref', verses, stepNumber: 1, totalSteps: 1 };
+}
+
+function refMatchStep(
+  verse: VerseText,
+  candidates: { passageId: number; reference: string }[],
+): RefMatchStep {
+  return { kind: 'refmatch', verse, candidates, stepNumber: 1, totalSteps: 1 };
 }
 
 function stepResult(over: Partial<StepResult> = {}): StepResult {
@@ -1357,6 +1370,176 @@ describe('first letters', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 6b. Match / provide the reference (M7) - the shared context-fetch skip and
+// the crumb no longer leaking the answer (see `practiceView.ts#loadContext`
+// and `#renderHead`)
+// ---------------------------------------------------------------------------
+
+describe('refmatch', () => {
+  const step = () =>
+    refMatchStep(JOHN_3_16, [
+      { passageId: 1, reference: 'John 3:16' },
+      { passageId: 2, reference: 'Romans 8:28' },
+    ]);
+
+  it('never fetches the surrounding context - the step already carries the one verse it shows', async () => {
+    await mountPractice(step(), { rung: 'refmatch' });
+    expect(host.requests.some((r) => r.type === 'getContext')).toBe(false);
+  });
+
+  it('names the crumb by the activity, not by the passage reference the exercise is asking for', async () => {
+    // Regression: `renderHead` used to read `this.context?.reference`
+    // regardless of rung, which for `refmatch` put the correct answer in the
+    // page's own `<h1>`. The picker's own candidates legitimately show
+    // references - that is the exercise - so this checks the CRUMB
+    // specifically, not the whole root.
+    const practice = await mountPractice(step(), { rung: 'refmatch' });
+
+    const heading = practice.root.querySelector('h1.sm-crumb-current')!;
+    expect(spokenText(heading)).toBe('Match the reference');
+    expect(spokenText(heading)).not.toContain('John 3:16');
+  });
+});
+
+describe('provide reference', () => {
+  const VERSES = [PSALM_1_2, PSALM_1_3];
+
+  function input(root: HTMLElement): HTMLInputElement {
+    return root.querySelector<HTMLInputElement>('.sm-answer-row input')!;
+  }
+
+  it('renders every verse of the passage with no verse-label margin and nothing marked current', async () => {
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+
+    // Both verses' words are on screen (labels aside - checked separately
+    // below), unlike `ordering`/`blanks`, which only ever show part of the
+    // passage during the exercise.
+    for (const verse of VERSES) {
+      expect(spokenText(practice.root)).toContain(verse.words[0]);
+    }
+    // No chapter:verse margin - see `renderContext`'s `provideref` case,
+    // `showLabel: false`.
+    expect(practice.root.querySelector('.sm-verse-label')).toBeNull();
+    // Nothing is "the working verse": the whole passage is shown plainly, not
+    // one verse highlighted among context.
+    expect(practice.root.querySelectorAll('[aria-current="step"]').length).toBe(0);
+  });
+
+  it('never fetches the surrounding context, and the reference appears nowhere on the page', async () => {
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+
+    expect(host.requests.some((r) => r.type === 'getContext')).toBe(false);
+    // Unlike `refmatch`, there is no picker showing candidate references
+    // either - the whole point of this activity is that nothing on screen
+    // answers its own question.
+    expect(spokenText(practice.root)).not.toContain('Psalm 1:2');
+  });
+
+  it('names the crumb by the activity, not by the passage reference', async () => {
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+
+    const heading = practice.root.querySelector('h1.sm-crumb-current')!;
+    expect(spokenText(heading)).toBe('Provide the reference');
+  });
+
+  it('sends the typed text on Check, and on Enter', async () => {
+    let submitted: unknown[] = [];
+    host.handlers.submitStep = (req) => {
+      submitted.push(req.answer);
+      return {
+        ok: true,
+        data: { result: stepResult({ correct: true }), session: session(null), summary: null },
+      };
+    };
+
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+    const field = input(practice.root);
+    field.value = 'Psalm 1:2-3';
+    field.dispatchEvent(new Event('input'));
+    practice.root.querySelector<HTMLButtonElement>('.sm-answer-row button')!.click();
+    await settle();
+
+    expect(submitted).toEqual([{ kind: 'provideref', text: 'Psalm 1:2-3' }]);
+
+    submitted = [];
+    const practice2 = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+    const field2 = input(practice2.root);
+    field2.value = 'Ps 1:2-3';
+    field2.dispatchEvent(new Event('input'));
+    field2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(submitted).toEqual([{ kind: 'provideref', text: 'Ps 1:2-3' }]);
+  });
+
+  it('sends nothing for an empty field', async () => {
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+    practice.root.querySelector<HTMLButtonElement>('.sm-answer-row button')!.click();
+    await settle();
+
+    expect(host.requests.some((r) => r.type === 'submitStep')).toBe(false);
+  });
+
+  it('an unrecognised reference leaves the field enabled and shows the note, without ending the session', async () => {
+    host.handlers.submitStep = () => ({
+      ok: true,
+      data: {
+        result: stepResult({
+          blocking: true,
+          note: '"xyz" is not a reference I recognise. Try something like "John 3:16-18".',
+        }),
+        session: session(provideRefStep(VERSES), { rung: 'provideref' }),
+        summary: null,
+      },
+    });
+
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+    const field = input(practice.root);
+    field.value = 'xyz';
+    field.dispatchEvent(new Event('input'));
+    practice.root.querySelector<HTMLButtonElement>('.sm-answer-row button')!.click();
+    await settle();
+
+    expect(field.disabled).toBe(false);
+    expect(spokenText(practice.root)).toContain('is not a reference I recognise');
+    // No Finish/Next button either - the same step is simply asked again.
+    expect(practice.root.querySelector('.sm-exercise-actions button')).toBeNull();
+  });
+
+  it('a wrong-but-real reference disables the field, reveals the answer, and offers Finish', async () => {
+    host.handlers.submitStep = () => ({
+      ok: true,
+      data: {
+        result: stepResult({ reveal: { reference: 'Psalm 1:2-3' } }),
+        session: session(null, { rung: 'provideref' }),
+        summary: {
+          passageId: 1,
+          rung: 'provideref',
+          score: 0,
+          correctFirst: 0,
+          totalSteps: 1,
+          nextDueAt: null,
+          level: 1,
+          passageWellLearned: false,
+        },
+      },
+    });
+
+    const practice = await mountPractice(provideRefStep(VERSES), { rung: 'provideref' });
+    const field = input(practice.root);
+    field.value = 'Romans 8:28';
+    field.dispatchEvent(new Event('input'));
+    practice.root.querySelector<HTMLButtonElement>('.sm-answer-row button')!.click();
+    await settle();
+
+    expect(field.disabled).toBe(true);
+    expect(spokenText(practice.root)).toContain('Psalm 1:2-3');
+    const finish = practice.root.querySelector<HTMLButtonElement>('.sm-exercise-actions button')!;
+    expect(spokenText(finish)).toBe('Finish');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 7. Accessibility basics
 // ---------------------------------------------------------------------------
 
@@ -1665,9 +1848,9 @@ describe('the activity tile grid', () => {
 
   /**
    * Two passages, each with the default fixture's six verses - enough to
-   * satisfy every tile's own availability rule except `provideref`, which
-   * `activityAvailability` reports as unavailable regardless of the plan
-   * (M7 has not landed the exercise).
+   * satisfy every tile's own availability rule, `provideref` included: it
+   * shares `refmatch`'s own `MIN_PASSAGES_FOR_REFMATCH` gate (M7), and two
+   * passages clears it.
    */
   function fullyAvailablePlan(): PlanView {
     return planWithPassages([
@@ -1738,16 +1921,30 @@ describe('the activity tile grid', () => {
     expect(host.flowsStarted).toEqual([]);
   });
 
-  it('shows the Provide Reference tile as always unavailable, with "Not available yet.", regardless of the plan', () => {
+  it('shares the Match References gate: Provide Reference is disabled below the threshold and pressable once it is met', () => {
+    // One passage only - below `MIN_PASSAGES_FOR_REFMATCH` (2).
+    const belowThreshold = renderPlan(host, planWithPassages([passageViewFixture()]));
+    container.appendChild(belowThreshold);
+
+    const disabledTile = findTile(belowThreshold, 'Provide Reference');
+    expect(disabledTile.disabled).toBe(true);
+    expect(spokenText(disabledTile.querySelector('.sm-tile-warning')!)).toContain(
+      'Requires at least 2 passages',
+    );
+    disabledTile.click();
+    expect(host.flowsStarted).toEqual([]);
+
     const root = renderPlan(host, fullyAvailablePlan());
     container.appendChild(root);
 
     const tile = findTile(root, 'Provide Reference');
-    expect(tile.disabled).toBe(true);
-    expect(spokenText(tile.querySelector('.sm-tile-warning')!)).toBe('Not available yet.');
+    expect(tile.disabled).toBe(false);
+    expect(tile.querySelector('.sm-tile-warning')).toBeNull();
 
     tile.click();
-    expect(host.flowsStarted).toEqual([]);
+    expect(host.flowsStarted).toEqual([
+      { flow: { kind: 'activity', rung: 'provideref' }, exclude: undefined },
+    ]);
   });
 
   it('shows no tile grid at all on an empty plan - the empty state replaces it', () => {

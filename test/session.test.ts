@@ -27,13 +27,14 @@
 
 import { describe, it, expect } from 'vitest';
 import { Session, nextSessionId } from '../src/session';
-import type { SessionResume } from '../src/session';
+import type { ResolvedTypedReference, SessionResume } from '../src/session';
 import { mulberry32 } from '../src/exercises/rng';
 import type {
   AnswerMode,
   BlanksStep,
   FirstLettersStep,
   OrderingStep,
+  ProvideRefStep,
   RefMatchStep,
   VerseText,
 } from '../src/types';
@@ -154,7 +155,7 @@ function makeSession(overrides: Partial<Parameters<typeof buildOpts>[0]> = {}) {
 }
 
 function buildOpts(o: {
-  rung?: 'ordering' | 'refmatch' | 'blanks' | 'firstletters';
+  rung?: 'ordering' | 'refmatch' | 'provideref' | 'blanks' | 'firstletters';
   verses?: VerseText[];
   answerMode?: AnswerMode;
   resume?: SessionResume;
@@ -180,6 +181,7 @@ const orderingStep = (s: Session): OrderingStep => s.view().step as OrderingStep
 const blanksStep = (s: Session): BlanksStep => s.view().step as BlanksStep;
 const firstLettersStep = (s: Session): FirstLettersStep => s.view().step as FirstLettersStep;
 const refMatchStep = (s: Session): RefMatchStep => s.view().step as RefMatchStep;
+const provideRefStep = (s: Session): ProvideRefStep => s.view().step as ProvideRefStep;
 
 /**
  * Answer every ordering step correctly, in order - including the first, which
@@ -727,5 +729,109 @@ describe('refmatch', () => {
     expect(s.isFinished).toBe(false);
     expect(order()).toEqual(first);
     expect(order()).toEqual(first);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// provideref (M7) - a numeric verse-range comparison, never a string one
+// ---------------------------------------------------------------------------
+
+describe('provideref', () => {
+  const CORRECT_RANGE: ResolvedTypedReference = {
+    ok: true,
+    startVerseId: PS23_1.verseId,
+    endVerseId: PS23_4.verseId,
+  };
+
+  it('is a single step over the whole passage', async () => {
+    // Like `refmatch`, one question - but here it is the whole passage shown
+    // plainly, not one verse among candidates.
+    const s = makeSession({ rung: 'provideref', verses: PSALM_23 });
+    const step = provideRefStep(s);
+    expect(step.kind).toBe('provideref');
+    expect(step.stepNumber).toBe(1);
+    expect(step.totalSteps).toBe(1);
+    expect(step.verses).toEqual(PSALM_23);
+  });
+
+  it('grades the exact range correct, finishing the session with score 1', async () => {
+    const s = makeSession({ rung: 'provideref', verses: PSALM_23 });
+    const result = s.submitProvideRef(CORRECT_RANGE);
+
+    expect(result).toEqual({ correct: true, wrong: [], blocking: false });
+    expect(s.isFinished).toBe(true);
+    expect(s.view().step).toBeNull();
+    expect(s.gradedTotal).toBe(1);
+    expect(s.correctFirst).toBe(1);
+    expect(s.score).toBe(1);
+  });
+
+  it('grades a subset range wrong - right start, short end - guarding against an "overlap" grader', async () => {
+    // The comparison is exact-range, not "does it overlap": a resolved range
+    // that starts correctly but stops early (or runs long) is not the
+    // passage's own reference and must not slip through as a match.
+    const s = makeSession({ rung: 'provideref', verses: PSALM_23 });
+    const result = s.submitProvideRef({
+      ok: true,
+      startVerseId: PS23_1.verseId,
+      endVerseId: PS23_3.verseId,
+    });
+
+    expect(result.correct).toBe(false);
+    expect(result.blocking).toBe(false);
+    expect(result.reveal).toEqual({ reference: SELF.reference });
+    expect(s.isFinished).toBe(true);
+    expect(s.gradedTotal).toBe(1);
+    expect(s.correctFirst).toBe(0);
+    expect(s.score).toBe(0);
+  });
+
+  it('grades a different book wrong and reveals the passage\'s own reference', async () => {
+    const s = makeSession({ rung: 'provideref', verses: PSALM_23 });
+    const result = s.submitProvideRef({
+      ok: true,
+      startVerseId: JOHN_3_16.verseId,
+      endVerseId: JOHN_3_16.verseId,
+    });
+
+    expect(result.correct).toBe(false);
+    expect(result.blocking).toBe(false);
+    expect(result.reveal).toEqual({ reference: SELF.reference });
+    expect(s.isFinished).toBe(true);
+  });
+
+  it('does not grade or spoil an unrecognised string - it is a typo, not a claim', async () => {
+    const s = makeSession({ rung: 'provideref', verses: PSALM_23 });
+    const reason = '"xyz" is not a reference I recognise. Try something like "John 3:16-18".';
+    const result = s.submitProvideRef({ ok: false, reason });
+
+    expect(result).toEqual({ correct: false, wrong: [], blocking: true, note: reason });
+    expect(s.isFinished).toBe(false);
+    expect(s.gradedTotal).toBe(0);
+    expect(s.correctFirst).toBe(0);
+
+    // The same step comes back, and a later real answer scores as if the
+    // unparsed attempt had never happened - it neither counted nor spoiled.
+    const step = provideRefStep(s);
+    expect(step.verses).toEqual(PSALM_23);
+
+    const recovered = s.submitProvideRef(CORRECT_RANGE);
+    expect(recovered.correct).toBe(true);
+    expect(s.isFinished).toBe(true);
+    expect(s.gradedTotal).toBe(1);
+    expect(s.correctFirst).toBe(1);
+    expect(s.score).toBe(1);
+  });
+
+  it('returns the ordinary mismatch shape if reached through the generic submit() at all', async () => {
+    // Unreachable in normal operation - `main.ts#submitStep` calls
+    // `submitProvideRef` directly for a `provideref` answer - but the switch
+    // in `submit()` has to stay exhaustive and report a `provideref` answer
+    // the same way every other kind mismatch is reported, rather than
+    // throwing.
+    const s = makeSession({ rung: 'provideref', verses: PSALM_23 });
+    const result = s.submit({ kind: 'provideref', text: 'Psalm 23:1-4' });
+    expect(result).toEqual({ correct: false, wrong: [], blocking: true });
+    expect(s.isFinished).toBe(false);
   });
 });

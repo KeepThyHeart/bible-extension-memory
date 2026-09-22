@@ -584,6 +584,22 @@ export class MemoryStore {
   }
 
   /**
+   * `syncLadders` for every collection.
+   *
+   * Cards are otherwise only ever created from `addPassage`/`removePassage`
+   * (each calls `syncLadders` for the collection it touched), so a rung added
+   * to `applicableRungs` (M7's `provideref`) would give nobody's existing plan
+   * the new card until they next add or remove a passage. `main.ts#activate`
+   * runs this once on every activation as a backfill so an upgrade picks up a
+   * newly-applicable rung without the user having to touch their plan first.
+   */
+  async syncAllLadders(): Promise<void> {
+    for (const collection of await this.listCollections()) {
+      await this.syncLadders(collection.id);
+    }
+  }
+
+  /**
    * Apply a scheduling decision to a card.
    *
    * Every finished attempt reaches here now - there is no replay branch that
@@ -688,6 +704,7 @@ export class MemoryStore {
                  CASE c.rung
                    WHEN 'ordering' THEN 0
                    WHEN 'refmatch' THEN 0
+                   WHEN 'provideref' THEN 0
                    WHEN 'blanks' THEN 1
                    WHEN 'firstletters' THEN 2
                    ELSE 3

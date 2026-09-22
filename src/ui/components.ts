@@ -705,11 +705,11 @@ export function scheduleLine(rung: { dueAt: number | null; lastScore: number | n
  * The names `icon()` knows how to draw.
  *
  * `home` and `menu` are chrome, not activities. The other six are activity
- * icons: `ordering`, `refmatch`, `blanks` and `firstletters` name the
- * existing rungs (see `Rung` in `types.ts`); `variety` and `provideref` are
- * two more the design doc introduces ahead of any rung or exercise of their
- * own, which is why this is its own union rather than `Rung` plus two - this
- * file should not have to change again the day their exercises land.
+ * icons: `ordering`, `refmatch`, `provideref`, `blanks` and `firstletters`
+ * name the five rungs (see `Rung` in `types.ts`); `variety` is the one
+ * remaining name with no `Rung` of its own - it is a mix of activities, not
+ * one - which is why this stays its own union rather than `Rung` plus one,
+ * even now that every other tile has landed its own exercise.
  */
 export type IconName =
   | 'home'
@@ -807,6 +807,10 @@ export function inapplicabilityNote(rung: Rung): string {
       return 'Putting verses in order needs more than one verse.';
     case 'refmatch':
       return 'Matching a reference needs other passages to tell it apart from.';
+    case 'provideref':
+      // Shares `refmatch`'s own gate (`ladder.ts#MIN_PASSAGES_FOR_REFMATCH`) -
+      // worded for what THIS activity asks the user to do, not copied verbatim.
+      return 'Providing a reference needs other passages to tell it apart from.';
     default:
       return 'This activity does not apply to this passage.';
   }

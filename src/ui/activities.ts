@@ -10,23 +10,23 @@
  * `IconName` union (minus the two chrome names `home`/`menu`) is exactly
  * these six, so a tile and its icon are always looked up the same way.
  *
- * `rung` is `null` for two different reasons: `variety` is not one activity
- * but a mix of them, so no single `Rung` names it; `provideref` names an
- * exercise that does not exist yet (M7) and so has no `Rung` in `types.ts`
- * to point at either. `format.ts#activityAvailability` is what tells the two
- * apart on screen - this table only says what the tile is called and what it
- * does.
+ * `rung` is `null` for exactly one tile now: `variety` is not one activity
+ * but a mix of them, so no single `Rung` names it. Every other tile - M7
+ * landed `provideref` as a real `Rung` (`types.ts`) - names its own.
+ * `format.ts#activityAvailability` is what decides whether a tile can be
+ * pressed right now - this table only says what the tile is called and what
+ * it does.
  */
 
 import type { Rung } from '../types';
 
-/** The six tile ids - see the file header for why `variety`/`provideref` are not `Rung`s. */
+/** The six tile ids - see the file header for why `variety` is not a `Rung`. */
 export type ActivityId = 'variety' | 'refmatch' | 'ordering' | 'blanks' | 'firstletters' | 'provideref';
 
 /** One row of the tile catalogue. */
 export interface ActivityTile {
   id: ActivityId;
-  /** The `Rung` this tile starts, or `null` when the tile has none (see above). */
+  /** The `Rung` this tile starts, or `null` for `variety` (see above). */
   rung: Rung | null;
   title: string;
   subtext: string;
@@ -72,7 +72,7 @@ export const ACTIVITY_TILES: readonly ActivityTile[] = [
   },
   {
     id: 'provideref',
-    rung: null,
+    rung: 'provideref',
     title: 'Provide Reference',
     subtext: 'The passage text is shown, and you type its reference.',
   },

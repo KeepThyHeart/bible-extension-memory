@@ -208,6 +208,19 @@ export class PracticeView {
    * pressed a button to do. Context arrives and slots in above.
    */
   private async loadContext(): Promise<void> {
+    // `refmatch` and `provideref` never render anything from `this.context`:
+    // `refmatch`'s own step already carries the one verse it shows
+    // (`renderContext`'s `refmatch` case uses `step.verse`, never
+    // `this.context`), and `provideref` shows the step's own `verses` with no
+    // surrounding context at all - the whole point being that nothing here
+    // gives the reference away. Skipping the fetch for both is not just an
+    // optimisation: `renderHead` used to source the crumb from
+    // `this.context?.reference` regardless of rung, which for these two
+    // activities announced the answer as the page's own `<h1>` - see
+    // `renderHead` below, which switches the crumb to the activity label for
+    // exactly these two rungs.
+    if (this.session.rung === 'provideref' || this.session.rung === 'refmatch') return;
+
     const reply = await this.host.request({
       type: 'getContext',
       passageId: this.session.passageId,
@@ -284,7 +297,15 @@ export class PracticeView {
 
   private renderHead(): void {
     const step = this.session.step;
-    const reference = this.context?.reference ?? '';
+    // `refmatch`/`provideref`: the passage's own reference IS the answer
+    // being asked for, so it must not appear as the page's own `<h1>` (see
+    // `loadContext`'s note). The activity's own label stands in for it
+    // instead - still a single, honest crumb, just not one that leaks the
+    // answer.
+    const reference =
+      this.session.rung === 'provideref' || this.session.rung === 'refmatch'
+        ? RUNG_LABEL[this.session.rung]
+        : (this.context?.reference ?? '');
 
     replace(this.headEl, [
       breadcrumb({
@@ -390,6 +411,9 @@ export class PracticeView {
    *     it would print the answer directly above the picker.
    *   - refmatch  - the verse alone, and without its chapter:verse label,
    *     which would otherwise answer the question in the margin.
+   *   - provideref - the whole passage, and likewise with no chapter:verse
+   *     label and no `before`/`after` neighbours - the reference IS the
+   *     answer, so nothing that would place the passage on the page appears.
    *   - blanks / firstletters - the real passage, with the working verse
    *     highlighted. Here the surrounding verses give away nothing and are
    *     exactly the context that makes the exercise worth doing.
@@ -435,6 +459,14 @@ export class PracticeView {
           this.contextEl,
           renderPassage([step.verse], () => ({ current: true, showLabel: false })),
         );
+        break;
+
+      case 'provideref':
+        // The whole passage, as real scripture - but no verse labels (the
+        // margin's chapter:verse would answer the question directly) and no
+        // `before`/`after` context (the passage's position relative to its
+        // neighbours is itself a clue to the reference).
+        append(this.contextEl, renderPassage(step.verses, () => ({ showLabel: false })));
         break;
 
       case 'blanks':
@@ -484,6 +516,9 @@ export class PracticeView {
     clear(this.exerciseEl);
     clear(this.actionsEl);
     this.setFeedback(null);
+    // Discarded along with the input node `clear` above just removed - held
+    // only so `submitProvideRef` can reach it while its own step is showing.
+    this.refInput = null;
 
     if (this.summary !== null && this.session.step === null) {
       this.renderSummary(this.summary);
@@ -507,6 +542,9 @@ export class PracticeView {
         return;
       case 'refmatch':
         this.renderRefMatch(step);
+        return;
+      case 'provideref':
+        this.renderProvideRef();
         return;
       case 'blanks':
         this.renderBlanks(step);
@@ -695,6 +733,129 @@ export class PracticeView {
       this.setFeedback(null);
       focusQuietly(choice);
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // provideref - type this passage's reference
+  // -------------------------------------------------------------------------
+
+  /** The typed answer box, held so the verdict can disable it in place. */
+  private refInput: HTMLInputElement | null = null;
+
+  /**
+   * A single-line typed field, not the hidden-word mechanic below: there is
+   * no word to hide, the whole passage is shown plainly, and what is typed is
+   * a reference, not scripture. Graded once, with one attempt (see
+   * `Session#submitProvideRef`'s own note on why this does not block the way
+   * `refmatch`'s picker does): a free-text field has no bounded number of
+   * guesses to exhaust the way a four-candidate picker does, so a wrong
+   * answer ends the step and reveals the reference, the same way a `blanks`
+   * miss reveals the missed words rather than re-asking.
+   */
+  private renderProvideRef(): void {
+    this.exerciseEl.appendChild(
+      el('h2', { class: 'sm-prompt', text: "What is this passage's reference?" }),
+    );
+    this.exerciseEl.appendChild(
+      el('p', {
+        class: 'sm-hint',
+        text: 'Abbreviations are fine: "Ps 23:1-6" and "Psalm 23:1-6" both count.',
+      }),
+    );
+
+    const input = el('input', {
+      class: 'sm-input',
+      type: 'text',
+      placeholder: 'e.g. Psalm 23:1-6',
+      attrs: {
+        autocomplete: 'off',
+        autocapitalize: 'words',
+        autocorrect: 'off',
+        spellcheck: 'false',
+        enterkeyhint: 'done',
+        'aria-label': "Type this passage's reference",
+      },
+    });
+    this.refInput = input;
+
+    input.addEventListener('input', () => {
+      this.interacted = true;
+    });
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      void this.submitProvideRef();
+    });
+
+    const check = button('Check', () => void this.submitProvideRef(), {
+      class: 'sm-btn sm-btn-primary',
+    });
+
+    this.exerciseEl.appendChild(el('div', { class: 'sm-answer-row' }, [input, check]));
+    focusQuietly(input);
+  }
+
+  private async submitProvideRef(): Promise<void> {
+    if (this.busy) return;
+    const input = this.refInput;
+    if (!input) return;
+
+    // No client-side reference validation beyond "is it empty" (M7.13): a
+    // blank field is not an attempt at all and must not spend the exercise's
+    // one attempt on nothing typed.
+    const text = input.value.trim();
+    if (text === '') {
+      focusQuietly(input);
+      return;
+    }
+
+    this.busy = true;
+    const reply = await this.submit({ kind: 'provideref', text });
+    if (this.disposed) return;
+    this.busy = false;
+    if (reply === null) return;
+
+    const { result, summary } = reply;
+
+    if (result.blocking && result.note !== undefined) {
+      // Not a graded claim - the typed text was not a reference at all (a
+      // typo), so the session has not moved on and the same step is served
+      // again. The field stays enabled and selected so retyping is one
+      // keystroke away.
+      this.setFeedback(result.note, 'bad');
+      focusQuietly(input);
+      input.select();
+      return;
+    }
+
+    input.disabled = true;
+    this.setFeedback(
+      result.correct
+        ? 'Yes.'
+        : result.reveal?.reference !== undefined
+          ? `Not quite. It is ${result.reveal.reference}.`
+          : 'Not quite.',
+      result.correct ? 'good' : 'bad',
+    );
+
+    // No auto-advance and no re-serve here (M7.9d): the revealed reference on
+    // a miss is the whole verdict, and taking it away on a timer would take
+    // away the only part of the exercise that teaches anything - the same
+    // reasoning `reportTyped` below gives for `blanks`/`firstletters`.
+    clear(this.actionsEl);
+    const next = button(
+      summary !== null ? 'Finish' : 'Next',
+      () => {
+        if (summary !== null) {
+          this.renderExercise();
+          return;
+        }
+        this.advance();
+      },
+      { class: 'sm-btn sm-btn-primary' },
+    );
+    this.actionsEl.appendChild(next);
+    focusQuietly(next);
   }
 
   // -------------------------------------------------------------------------

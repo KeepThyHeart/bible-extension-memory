@@ -33,6 +33,7 @@ import { MemoryStore } from './store';
 import { applicableRungs, levelFromScore, WELL_LEARNED_LEVEL } from './ladder';
 import { schedule, makeRng, isDue } from './scheduler';
 import { Session, nextSessionId } from './session';
+import type { ResolvedTypedReference } from './session';
 import { toVerseText, CONTEXT_VERSES } from './verses';
 import { resolveReference, ReferenceError, MAX_PASSAGE_VERSES } from './reference';
 
@@ -174,6 +175,18 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
     if (purged > 0) console.log(`Scripture Memory: purged ${purged} soft-deleted passage(s).`);
   } catch (err) {
     console.warn('Scripture Memory: could not purge old deleted passages:', err);
+  }
+
+  // Backfills any card a rung added to `applicableRungs` after a plan already
+  // existed (M7's `provideref`) - cards are otherwise only ever created from
+  // `addPassage`/`removePassage`, so without this a passage's plan would
+  // never gain the new rung until the user happened to touch it. On its own,
+  // like the purge above: a failure here is not "storage could not open" and
+  // must not stop the rest of activation.
+  try {
+    await store.syncAllLadders();
+  } catch (err) {
+    console.warn('Scripture Memory: could not sync activity ladders:', err);
   }
 
   await verifyVerseIdEncoding();
@@ -684,7 +697,7 @@ async function buildPlanView(): Promise<PlanView> {
  */
 function totalStepsFor(rung: Rung, verseCount: number): number {
   if (rung === 'ordering') return Math.max(1, verseCount);
-  if (rung === 'refmatch') return 1;
+  if (rung === 'refmatch' || rung === 'provideref') return 1;
   return verseCount;
 }
 
@@ -962,7 +975,15 @@ async function submitStep(sessionId: string, answer: StepAnswer) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('That practice session has ended. Start it again.');
 
-  const result = session.submit(answer);
+  // `provideref` cannot be graded synchronously by `Session.submit` - the
+  // typed text has to be resolved against the host first (M7.1: `Session`
+  // stays synchronous and never gets a host handle) - so it is resolved here,
+  // BEFORE the session is touched, and handed to `submitProvideRef` as an
+  // already-resolved verse range or failure. Every other rung is unaffected.
+  const result =
+    answer.kind === 'provideref'
+      ? session.submitProvideRef(await resolveTypedReference(session.passageId, answer.text))
+      : session.submit(answer);
   let summary: SessionSummary | null = null;
 
   if (session.isFinished) {
@@ -984,6 +1005,40 @@ async function submitStep(sessionId: string, answer: StepAnswer) {
   }
 
   return { result, session: session.view(), summary };
+}
+
+/**
+ * Resolves a `provideref` step's typed text against the host, for
+ * `submitStep` to hand to `Session#submitProvideRef` - see that method's own
+ * note and the file header of `session.ts` on why this resolution happens
+ * here rather than inside `Session`.
+ *
+ * `resolveReference` is reused verbatim rather than reimplemented - it is
+ * the one parser (`reference.ts`'s own header), so a `ReferenceError` from it
+ * is caught here and turned into `{ ok: false, reason }` rather than
+ * propagating, which is what lets an unrecognised string be reported to the
+ * user without failing the whole request. Any OTHER failure (a host RPC
+ * error, say) is allowed to propagate so `handlePanelMessage` reports it the
+ * normal way.
+ */
+async function resolveTypedReference(
+  passageId: number,
+  text: string,
+): Promise<ResolvedTypedReference> {
+  const passage = await store.getPassage(passageId);
+  if (!passage) throw new Error('That passage is no longer in your plan.');
+
+  try {
+    const resolved = await resolveReference(api, text, passage.moduleId);
+    return {
+      ok: true,
+      startVerseId: resolved.startVerseId,
+      endVerseId: resolved.endVerseId,
+    };
+  } catch (err) {
+    if (err instanceof ReferenceError) return { ok: false, reason: err.message };
+    throw err;
+  }
 }
 
 /**

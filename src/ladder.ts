@@ -11,10 +11,10 @@
  * So a multi-verse passage always gets `ordering` and a lone verse never
  * does, and the ladders converge afterwards:
  *
- *     multi-verse, siblings: ordering, refmatch -> blanks -> firstletters
- *     multi-verse, alone:    ordering            -> blanks -> firstletters
- *     single verse, siblings:          refmatch -> blanks -> firstletters
- *     single verse, alone:                        blanks -> firstletters
+ *     multi-verse, siblings: ordering, refmatch, provideref -> blanks -> firstletters
+ *     multi-verse, alone:    ordering                        -> blanks -> firstletters
+ *     single verse, siblings:          refmatch, provideref -> blanks -> firstletters
+ *     single verse, alone:                                    blanks -> firstletters
  *
  * The last case is not a rounding error - it is the state of every plan on
  * the day it is created, because the first thing added is always alone.
@@ -28,6 +28,15 @@
  * the text shown is a short preview (the passage's own first verse), never
  * the whole thing and never a per-verse breakdown - see `session.ts`'s
  * `refmatch` case.
+ *
+ * `provideref` (M7, the round-2 UI review's "Provide Reference") sits right
+ * after `refmatch`: recognising a reference among candidates, then producing
+ * it unaided. It shares `refmatch`'s gate exactly - the same
+ * `MIN_PASSAGES_FOR_REFMATCH` sibling count, for the same reason (a "type the
+ * reference" exercise with no other passage in the plan has nothing to
+ * distinguish it from, so a lone passage's own reference is the only possible
+ * answer and the exercise is a formality). See `types.ts#ProvideRefStep` and
+ * `session.ts#submitProvideRef`.
  *
  * ## v1: no locks, no promotion
  *
@@ -44,11 +53,16 @@
 import type { Rung } from './types';
 
 /**
- * How many passages must exist before `refmatch` is worth offering.
+ * How many passages must exist before `refmatch` - or `provideref` - is worth
+ * offering.
  *
  * Two total: the passage itself and at least one other to be confused with. A
- * picker with one option is not an exercise. This applies regardless of how
- * many verses the passage itself spans - see the file header.
+ * picker with one option is not an exercise, and a typed reference with
+ * nothing else in the plan has only one possible answer either. This applies
+ * regardless of how many verses the passage itself spans - see the file
+ * header. The name is kept as `MIN_PASSAGES_FOR_REFMATCH` even though it now
+ * gates two activities, rather than renamed, to avoid a purely cosmetic diff
+ * across every call site that already reads it.
  *
  * Exported so `format.ts#activityAvailability` can compose its "not enough
  * passages yet" warning from the real constant instead of repeating the
@@ -80,7 +94,7 @@ export function applicableRungs(verseCount: number, siblingCount: number): Rung[
     rungs.push('ordering');
   }
   if (siblingCount >= MIN_PASSAGES_FOR_REFMATCH) {
-    rungs.push('refmatch');
+    rungs.push('refmatch', 'provideref');
   }
   rungs.push('blanks', 'firstletters');
   return rungs;

@@ -1706,6 +1706,17 @@ ul, ol {
   color: var(--sm-success);
 }
 
+/* --- provideref's typed field --------------------------------------------
+   `.sm-add-row`'s own look (an `.sm-input` beside its button), capped to a
+   readable line length rather than stretched the full width of the passage
+   column - a one-line reference has no reason to be as wide as the scripture
+   above it. */
+.sm-answer-row {
+  display: flex;
+  gap: var(--sm-s2);
+  max-width: 24rem;
+}
+
 /* --- Feedback and actions ------------------------------------------------ */
 
 /* Reserved height so the verdict appearing does not push the passage up the

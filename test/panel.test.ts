@@ -653,8 +653,9 @@ describe('ACTIVITY_TILES', () => {
       subtext: 'A passage reference is given, and you type the first letter of each word, in order.',
     });
     expect(byId.provideref).toMatchObject({
-      // No Rung exists for this exercise yet - see the design doc's finding.
-      rung: null,
+      // M7 landed the exercise: unlike `variety`, `provideref` names a real
+      // `Rung` now.
+      rung: 'provideref',
       title: 'Provide Reference',
       subtext: 'The passage text is shown, and you type its reference.',
     });
@@ -683,33 +684,22 @@ describe('activityAvailability', () => {
   const now = Date.UTC(2026, 5, 1, 12, 0, 0);
   const tile = (id: string) => ACTIVITY_TILES.find((t) => t.id === id)!;
 
-  it('Provide Reference is always unavailable, regardless of the plan', () => {
-    expect(activityAvailability(planOf([]), tile('provideref'), now)).toEqual({
-      available: false,
-      warning: 'Not available yet.',
-    });
-    const full = planOf([
-      passageView({ passage: { id: 1 } }),
-      passageView({ passage: { id: 2 } }),
-      passageView({ passage: { id: 3 } }),
-    ]);
-    expect(activityAvailability(full, tile('provideref'), now)).toEqual({
-      available: false,
-      warning: 'Not available yet.',
-    });
-  });
-
-  describe('Match References', () => {
+  // M7 landed `provideref` and gave it the same gate `refmatch` already had
+  // (`ladder.ts#MIN_PASSAGES_FOR_REFMATCH`, shared by construction) - so the
+  // two tiles are exercised identically here rather than `provideref` getting
+  // its own "always unavailable" case as it used to before the exercise
+  // existed.
+  describe.each(['refmatch', 'provideref'] as const)('%s', (tileId) => {
     it('is unavailable below the passage-count threshold, with the exact count filled in', () => {
       const p = planOf([passageView({ passage: { id: 1 } })]);
-      expect(activityAvailability(p, tile('refmatch'), now)).toEqual({
+      expect(activityAvailability(p, tile(tileId), now)).toEqual({
         available: false,
         warning: `Requires at least ${MIN_PASSAGES_FOR_REFMATCH} passages; you have 1 so far.`,
       });
     });
 
     it('is unavailable on an empty plan', () => {
-      expect(activityAvailability(planOf([]), tile('refmatch'), now)).toEqual({
+      expect(activityAvailability(planOf([]), tile(tileId), now)).toEqual({
         available: false,
         warning: 'Requires at least 2 passages; you have 0 so far.',
       });
@@ -720,7 +710,7 @@ describe('activityAvailability', () => {
         passageView({ passage: { id: 1 } }),
         passageView({ passage: { id: 2 } }),
       ]);
-      expect(activityAvailability(p, tile('refmatch'), now)).toEqual({ available: true, warning: null });
+      expect(activityAvailability(p, tile(tileId), now)).toEqual({ available: true, warning: null });
     });
   });
 

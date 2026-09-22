@@ -38,18 +38,28 @@
  *
  *   - `ordering`  - a multi-verse passage. "Which verse comes next?"
  *   - `refmatch`  - a single verse among siblings. "Which reference is this?"
- *   - `blanks`    - shared second rung. Type the missing words.
- *   - `firstletters` - shared third rung. Every word is a blank.
+ *   - `provideref` - a passage among siblings, the reference axis's free-recall
+ *     counterpart to `refmatch`. "What is this passage's reference?", typed
+ *     rather than picked. Gated behind the same `MIN_PASSAGES_FOR_REFMATCH`
+ *     sibling count as `refmatch` (`ladder.ts`).
+ *   - `blanks`    - shared rung. Type the missing words.
+ *   - `firstletters` - shared last rung. Every word is a blank.
  *
- * Reordering a single verse is meaningless and matching a reference needs
- * distractors, so a lone single verse in a collection can do neither and
- * starts at `blanks`. That edge case is why `firstRungFor` exists rather than
- * a constant.
+ * Reordering a single verse is meaningless and matching or providing a
+ * reference needs distractors, so a lone single verse in a collection can do
+ * none of those and starts at `blanks`. That edge case is why `firstRungFor`
+ * exists rather than a constant.
  */
-export type Rung = 'ordering' | 'refmatch' | 'blanks' | 'firstletters';
+export type Rung = 'ordering' | 'refmatch' | 'provideref' | 'blanks' | 'firstletters';
 
 /** Every rung in ladder order. `blanks` and `firstletters` are shared. */
-export const RUNG_ORDER: readonly Rung[] = ['ordering', 'refmatch', 'blanks', 'firstletters'];
+export const RUNG_ORDER: readonly Rung[] = [
+  'ordering',
+  'refmatch',
+  'provideref',
+  'blanks',
+  'firstletters',
+];
 
 /**
  * How a hidden word is answered - a setting, not a property of the exercise.
@@ -345,6 +355,22 @@ export interface RefMatchStep {
 }
 
 /**
+ * "What is this passage's reference?" - the whole passage is shown as real
+ * scripture, with no verse labels and no surrounding context (both would give
+ * the answer away), and the user types the reference rather than picking it.
+ * One step, graded once, on the passage as a whole - see `session.ts`'s
+ * `submitProvideRef` for the numeric verse-range comparison this is graded
+ * on. Applies under the same conditions as `refmatch` - see `ladder.ts`.
+ */
+export interface ProvideRefStep {
+  kind: 'provideref';
+  /** The whole passage, in order. */
+  verses: VerseText[];
+  stepNumber: number;
+  totalSteps: number;
+}
+
+/**
  * Type the missing words.
  *
  * `blankIndices` are indices into `verse.words`. The panel renders an input
@@ -384,7 +410,7 @@ export interface FirstLettersStep {
   totalSteps: number;
 }
 
-export type Step = OrderingStep | RefMatchStep | BlanksStep | FirstLettersStep;
+export type Step = OrderingStep | RefMatchStep | ProvideRefStep | BlanksStep | FirstLettersStep;
 
 /**
  * The verdict on one submitted step.
@@ -403,6 +429,7 @@ export interface StepResult {
    *
    *   - `ordering`      - the verse id that was picked
    *   - `refmatch`      - the passage id that was picked
+   *   - `provideref`    - always empty
    *   - `blanks`        - indices into `VerseText.words` (a subset of
    *                       `BlanksStep.blankIndices`, in the same space)
    *   - `firstletters`  - indices into `VerseText.words`
@@ -414,8 +441,19 @@ export interface StepResult {
   wrong: number[];
   /** True when the step must be retried before the session can advance. */
   blocking: boolean;
-  /** The correct answer, revealed once the step is finally resolved. */
-  reveal?: { words?: string[]; verseId?: number };
+  /**
+   * The correct answer, revealed once the step is finally resolved.
+   * `reference` is set only by a `provideref` step that was graded wrong -
+   * the passage's own display reference, so the user is told what it was
+   * rather than only that they missed it.
+   */
+  reveal?: { words?: string[]; verseId?: number; reference?: string };
+  /**
+   * Set only by `provideref`, only when the typed text was not a reference at
+   * all (a `ReferenceError` from `reference.ts#resolveReference`) - a typo,
+   * not a graded claim, so it is reported without spending the one attempt.
+   */
+  note?: string;
 }
 
 /** A session in progress. The worker owns it; the panel holds only the id. */
@@ -492,6 +530,7 @@ export type PanelRequest =
 export type StepAnswer =
   | { kind: 'ordering'; verseId: number }
   | { kind: 'refmatch'; passageId: number }
+  | { kind: 'provideref'; text: string }
   | { kind: 'blanks'; words: string[] }
   | { kind: 'firstletters'; words: string[] };
 
