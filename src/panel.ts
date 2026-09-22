@@ -32,6 +32,7 @@ import { WordMeasurer } from './ui/measure';
 import { PracticeView } from './ui/practiceView';
 import { renderPlan } from './ui/planView';
 import { renderAnalytics } from './ui/analyticsView';
+import { renderManage } from './ui/manageView';
 import { renderPassageScreen } from './ui/passageView';
 import { renderSettings } from './ui/settingsView';
 import { call } from './ui/rpc';
@@ -249,6 +250,14 @@ async function buildScreen(): Promise<HTMLElement> {
       if (!settingsReply.ok) return failure(settingsReply.error);
       if (!planReply.ok) return failure(planReply.error);
       return renderSettings(host, settingsReply.data, planReply.data);
+    }
+
+    case 'manage': {
+      // No dedicated `getCollections`/`getManage` request - the plan already
+      // has everything this shell needs (`collectionName`, `passages`), same
+      // reasoning as the passage screen's own `getPlan` reuse above.
+      const reply = await host.request({ type: 'getPlan' });
+      return reply.ok ? renderManage(host, reply.data) : failure(reply.error);
     }
 
     default:

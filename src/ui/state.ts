@@ -30,6 +30,7 @@ export type View =
   | { name: 'passage'; passageId: number; rung: Rung | null }
   | { name: 'analytics' }
   | { name: 'settings' }
+  | { name: 'manage' }
   | { name: 'practice'; sessionId: string };
 
 /**
@@ -83,6 +84,7 @@ export type NavAction =
   | { type: 'goPlan' }
   | { type: 'goAnalytics' }
   | { type: 'goSettings' }
+  | { type: 'goManage' }
   | { type: 'goPassage'; passageId: number; rung?: Rung | null }
   | { type: 'sessionStarted'; sessionId: string; passageId: number; rung: Rung; flow: Flow }
   | { type: 'sessionEnded' }
@@ -112,6 +114,11 @@ export function navReduce(state: NavState, action: NavAction): NavState {
 
     case 'goSettings':
       return { view: { name: 'settings' }, returnTo: { name: 'plan' }, flow: state.flow };
+
+    case 'goManage':
+      // Manage is a leaf too: it starts no sessions, so it is never a return
+      // target, exactly like Analytics and Settings above.
+      return { view: { name: 'manage' }, returnTo: { name: 'plan' }, flow: state.flow };
 
     case 'goPassage': {
       // `rung` omitted means "suggested" - `null`, resolved by

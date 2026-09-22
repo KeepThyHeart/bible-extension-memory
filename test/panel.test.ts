@@ -987,6 +987,27 @@ describe('navReduce', () => {
     expect(state.returnTo).toEqual({ name: 'plan' });
   });
 
+  it('clears a stale return target when Manage passages is opened', () => {
+    let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
+    state = navReduce(state, { type: 'goManage' });
+    expect(state.view).toEqual({ name: 'manage' });
+    expect(state.returnTo).toEqual({ name: 'plan' });
+  });
+
+  it('carries flow forward unchanged through goManage, like every other leaf', () => {
+    let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 'a',
+      passageId: 7,
+      rung: 'ordering',
+      flow: { kind: 'passage', passageId: 7 },
+    });
+    state = navReduce(state, { type: 'sessionEnded' });
+    state = navReduce(state, { type: 'goManage' });
+    expect(state.flow).toEqual({ kind: 'passage', passageId: 7 });
+  });
+
   it('leaves a passage screen for a removed passage', () => {
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
     state = navReduce(state, { type: 'passageRemoved', passageId: 7 });

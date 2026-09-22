@@ -411,6 +411,14 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       void api.panels.postMessage({ type: 'planChanged' });
       return {};
 
+    case 'renameCollection': {
+      const name = req.name.trim();
+      if (name === '') throw new Error('Give the list a name.');
+      await store.renameCollection(req.collectionId, name);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return {};
+    }
+
     case 'getContext':
       return buildContext(req.passageId, { withholdAfter: false });
 
@@ -506,7 +514,12 @@ async function buildPlanView(): Promise<PlanView> {
 
   return {
     collectionId,
-    collectionName: DEFAULT_COLLECTION_NAME,
+    // Read back from the row rather than the activation-time constant, now
+    // that `renameCollection` can have changed it since. `getCollectionName`
+    // falls back to the constant only in the pathological case of a missing
+    // row (see its own note) - not a normal empty-plan/fresh-install path,
+    // which always has a row by the time `getPlan` can run at all.
+    collectionName: (await store.getCollectionName(collectionId)) || DEFAULT_COLLECTION_NAME,
     passages: views,
     totalDue,
     defaultAnswerMode: await store.getDefaultAnswerMode(),

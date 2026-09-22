@@ -118,6 +118,34 @@ const SETTING_PASSAGE_SORT_ORDER = 'passageSortOrder';
 export class MemoryStore {
   constructor(private readonly db: IExtensionDatabase) {}
 
+  // -- collections ------------------------------------------------------------
+
+  /**
+   * The collection's display name, as `ensureDefaultCollection` (`db.ts`)
+   * first wrote it or a later `renameCollection` left it.
+   *
+   * Falls back to `''` rather than throwing on a missing row - `collectionId`
+   * always comes from `ensureDefaultCollection`'s own return value in
+   * practice, so a miss here would mean the row was deleted out from under
+   * the extension, not a bug worth crashing `getPlan` over.
+   */
+  async getCollectionName(collectionId: number): Promise<string> {
+    const row = await this.db.queryOne<{ name: string }>(
+      `SELECT name FROM collection WHERE id = ?`,
+      [collectionId],
+    );
+    return row?.name ?? '';
+  }
+
+  /**
+   * Renames a collection - the one-line `UPDATE` Decision 14 describes for the
+   * P1 shell, ahead of the real multi-list CRUD (create/delete) that stays
+   * P4's job.
+   */
+  async renameCollection(collectionId: number, name: string): Promise<void> {
+    await this.db.run(`UPDATE collection SET name = ? WHERE id = ?`, [name, collectionId]);
+  }
+
   // -- passages -------------------------------------------------------------
 
   async listPassages(collectionId: number): Promise<Passage[]> {

@@ -438,6 +438,13 @@ export type PanelRequest =
   | { type: 'setDefaultAnswerMode'; mode: AnswerMode }
   | { type: 'setPassageSortOrder'; order: PassageSortOrder }
   | { type: 'setPassageAnswerMode'; passageId: number; mode: AnswerMode | null }
+  /**
+   * Renames the one collection v0 ships (Decision 14). `collectionId` is
+   * carried rather than assumed, mirroring every other request that names
+   * the row it acts on, even though there is only ever one today - P4's real
+   * multi-list data model will need it distinguished from others anyway.
+   */
+  | { type: 'renameCollection'; collectionId: number; name: string }
   | { type: 'getContext'; passageId: number }
   | { type: 'addPassage'; reference: string }
   | { type: 'removePassage'; passageId: number }
@@ -468,6 +475,7 @@ export interface RequestMap {
   setDefaultAnswerMode: Record<string, never>;
   setPassageSortOrder: Record<string, never>;
   setPassageAnswerMode: Record<string, never>;
+  renameCollection: Record<string, never>;
   getContext: PassageContext;
   addPassage: { passage: Passage };
   removePassage: Record<string, never>;

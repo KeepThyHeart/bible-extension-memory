@@ -532,6 +532,28 @@ describe('passage sort order', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Collection name (P1)
+// ---------------------------------------------------------------------------
+
+describe('collection name', () => {
+  it('reads back the name ensureDefaultCollection first wrote', async () => {
+    const { store, collectionId } = await freshStore();
+    expect(await store.getCollectionName(collectionId)).toBe('My plan');
+  });
+
+  it('persists a rename', async () => {
+    const { store, collectionId } = await freshStore();
+    await store.renameCollection(collectionId, 'Sunday school memory verses');
+    expect(await store.getCollectionName(collectionId)).toBe('Sunday school memory verses');
+  });
+
+  it('falls back to empty for a collection that does not exist', async () => {
+    const { store } = await freshStore();
+    expect(await store.getCollectionName(99999)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Resume state
 // ---------------------------------------------------------------------------
 

@@ -84,6 +84,7 @@ import { renderPlan } from '../src/ui/planView';
 import { renderPassageScreen } from '../src/ui/passageView';
 import { renderSettings } from '../src/ui/settingsView';
 import { renderAnalytics } from '../src/ui/analyticsView';
+import { renderManage } from '../src/ui/manageView';
 
 // ---------------------------------------------------------------------------
 // The panel's own stylesheet
@@ -2057,6 +2058,185 @@ describe('the settings screen', () => {
     change.click();
 
     expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: 7 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7c. The manage passages screen (P1)
+// ---------------------------------------------------------------------------
+
+describe('the manage passages screen', () => {
+  function managePlan(passages: PassageView[] = [], collectionName = 'My plan'): PlanView {
+    return {
+      collectionId: 1,
+      collectionName,
+      passages,
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      sortOrder: 'bible',
+    };
+  }
+
+  it('breadcrumbs Home › Manage passages, with Manage passages as the current page', () => {
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+
+    const crumbLabels = Array.from(root.querySelectorAll('.sm-crumb, .sm-crumb-current')).map((n) =>
+      n.textContent?.trim(),
+    );
+    expect(crumbLabels.some((l) => l?.includes('Home'))).toBe(true);
+    expect(crumbLabels.some((l) => l?.includes('Manage passages'))).toBe(true);
+
+    const current = root.querySelector('[aria-current="page"]')!;
+    expect(current.textContent).toContain('Manage passages');
+    expect(current.tagName).toBe('H1');
+  });
+
+  it('goes home from the Home crumb', () => {
+    const root = renderManage(host, managePlan());
+    container.appendChild(root);
+
+    root.querySelectorAll('button').forEach((b) => {
+      if (b.textContent === 'Home') b.click();
+    });
+
+    expect(host.navigations).toContainEqual({ type: 'goPlan' });
+  });
+
+  it('shows the one list with Edit enabled and Delete disabled with the required hint', () => {
+    const root = renderManage(host, managePlan([], 'Sunday memory verses'));
+    container.appendChild(root);
+
+    expect(spokenText(root)).toContain('Sunday memory verses');
+
+    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    expect(edit.disabled).toBe(false);
+
+    const del = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Delete')!;
+    expect(del.disabled).toBe(true);
+
+    expect(spokenText(root)).toContain("Your only list can't be deleted.");
+  });
+
+  it('renames the list on Save and reloads', async () => {
+    host.handlers.renameCollection = () => ({ ok: true, data: {} });
+    const root = renderManage(host, managePlan([], 'My plan'));
+    container.appendChild(root);
+
+    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    edit.click();
+
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
+    expect(input.value).toBe('My plan');
+    input.value = 'Sunday school verses';
+
+    const save = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Save')!;
+    save.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({
+      type: 'renameCollection',
+      collectionId: 1,
+      name: 'Sunday school verses',
+    });
+    expect(host.reloads).toBe(1);
+  });
+
+  it('cancels an in-progress rename without sending a request', () => {
+    const root = renderManage(host, managePlan([], 'My plan'));
+    container.appendChild(root);
+
+    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    edit.click();
+    expect(root.querySelector('input[aria-label="List name"]')).not.toBeNull();
+
+    const cancel = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!;
+    cancel.click();
+
+    expect(root.querySelector('input[aria-label="List name"]')).toBeNull();
+    expect(spokenText(root)).toContain('My plan');
+    expect(host.requests.filter((r) => r.type === 'renameCollection')).toEqual([]);
+  });
+
+  it('refuses to save a blank name', async () => {
+    const root = renderManage(host, managePlan([], 'My plan'));
+    container.appendChild(root);
+
+    const edit = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Edit')!;
+    edit.click();
+
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="List name"]')!;
+    input.value = '   ';
+
+    const save = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Save')!;
+    save.click();
+    await settle();
+
+    expect(host.requests.filter((r) => r.type === 'renameCollection')).toEqual([]);
+    expect(spokenText(root)).toContain('Give the list a name.');
+  });
+
+  it('lists every passage in the plan', () => {
+    const plan = managePlan([
+      passageViewFixture({ passage: passageFixture({ id: 1, reference: 'Psalm 23:1-6' }) }),
+      passageViewFixture({ passage: passageFixture({ id: 2, reference: 'John 3:16' }) }),
+    ]);
+    const root = renderManage(host, plan);
+    container.appendChild(root);
+
+    expect(spokenText(root)).toContain('Psalm 23:1-6');
+    expect(spokenText(root)).toContain('John 3:16');
+  });
+
+  it('asks for confirmation before removing a passage, then removes it on "Yes, remove"', async () => {
+    host.handlers.removePassage = () => ({ ok: true, data: {} });
+    const plan = managePlan([
+      passageViewFixture({ passage: passageFixture({ id: 56, reference: 'Psalm 23:1-6' }) }),
+    ]);
+    const root = renderManage(host, plan);
+    container.appendChild(root);
+
+    expect(spokenText(root)).not.toContain('Remove this passage and its history?');
+
+    const removeButton = root.querySelector<HTMLButtonElement>('.sm-row button[aria-label="Remove Psalm 23:1-6 from the plan"]')!;
+    removeButton.click();
+
+    expect(spokenText(root)).toContain('Remove this passage and its history?');
+    expect(host.requests.filter((r) => r.type === 'removePassage')).toEqual([]);
+
+    const confirm = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Yes, remove')!;
+    confirm.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'removePassage', passageId: 56 });
+    expect(host.announcements).toContainEqual('Removed Psalm 23:1-6.');
+    expect(host.reloads).toBe(1);
+  });
+
+  it('cancels the remove confirmation without sending a request', () => {
+    const plan = managePlan([
+      passageViewFixture({ passage: passageFixture({ id: 56, reference: 'Psalm 23:1-6' }) }),
+    ]);
+    const root = renderManage(host, plan);
+    container.appendChild(root);
+
+    const removeButton = root.querySelector<HTMLButtonElement>('.sm-row button[aria-label="Remove Psalm 23:1-6 from the plan"]')!;
+    removeButton.click();
+
+    const cancel = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Cancel')!;
+    cancel.click();
+
+    expect(spokenText(root)).not.toContain('Remove this passage and its history?');
+    expect(root.querySelector('button[aria-label="Remove Psalm 23:1-6 from the plan"]')).not.toBeNull();
+    expect(host.requests.filter((r) => r.type === 'removePassage')).toEqual([]);
+    expect(host.reloads).toBe(0);
+  });
+
+  it('shows an empty state when there are no passages yet', () => {
+    const root = renderManage(host, managePlan([]));
+    container.appendChild(root);
+
+    expect(spokenText(root)).toContain('Nothing in your plan yet.');
   });
 });
 
