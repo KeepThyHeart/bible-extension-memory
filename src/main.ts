@@ -13,7 +13,7 @@
  * dependency on the host's packages.
  */
 
-import type { BibleExtensionAPI, BibleVerseDto, DisposableHandle } from './bibleTypes';
+import type { BibleExtensionAPI, BibleVerseDto, DisposableHandle, IExtensionDatabase } from './bibleTypes';
 import type {
   AnswerMode,
   Passage,
@@ -83,8 +83,8 @@ function referenceFor(startVerseId: number, endVerseId = startVerseId): string {
 
 /** Module-level state. The realm gives each extension its own isolated global. */
 let api: BibleExtensionAPI;
+let db: IExtensionDatabase;
 let store: MemoryStore;
-let collectionId: number;
 let activeVerseId: number | null = null;
 /** Abbreviation of the translation the reader is in, from the active-verse event. */
 let activeModule: string | null = null;
@@ -131,10 +131,15 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
   // which is misleading - nothing is broken, a permission is simply missing -
   // so it is caught and explained instead.
   try {
-    const db = await api.storage.openDatabase(DB_NAME);
+    db = await api.storage.openDatabase(DB_NAME);
     await migrate(db);
     store = new MemoryStore(db);
-    collectionId = await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now());
+    // Guarantees a collection exists (fresh install, or a pre-P4 upgrade that
+    // already has the one v0 shipped) so `resolveActiveCollectionId` always
+    // has something to fall back to - it does not itself read this return
+    // value, since `MemoryStore#getActiveCollectionId` re-derives the same
+    // "oldest collection" fallback from the table directly.
+    await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now());
     ready = true;
   } catch (err) {
     console.error(
@@ -355,6 +360,39 @@ async function refreshStatusBar(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Active collection (P4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The collection `getPlan`, `addPassage` and the rest act on when a request
+ * does not name one explicitly.
+ *
+ * Resolved fresh from the setting table on every call rather than cached in a
+ * module variable - the way `collectionId` used to be set once, at
+ * activation, and never again. Correctness is what matters here, not the cost
+ * of the lookup: a `setActiveCollection` request must be reflected by the
+ * very next `getPlan`, and a cache would need its own invalidation on every
+ * mutation (`setActiveCollection`, and `deleteCollection` of the active list)
+ * for no real benefit - this is one indexed lookup on a database sized for a
+ * single user's own memorization plan, not a hot path worth the bookkeeping.
+ *
+ * `MemoryStore#getActiveCollectionId` already falls back to the oldest
+ * surviving collection when nothing is stored yet, or when the stored id no
+ * longer names a real row. `undefined` past that means no collection exists
+ * at all - unreachable in normal operation, since `activate` always runs
+ * `ensureDefaultCollection` first, but reachable if every list was deleted in
+ * the same session - so a fresh default is created and made active here
+ * rather than letting every request that touches a collection start failing.
+ */
+async function resolveActiveCollectionId(): Promise<number> {
+  const id = await store.getActiveCollectionId();
+  if (id !== undefined) return id;
+  const created = await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now());
+  await store.setActiveCollectionId(created);
+  return created;
+}
+
+// ---------------------------------------------------------------------------
 // Panel protocol
 // ---------------------------------------------------------------------------
 
@@ -391,7 +429,9 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       return buildPlanView();
 
     case 'getAnalytics':
-      return store.analytics(collectionId, Date.now());
+      // Plan-wide across every list, not just the active one (P4/Decision
+      // 14) - see `MemoryStore#analytics`'s own note.
+      return store.analytics(Date.now());
 
     case 'getSettings':
       return { defaultAnswerMode: await store.getDefaultAnswerMode() };
@@ -418,6 +458,48 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       void api.panels.postMessage({ type: 'planChanged' });
       return {};
     }
+
+    case 'getCollections':
+      return store.listCollections();
+
+    case 'createCollection': {
+      const name = req.name.trim();
+      if (name === '') throw new Error('Give the list a name.');
+      const created = await store.createCollection(name, Date.now());
+      void api.panels.postMessage({ type: 'planChanged' });
+      return created;
+    }
+
+    case 'deleteCollection': {
+      // If the list being deleted is the active one, the setting has to move
+      // somewhere real before the delete - reading it back afterwards would
+      // just re-run the same "oldest surviving collection" fallback
+      // `getActiveCollectionId` already does on its own, which is fine, but
+      // deciding it explicitly here (rather than leaning on that fallback as
+      // the only mechanism) is what keeps the *stored* setting itself honest
+      // rather than quietly stale. `deleteCollection` never leaves the plan
+      // with zero lists: `listCollections` after the delete either names a
+      // survivor, or - the P1/P5 UI disables Delete while only one list
+      // exists, so this is not reachable through it today, but the store
+      // method itself must not leave the app broken if called directly -
+      // `ensureDefaultCollection` recreates the one v0 always shipped.
+      const wasActive = (await resolveActiveCollectionId()) === req.collectionId;
+      await store.deleteCollection(req.collectionId);
+      if (wasActive) {
+        const remaining = await store.listCollections();
+        const fallbackId =
+          remaining[0]?.id ?? (await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now()));
+        await store.setActiveCollectionId(fallbackId);
+      }
+      await refreshStatusBar();
+      void api.panels.postMessage({ type: 'planChanged' });
+      return {};
+    }
+
+    case 'setActiveCollection':
+      await store.setActiveCollectionId(req.collectionId);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return {};
 
     case 'getContext':
       return buildContext(req.passageId, { withholdAfter: false });
@@ -464,8 +546,13 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
 
 async function buildPlanView(): Promise<PlanView> {
   const now = Date.now();
+  const collectionId = await resolveActiveCollectionId();
   const passages = await store.listPassages(collectionId);
-  const siblingCount = passages.length;
+  // Plan-wide, not this list's own count - see `MemoryStore#syncLadders`'s
+  // note. This has to agree with what `syncLadders` used when it created
+  // these very cards, or a `refmatch` card that exists would be reported
+  // `applicable: false` here on the strength of a smaller, list-local count.
+  const siblingCount = await store.countAllPassages();
   const views: PassageView[] = [];
   let totalDue = 0;
 
@@ -662,6 +749,7 @@ async function addPassageFromReference(reference: string) {
   const moduleId = await activeModuleId();
   const resolved = await resolveReference(api, reference, moduleId);
   const now = Date.now();
+  const collectionId = await resolveActiveCollectionId();
 
   const { passage, created } = await store.addPassage(
     {
@@ -688,6 +776,7 @@ async function addPassageFromVerseId(
 ): Promise<void> {
   const moduleId = await activeModuleId(preferredModule ?? activeModule);
   const now = Date.now();
+  const collectionId = await resolveActiveCollectionId();
 
   const { created } = await store.addPassage(
     {
@@ -727,7 +816,12 @@ async function startSession(passageId: number, rung: Rung | undefined, restart: 
   const passage = await store.getPassage(passageId);
   if (!passage) throw new Error('That passage is no longer in your plan.');
 
-  const siblings = (await store.listPassages(collectionId)).filter((p) => p.id !== passageId);
+  // Plan-wide, not just the active list's passages (P4/Decision 14):
+  // `refmatch`'s distractor pool is every other passage in the plan,
+  // regardless of which list it lives in, and `applicable` has to agree with
+  // the plan-wide count `syncLadders` used when it decided whether this
+  // passage's `refmatch` card exists at all.
+  const siblings = (await store.listAllPassages()).filter((p) => p.id !== passageId);
   const applicable = applicableRungs(passage.verseCount, siblings.length + 1);
 
   const now = Date.now();
@@ -891,7 +985,9 @@ async function isPassageWellLearned(
 ): Promise<boolean> {
   const passage = await store.getPassage(passageId);
   if (!passage) return false;
-  const siblingCount = (await store.listPassages(collectionId)).length;
+  // Plan-wide, matching every other `applicableRungs` call site - see
+  // `MemoryStore#syncLadders`'s note.
+  const siblingCount = await store.countAllPassages();
   const applicable = applicableRungs(passage.verseCount, siblingCount);
 
   let bestLevel = levelFromScore(justAttemptedScore);

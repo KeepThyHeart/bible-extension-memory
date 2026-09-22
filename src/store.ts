@@ -18,6 +18,7 @@ import type {
   AnswerMode,
   AttemptRow,
   Card,
+  CollectionView,
   Milestone,
   Passage,
   PassageSortOrder,
@@ -115,6 +116,8 @@ const SETTING_DEFAULT_ANSWER_MODE = 'defaultAnswerMode';
 const DEFAULT_PASSAGE_SORT_ORDER: PassageSortOrder = 'bible';
 const SETTING_PASSAGE_SORT_ORDER = 'passageSortOrder';
 
+const SETTING_ACTIVE_COLLECTION = 'activeCollectionId';
+
 export class MemoryStore {
   constructor(private readonly db: IExtensionDatabase) {}
 
@@ -146,6 +149,81 @@ export class MemoryStore {
     await this.db.run(`UPDATE collection SET name = ? WHERE id = ?`, [name, collectionId]);
   }
 
+  /**
+   * Every collection, oldest first, each with how many passages it holds -
+   * P4's real multi-list CRUD, for the Manage screen's lists table (P5).
+   *
+   * `passageCount` is aggregated in SQL (a `LEFT JOIN` + `COUNT`, zero for an
+   * empty list) rather than by calling `listPassages` per row, so the table's
+   * one request stays one query regardless of how many lists exist.
+   */
+  async listCollections(): Promise<CollectionView[]> {
+    const rows = await this.db.query<{ id: number; name: string; passageCount: number }>(
+      `SELECT c.id AS id, c.name AS name, COUNT(p.id) AS passageCount
+         FROM collection c
+         LEFT JOIN passage p ON p.collection_id = c.id
+        GROUP BY c.id, c.name
+        ORDER BY c.id`,
+    );
+    return rows.map((r) => ({ id: r.id, name: r.name, passageCount: r.passageCount }));
+  }
+
+  /** Creates a new, empty list. `now` is passed in rather than read here, matching `addPassage`. */
+  async createCollection(name: string, now: number): Promise<{ id: number; name: string }> {
+    const res = await this.db.run(`INSERT INTO collection (name, created_at) VALUES (?, ?)`, [
+      name,
+      now,
+    ]);
+    return { id: Number(res.lastInsertRowid), name };
+  }
+
+  /**
+   * Deletes a list and everything in it.
+   *
+   * No separate cleanup is needed: `passage.collection_id` is
+   * `ON DELETE CASCADE`, and `card`/`attempt`/`resume_state` already cascade
+   * from `passage` (see `removePassage`'s own note and `db.ts`'s schema), so
+   * one `DELETE` here reaches every row the list owns, three tables deep.
+   * Whether the deleted list was the active one is the caller's problem
+   * (`main.ts`'s `deleteCollection` handler) - the store does not know what
+   * "active" means.
+   */
+  async deleteCollection(collectionId: number): Promise<void> {
+    await this.db.run(`DELETE FROM collection WHERE id = ?`, [collectionId]);
+  }
+
+  /**
+   * The collection every request that does not name one explicitly should
+   * act on - `getPlan`, `addPassage`, and so on.
+   *
+   * Self-healing rather than a bare setting read: if nothing has ever been
+   * stored (a fresh install, or an upgrade from before lists were
+   * switchable), or if the stored id no longer names a real collection (the
+   * active list was deleted out from under it), this falls back to the
+   * oldest surviving collection - the same `ORDER BY id LIMIT 1` query
+   * `ensureDefaultCollection` (`db.ts`) uses to find the one collection a
+   * pre-P4 install already has, so both a fresh install and an upgrade land
+   * on the same sane row. Returns `undefined` only when no collection exists
+   * at all, which `main.ts#resolveActiveCollectionId` treats as "recreate a
+   * default" rather than something this layer should paper over itself.
+   */
+  async getActiveCollectionId(): Promise<number | undefined> {
+    const stored = await this.getSetting(SETTING_ACTIVE_COLLECTION);
+    if (stored !== undefined) {
+      const id = Number(stored);
+      const row = await this.db.queryOne<{ id: number }>(`SELECT id FROM collection WHERE id = ?`, [id]);
+      if (row) return id;
+    }
+    const fallback = await this.db.queryOne<{ id: number }>(
+      `SELECT id FROM collection ORDER BY id LIMIT 1`,
+    );
+    return fallback?.id;
+  }
+
+  async setActiveCollectionId(collectionId: number): Promise<void> {
+    await this.setSetting(SETTING_ACTIVE_COLLECTION, String(collectionId));
+  }
+
   // -- passages -------------------------------------------------------------
 
   async listPassages(collectionId: number): Promise<Passage[]> {
@@ -154,6 +232,26 @@ export class MemoryStore {
       [collectionId],
     );
     return rows.map(toPassage);
+  }
+
+  /**
+   * Every passage in the plan, across every list.
+   *
+   * Used where P4's Decision 14 says a computation is plan-wide rather than
+   * scoped to one list: `refmatch`'s distractor pool and its sibling count
+   * (`syncLadders` below, and `main.ts`'s mirrors of the same computation),
+   * and Analytics. Never used for the plan view itself, which stays scoped to
+   * the active list.
+   */
+  async listAllPassages(): Promise<Passage[]> {
+    const rows = await this.db.query<PassageRow>(`SELECT * FROM passage ORDER BY start_verse_id`);
+    return rows.map(toPassage);
+  }
+
+  /** `listAllPassages().length`, without fetching rows the caller only wants to count. */
+  async countAllPassages(): Promise<number> {
+    const row = await this.db.queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM passage`);
+    return row ? row.n : 0;
   }
 
   async getPassage(id: number): Promise<Passage | undefined> {
@@ -289,7 +387,18 @@ export class MemoryStore {
    */
   async syncLadders(collectionId: number): Promise<void> {
     const passages = await this.listPassages(collectionId);
-    const siblingCount = passages.length;
+    // Plan-wide, not this collection's own count (P4/Decision 14): a passage
+    // that is alone in its own list can still gain `refmatch` once a sibling
+    // exists anywhere in the plan, because the distractor pool `refmatch`
+    // draws from is every collection's passages, not just the one being
+    // synced here. `syncLadders`'s own job - recomputing cards for the
+    // passages that actually changed, in the collection that was touched -
+    // is otherwise unchanged; only this number is now global. `main.ts`
+    // mirrors the same plan-wide count everywhere else `applicableRungs` is
+    // called (`buildPlanView`, `startSession`, `isPassageWellLearned`), so
+    // that a card this creates is never later reported as inapplicable by a
+    // read path that disagreed about the sibling count.
+    const siblingCount = await this.countAllPassages();
 
     for (const passage of passages) {
       const wanted = applicableRungs(passage.verseCount, siblingCount);
@@ -414,9 +523,16 @@ export class MemoryStore {
    * and "where the effort went" were dropped per the task 0004 review in
    * favour of numbers a user studying scripture actually wants to see move -
    * see `AnalyticsView`.
+   *
+   * Plan-wide across every list, not scoped to one collection (P4/Decision
+   * 14): a user's sense of progress is about their whole memorization
+   * practice, not whichever list happens to be active when they open the
+   * screen. There is therefore no `collectionId` parameter any more - the
+   * one call site (`main.ts`'s `getAnalytics` handler) used to pass the
+   * active collection's id and now passes nothing.
    */
-  async analytics(collectionId: number, now: number): Promise<AnalyticsView> {
-    const passages = await this.listPassages(collectionId);
+  async analytics(now: number): Promise<AnalyticsView> {
+    const passages = await this.listAllPassages();
 
     let versesLearned = 0;
     let passagesWellLearned = 0;

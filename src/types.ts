@@ -71,6 +71,21 @@ export interface Collection {
 }
 
 /**
+ * One collection as the Manage screen's lists table needs it (P4's store
+ * layer; P5 renders the table itself).
+ *
+ * `passageCount` is carried here rather than left for the panel to derive
+ * from `plan.passages`, because the lists table shows every list - including
+ * ones that are not the active list, and so have no `PassageView[]` of their
+ * own on hand.
+ */
+export interface CollectionView {
+  id: number;
+  name: string;
+  passageCount: number;
+}
+
+/**
  * A passage under memorisation: an inclusive verse-id range in one module.
  *
  * `moduleId` is stored because the same reference in two translations is two
@@ -445,6 +460,16 @@ export type PanelRequest =
    * multi-list data model will need it distinguished from others anyway.
    */
   | { type: 'renameCollection'; collectionId: number; name: string }
+  /** The lists table's own data (P4/P5) - every collection, not just the active one. */
+  | { type: 'getCollections' }
+  | { type: 'createCollection'; name: string }
+  | { type: 'deleteCollection'; collectionId: number }
+  /**
+   * Switches which collection `getPlan`, `addPassage` etc. act on. Persisted
+   * (`MemoryStore#setActiveCollectionId`), so it survives a panel reload and a
+   * worker restart, not just this session.
+   */
+  | { type: 'setActiveCollection'; collectionId: number }
   | { type: 'getContext'; passageId: number }
   | { type: 'addPassage'; reference: string }
   | { type: 'removePassage'; passageId: number }
@@ -476,6 +501,10 @@ export interface RequestMap {
   setPassageSortOrder: Record<string, never>;
   setPassageAnswerMode: Record<string, never>;
   renameCollection: Record<string, never>;
+  getCollections: CollectionView[];
+  createCollection: { id: number; name: string };
+  deleteCollection: Record<string, never>;
+  setActiveCollection: Record<string, never>;
   getContext: PassageContext;
   addPassage: { passage: Passage };
   removePassage: Record<string, never>;

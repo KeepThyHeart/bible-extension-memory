@@ -405,6 +405,55 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
 });
 
 // ---------------------------------------------------------------------------
+// The refmatch sibling count is plan-wide, not per-list (P4/Decision 14)
+// ---------------------------------------------------------------------------
+
+describe('plan-wide sibling count', () => {
+  it('countAllPassages and listAllPassages see every collection, not just one', async () => {
+    const { store, collectionId } = await freshStore();
+    await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    const other = await store.createCollection('List B', NOW);
+    await store.addPassage(passageInput(other.id, 45008028, 1, 'Romans 8:28'));
+    await store.addPassage(passageInput(other.id, 19023001, 1, 'Psalm 23:1'));
+
+    expect(await store.countAllPassages()).toBe(3);
+    expect(await store.listAllPassages()).toHaveLength(3);
+    // The collection-scoped read is unaffected - it is what the plan view
+    // itself still uses to decide WHICH passages to show.
+    expect(await store.listPassages(collectionId)).toHaveLength(1);
+  });
+
+  it("gives a passage refmatch once a sibling exists in ANOTHER list, once its own list is re-synced", async () => {
+    // `addPassage` only calls `syncLadders` for the collection it touched
+    // (see its own note, and `syncLadders`'s), so list A's ladder is stale
+    // until something re-syncs list A itself - `syncLadders(collectionId)` is
+    // that catch-up, and this asserts it uses the GLOBAL count once it runs,
+    // not list A's own (still just one passage).
+    const { store, collectionId } = await freshStore();
+    const { passage: onlyInA } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    expect(rungsOf(await store.listCards(onlyInA.id))).toEqual(['blanks', 'firstletters']);
+
+    const other = await store.createCollection('List B', NOW);
+    await store.addPassage(passageInput(other.id, 45008028, 1, 'Romans 8:28'));
+
+    // List B's own passage gets `refmatch` too, and for the same reason: the
+    // plan-wide count (2) is what `addPassage`'s own `syncLadders` call used
+    // when it built List B's ladder just now.
+    const listBCards = await store.listCards((await store.listPassages(other.id))[0]!.id);
+    expect(rungsOf(listBCards)).toEqual(['blanks', 'firstletters', 'refmatch']);
+
+    await store.syncLadders(collectionId);
+    expect(rungsOf(await store.listCards(onlyInA.id))).toEqual([
+      'blanks',
+      'firstletters',
+      'refmatch',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Deletion
 // ---------------------------------------------------------------------------
 
@@ -550,6 +599,143 @@ describe('collection name', () => {
   it('falls back to empty for a collection that does not exist', async () => {
     const { store } = await freshStore();
     expect(await store.getCollectionName(99999)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-list data model (P4)
+// ---------------------------------------------------------------------------
+
+describe('listCollections', () => {
+  it('lists the default collection with a zero passage count', async () => {
+    const { store, collectionId } = await freshStore();
+    expect(await store.listCollections()).toEqual([
+      { id: collectionId, name: 'My plan', passageCount: 0 },
+    ]);
+  });
+
+  it("counts each collection's own passages, not the whole plan's", async () => {
+    const { store, collectionId } = await freshStore();
+    await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    await store.addPassage(passageInput(collectionId, 45008028, 1, 'Romans 8:28'));
+    const other = await store.createCollection('Memory verses for kids', NOW);
+    await store.addPassage(passageInput(other.id, 19023001, 3, 'Psalm 23:1-3'));
+
+    expect(await store.listCollections()).toEqual([
+      { id: collectionId, name: 'My plan', passageCount: 2 },
+      { id: other.id, name: 'Memory verses for kids', passageCount: 1 },
+    ]);
+  });
+});
+
+describe('createCollection', () => {
+  it('creates an empty list with the given name', async () => {
+    const { store } = await freshStore();
+    const created = await store.createCollection('Sunday school', NOW);
+    expect(created.name).toBe('Sunday school');
+    expect(await store.getCollectionName(created.id)).toBe('Sunday school');
+    expect(await store.listPassages(created.id)).toEqual([]);
+  });
+
+  it('gives each new list its own id, distinct from every other list', async () => {
+    const { store, collectionId } = await freshStore();
+    const a = await store.createCollection('List A', NOW);
+    const b = await store.createCollection('List B', NOW + DAY_MS);
+    expect(new Set([collectionId, a.id, b.id]).size).toBe(3);
+  });
+});
+
+describe('deleteCollection', () => {
+  it("cascades to the list's own passages, their cards and their attempts", async () => {
+    // Mirrors `removePassage`'s own cascade test, one level up: deleting a
+    // whole list has to reach passage -> card -> attempt just as deleting one
+    // passage does, since `collection`'s cascade onto `passage` is what P4
+    // relies on to avoid any migration - see `db.ts`'s schema.
+    const { store, harness } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    const { passage } = await store.addPassage(passageInput(other.id, 19023001, 3, 'Psalm 23:1-3'));
+    const cards = await store.listCards(passage.id);
+    for (const card of cards) {
+      await store.recordAttempt({
+        cardId: card.id,
+        at: NOW,
+        score: 1,
+        correctFirst: 1,
+        totalSteps: 1,
+        durationMs: 1000,
+      });
+    }
+    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(3);
+
+    await store.deleteCollection(other.id);
+
+    expect(await harness.query(`SELECT id FROM collection WHERE id = ?`, [other.id])).toHaveLength(0);
+    expect(
+      await harness.query(`SELECT id FROM passage WHERE collection_id = ?`, [other.id]),
+    ).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(0);
+  });
+
+  it('leaves other lists and their passages untouched', async () => {
+    const { store, collectionId } = await freshStore();
+    const { passage: keep } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    const other = await store.createCollection('List B', NOW);
+    await store.addPassage(passageInput(other.id, 45008028, 1, 'Romans 8:28'));
+
+    await store.deleteCollection(other.id);
+
+    expect(await store.getPassage(keep.id)).toBeDefined();
+    expect(await store.listCollections()).toEqual([
+      { id: collectionId, name: 'My plan', passageCount: 1 },
+    ]);
+  });
+
+  it('is a no-op for a list that is already gone', async () => {
+    const { store } = await freshStore();
+    await expect(store.deleteCollection(99999)).resolves.toBeUndefined();
+  });
+});
+
+describe('active collection', () => {
+  it('defaults to the collection ensureDefaultCollection created, with no setting ever stored', async () => {
+    // The fresh-install AND the upgrade-from-before-P4 case: either way, the
+    // only collection that exists yet is the one `ensureDefaultCollection`
+    // resolved, so the active-collection setting starting unset has to land
+    // on that same row rather than on nothing.
+    const { store, collectionId } = await freshStore();
+    expect(await store.getActiveCollectionId()).toBe(collectionId);
+  });
+
+  it('persists a switch to another list', async () => {
+    const { store } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    await store.setActiveCollectionId(other.id);
+    expect(await store.getActiveCollectionId()).toBe(other.id);
+  });
+
+  it('falls back to the oldest surviving list once the active one is deleted', async () => {
+    // `main.ts`'s `deleteCollection` handler reassigns the setting explicitly
+    // when the deleted list was active, but this is what makes that a belt
+    // rather than the only strap: even a stale stored id that no longer names
+    // a row must not leave `getActiveCollectionId` pointing at nothing.
+    const { store, collectionId } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    await store.setActiveCollectionId(other.id);
+    expect(await store.getActiveCollectionId()).toBe(other.id);
+
+    await store.deleteCollection(other.id);
+
+    expect(await store.getActiveCollectionId()).toBe(collectionId);
+  });
+
+  it('returns undefined only once no collection exists at all', async () => {
+    const { store, harness, collectionId } = await freshStore();
+    await store.deleteCollection(collectionId);
+    expect(await harness.query(`SELECT * FROM collection`)).toHaveLength(0);
+    expect(await store.getActiveCollectionId()).toBeUndefined();
   });
 });
 
@@ -705,7 +891,7 @@ describe('analytics', () => {
   it('reports zeros and empties on a plan with no attempts', async () => {
     const { store, collectionId } = await freshStore();
     await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
-    const view = await store.analytics(collectionId, NOW);
+    const view = await store.analytics(NOW);
     expect(view.streakDays).toBe(0);
     expect(view.versesLearned).toBe(0);
     expect(view.passagesWellLearned).toBe(0);
@@ -723,7 +909,7 @@ describe('analytics', () => {
     const firstletters = await store.getCard(passage.id, 'firstletters');
     await store.applySchedule(firstletters!.id, schedule({ intervalStep: -1, streak: 0, score: 0.95, now: NOW, rng: makeRng(1) }), 0.95);
 
-    const view = await store.analytics(collectionId, NOW);
+    const view = await store.analytics(NOW);
     expect(view.passagesWellLearned).toBe(1);
     expect(view.versesLearned).toBe(3);
   });
@@ -736,7 +922,7 @@ describe('analytics', () => {
     const blanks = await store.getCard(passage.id, 'blanks');
     await store.applySchedule(blanks!.id, schedule({ intervalStep: -1, streak: 0, score: 0.6, now: NOW, rng: makeRng(1) }), 0.6);
 
-    const view = await store.analytics(collectionId, NOW);
+    const view = await store.analytics(NOW);
     expect(view.passagesWellLearned).toBe(0);
     expect(view.versesLearned).toBe(0);
   });
@@ -753,7 +939,7 @@ describe('analytics', () => {
     // A gap: no attempt three days ago breaks the streak there.
     await store.recordAttempt({ cardId: blanks!.id, at: NOW - 4 * DAY_MS, score: 1, correctFirst: 1, totalSteps: 1, durationMs: 1000 });
 
-    const view = await store.analytics(collectionId, NOW);
+    const view = await store.analytics(NOW);
     expect(view.streakDays).toBe(3);
   });
 
@@ -768,7 +954,7 @@ describe('analytics', () => {
     await store.recordAttempt({ cardId: blanks!.id, at: NOW - DAY_MS, score: 0.95, correctFirst: 19, totalSteps: 20, durationMs: 1000 });
     await store.recordAttempt({ cardId: blanks!.id, at: NOW, score: 1, correctFirst: 20, totalSteps: 20, durationMs: 1000 });
 
-    const view = await store.analytics(collectionId, NOW);
+    const view = await store.analytics(NOW);
     expect(view.recentlyReached).toHaveLength(1);
     expect(view.recentlyReached[0]).toMatchObject({
       passageId: passage.id,
@@ -787,9 +973,41 @@ describe('analytics', () => {
     const firstletters = await store.getCard(passage.id, 'firstletters');
     await store.applySchedule(firstletters!.id, schedule({ intervalStep: -1, streak: 0, score: 1, now: NOW, rng: makeRng(1) }), 1);
 
-    const view = await store.analytics(collectionId, NOW);
+    const view = await store.analytics(NOW);
     expect(view.versesLearned).toBe(3);
     expect(view.nextMilestone).toEqual({ versesLearned: 5, toGo: 2 });
+  });
+
+  it('aggregates across every list, not just one (P4/Decision 14)', async () => {
+    // A user's sense of progress is about their whole memorization practice,
+    // not whichever list happens to be active - see `MemoryStore#analytics`'s
+    // own note. `analytics` takes no `collectionId` any more; this is the
+    // assertion that it really did stop scoping to one.
+    const { store, collectionId } = await freshStore();
+    const { passage: inDefault } = await store.addPassage(
+      passageInput(collectionId, 19023001, 3, 'Psalm 23:1-3'),
+    );
+    const firstletters = await store.getCard(inDefault.id, 'firstletters');
+    await store.applySchedule(
+      firstletters!.id,
+      schedule({ intervalStep: -1, streak: 0, score: 1, now: NOW, rng: makeRng(1) }),
+      1,
+    );
+
+    const other = await store.createCollection('List B', NOW);
+    const { passage: inOther } = await store.addPassage(
+      passageInput(other.id, 43003016, 1, 'John 3:16'),
+    );
+    const blanks = await store.getCard(inOther.id, 'blanks');
+    await store.applySchedule(
+      blanks!.id,
+      schedule({ intervalStep: -1, streak: 0, score: 0.95, now: NOW, rng: makeRng(1) }),
+      0.95,
+    );
+
+    const view = await store.analytics(NOW);
+    expect(view.passagesWellLearned).toBe(2);
+    expect(view.versesLearned).toBe(4); // 3 (Psalm 23:1-3) + 1 (John 3:16)
   });
 });
 
@@ -842,7 +1060,7 @@ describe('persistence across a restart', () => {
       passages: await store.listPassages(collectionId),
       cards: await store.listCards(passage.id),
       due: await store.dueCount(NOW + 30 * DAY_MS),
-      analytics: await store.analytics(collectionId, NOW),
+      analytics: await store.analytics(NOW),
       attemptRows: await harness.query(`SELECT * FROM attempt WHERE card_id = ? ORDER BY id`, [ordering!.id]),
     };
 
@@ -857,7 +1075,7 @@ describe('persistence across a restart', () => {
     expect(await restarted.listPassages(collectionId)).toEqual(before.passages);
     expect(await restarted.listCards(passage.id)).toEqual(before.cards);
     expect(await restarted.dueCount(NOW + 30 * DAY_MS)).toBe(before.due);
-    expect(await restarted.analytics(collectionId, NOW)).toEqual(before.analytics);
+    expect(await restarted.analytics(NOW)).toEqual(before.analytics);
     expect(
       await reopened.query(`SELECT * FROM attempt WHERE card_id = ? ORDER BY id`, [ordering!.id]),
     ).toEqual(before.attemptRows);
