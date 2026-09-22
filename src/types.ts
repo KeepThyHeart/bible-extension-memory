@@ -310,7 +310,12 @@ export interface OrderingStep {
   totalSteps: number;
 }
 
-/** "Which reference is this?" - the first rung for a lone single verse. */
+/**
+ * "Which reference is this?" - matches a passage's own text (a short
+ * preview) to its own reference, as one passage-level unit. Applies to any
+ * passage, whether it spans one verse or many, once there is at least one
+ * other passage in the plan to distract with - see `ladder.ts`.
+ */
 export interface RefMatchStep {
   kind: 'refmatch';
   verse: VerseText;

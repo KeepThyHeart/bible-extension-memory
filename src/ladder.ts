@@ -8,15 +8,26 @@
  * reference to its text needs other references to choose between, so it is
  * meaningless for a passage that is the only thing in the collection.
  *
- * So there are two first rungs, chosen by the shape of the material, and the
- * ladders converge afterwards:
+ * So a multi-verse passage always gets `ordering` and a lone verse never
+ * does, and the ladders converge afterwards:
  *
- *     multi-verse passage:   ordering  -> blanks -> firstletters
- *     single verse, siblings: refmatch -> blanks -> firstletters
- *     single verse, alone:               blanks -> firstletters
+ *     multi-verse, siblings: ordering, refmatch -> blanks -> firstletters
+ *     multi-verse, alone:    ordering            -> blanks -> firstletters
+ *     single verse, siblings:          refmatch -> blanks -> firstletters
+ *     single verse, alone:                        blanks -> firstletters
  *
- * The third case is not a rounding error - it is the state of every plan on
+ * The last case is not a rounding error - it is the state of every plan on
  * the day it is created, because the first thing added is always alone.
+ *
+ * `refmatch` is NOT single-verse-exclusive: it is "match this passage's own
+ * text to its own reference", which is exactly as meaningful for a 13-verse
+ * passage as for a lone verse, provided there is at least one other passage
+ * in the plan to distract with. A multi-verse `refmatch` step still matches
+ * at the PASSAGE level - the candidates are whole references (`Session`'s
+ * `siblings`/`self`, one row per stored passage, never split by verse) and
+ * the text shown is a short preview (the passage's own first verse), never
+ * the whole thing and never a per-verse breakdown - see `session.ts`'s
+ * `refmatch` case.
  *
  * ## v1: no locks, no promotion
  *
@@ -24,18 +35,20 @@
  * nothing "unlocks", nothing is a warning, and skipping ahead is encouraged
  * rather than merely tolerated. So this file no longer has a promotion
  * threshold or a `CardState`; it has `levelFromScore`, a pure function from
- * "how well did the last attempt go" to a 0-5 display level, and
- * `applicableRungs` is unchanged because *which* rungs exist is still a
- * property of the material, not of how far the user has come.
+ * "how well did the last attempt go" to a 0-5 display level. `applicableRungs`
+ * keeps deciding *which* rungs exist as a property of the material, not of
+ * how far the user has come - the round-2 UI review changed WHICH shapes get
+ * `refmatch` (see above), not this v1 no-locks premise.
  */
 
 import type { Rung } from './types';
 
 /**
- * How many other passages must exist before `refmatch` is worth offering.
+ * How many passages must exist before `refmatch` is worth offering.
  *
- * Two total: the verse itself and at least one other to be confused with. A
- * picker with one option is not an exercise.
+ * Two total: the passage itself and at least one other to be confused with. A
+ * picker with one option is not an exercise. This applies regardless of how
+ * many verses the passage itself spans - see the file header.
  */
 const MIN_PASSAGES_FOR_REFMATCH = 2;
 
@@ -45,16 +58,24 @@ const MIN_PASSAGES_FOR_REFMATCH = 2;
  * `siblingCount` is the number of passages in the same collection, including
  * this one - it decides whether `refmatch` has anything to distract with.
  *
+ * `ordering` and `refmatch` are independent, not either/or: a multi-verse
+ * passage with company in the collection gets both, because a passage
+ * needing its own verses ordered may separately need its reference
+ * recognised, and neither one substitutes for the other. See the file
+ * header on why a lone single verse skips `ordering` entirely.
+ *
  * Note this is a function of the *collection*, so it can change under a card:
- * add a second passage and a lone verse gains a `refmatch` rung it did not
- * have. That is intentional and is why the ladder is derived on read rather
- * than frozen into rows at add time.
+ * add a second passage and a passage that had `refmatch` alone gains
+ * nothing new for itself, but a passage that had none of it now does. That
+ * is intentional and is why the ladder is derived on read rather than
+ * frozen into rows at add time.
  */
 export function applicableRungs(verseCount: number, siblingCount: number): Rung[] {
   const rungs: Rung[] = [];
   if (verseCount > 1) {
     rungs.push('ordering');
-  } else if (siblingCount >= MIN_PASSAGES_FOR_REFMATCH) {
+  }
+  if (siblingCount >= MIN_PASSAGES_FOR_REFMATCH) {
     rungs.push('refmatch');
   }
   rungs.push('blanks', 'firstletters');

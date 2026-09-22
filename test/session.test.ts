@@ -124,6 +124,25 @@ const JOHN_3_16: VerseText = {
 
 const PSALM_23 = [PS23_1, PS23_2, PS23_3, PS23_4];
 
+/**
+ * A ten-verse passage, for the ordering window test alone. What that test
+ * checks is verse-id bookkeeping - which ids are eligible as candidates, not
+ * anything about rendered text - so a longer synthetic passage is used rather
+ * than stretching a real one out to a length nothing in the plan actually
+ * memorises at once (`reference.ts#MAX_PASSAGE_VERSES` is 25, but ten already
+ * exercises "more than the window").
+ */
+function tenVerseFixture(): VerseText[] {
+  return Array.from({ length: 10 }, (_, i) => ({
+    verseId: 90000000 + i + 1,
+    label: `1:${i + 1}`,
+    words: words(`Verse number ${i + 1} of the fixture passage here.`),
+    lines: null,
+    psalmTitle: null,
+    paragraphStart: i === 0,
+  }));
+}
+
 const SELF = { passageId: 1, reference: 'Psalm 23:1-4' };
 const SIBLINGS = [
   { passageId: 2, reference: 'John 3:16' },
@@ -162,9 +181,13 @@ const blanksStep = (s: Session): BlanksStep => s.view().step as BlanksStep;
 const firstLettersStep = (s: Session): FirstLettersStep => s.view().step as FirstLettersStep;
 const refMatchStep = (s: Session): RefMatchStep => s.view().step as RefMatchStep;
 
-/** Answer every ordering step correctly, in order. */
+/**
+ * Answer every ordering step correctly, in order - including the first, which
+ * is a real pick too now (see `session.ts#prepareStep`'s note on why nothing
+ * is given away for free any more).
+ */
 function playOrderingCleanly(s: Session, verses: VerseText[]): void {
-  for (let i = 1; i < verses.length; i++) {
+  for (let i = 0; i < verses.length; i++) {
     const result = s.submit({ kind: 'ordering', verseId: verses[i]!.verseId });
     expect(result.correct).toBe(true);
   }
@@ -183,10 +206,11 @@ describe('ordering - the picker blocks', () => {
     const s = makeSession({ rung: 'ordering' });
     const before = orderingStep(s);
     expect(before.stepNumber).toBe(1);
-    expect(before.totalSteps).toBe(3);
-    expect(before.placed).toEqual([PS23_1]);
+    expect(before.totalSteps).toBe(4);
+    // Nothing is placed yet: the first verse is a real pick, not a freebie.
+    expect(before.placed).toEqual([]);
 
-    // Pick a verse that is genuinely in the candidate list but is not next.
+    // Pick a verse that is genuinely in the candidate list but is not first.
     const result = s.submit({ kind: 'ordering', verseId: PS23_4.verseId });
     expect(result.correct).toBe(false);
     expect(result.blocking).toBe(true);
@@ -197,7 +221,7 @@ describe('ordering - the picker blocks', () => {
 
     const after = orderingStep(s);
     expect(after.stepNumber).toBe(1);
-    expect(after.placed).toEqual([PS23_1]);
+    expect(after.placed).toEqual([]);
     expect(s.isFinished).toBe(false);
   });
 
@@ -225,22 +249,21 @@ describe('ordering - the picker blocks', () => {
     // distractor, it is noise - and worse, it makes the exercise solvable by
     // elimination rather than by recall.
     const s = makeSession({ rung: 'ordering' });
-    s.submit({ kind: 'ordering', verseId: PS23_2.verseId });
+    s.submit({ kind: 'ordering', verseId: PS23_1.verseId }); // correct: the first verse
 
     const step = orderingStep(s);
     expect(step.stepNumber).toBe(2);
-    expect(step.placed).toEqual([PS23_1, PS23_2]);
+    expect(step.placed).toEqual([PS23_1]);
     const ids = step.candidates.map((c) => c.verseId);
     expect(ids).not.toContain(PS23_1.verseId);
-    expect(ids).not.toContain(PS23_2.verseId);
-    expect(ids).toContain(PS23_3.verseId);
+    expect(ids).toContain(PS23_2.verseId);
   });
 
   it('always includes the correct answer among the candidates', async () => {
     // A picker missing its own answer is unwinnable, and because the picker
     // blocks it would strand the session with no way forward at all.
     const s = makeSession({ rung: 'ordering' });
-    for (let i = 1; i < PSALM_23.length; i++) {
+    for (let i = 0; i < PSALM_23.length; i++) {
       const step = orderingStep(s);
       expect(step.candidates.map((c) => c.verseId)).toContain(PSALM_23[i]!.verseId);
       s.submit({ kind: 'ordering', verseId: PSALM_23[i]!.verseId });
@@ -249,8 +272,38 @@ describe('ordering - the picker blocks', () => {
 
   it('reveals the answer once the step is finally resolved', async () => {
     const s = makeSession({ rung: 'ordering' });
-    const result = s.submit({ kind: 'ordering', verseId: PS23_2.verseId });
-    expect(result.reveal).toEqual({ verseId: PS23_2.verseId });
+    const result = s.submit({ kind: 'ordering', verseId: PS23_1.verseId });
+    expect(result.reveal).toEqual({ verseId: PS23_1.verseId });
+  });
+
+  it('draws candidates only from the next ORDERING_WINDOW unplaced verses, not the whole remainder', async () => {
+    // A pool as wide as the rest of the passage would make a long passage's
+    // early steps easy for the wrong reason (a distractor from ten verses
+    // away is rejected on unfamiliarity alone, not recognised as wrong), and
+    // - the actual bug report - a pool no wider than what is shown forces
+    // every remaining verse to appear every time, which degenerates into a
+    // fixed, learnable cycle. Ten verses, so step 1's window (the next six)
+    // provably excludes some of what is left.
+    const TEN = tenVerseFixture();
+    const s = makeSession({ rung: 'ordering', verses: TEN });
+
+    const step = orderingStep(s);
+    const ids = step.candidates.map((c) => c.verseId);
+    expect(ids).toHaveLength(4); // PICKER_CHOICES
+    expect(ids).toContain(TEN[0]!.verseId); // the correct answer is always offered
+
+    // Nothing from outside verses[0..5] (the next-six window) can appear -
+    // in particular nothing from verse 7 on.
+    const windowIds = TEN.slice(0, 6).map((v) => v.verseId);
+    for (const id of ids) expect(windowIds).toContain(id);
+    for (const v of TEN.slice(6)) expect(ids).not.toContain(v.verseId);
+
+    // The window (6) is wider than what is shown (4): of the five OTHER
+    // verses it contains, only three become distractors, so - regardless of
+    // rng - at least one window verse is always left out. That is what makes
+    // which four appear itself unpredictable, not just their order.
+    const shown = new Set(ids);
+    expect(windowIds.filter((id) => !shown.has(id)).length).toBeGreaterThan(0);
   });
 });
 
@@ -259,15 +312,15 @@ describe('ordering - the picker blocks', () => {
 // ---------------------------------------------------------------------------
 
 describe('ordering - scoring', () => {
-  it('scores a clean run 1, over n-1 steps', async () => {
-    // The control for the test below. Ordering is `n - 1` steps because the
-    // first verse is given: you cannot be asked what comes after nothing.
+  it('scores a clean run 1, over n steps', async () => {
+    // The control for the test below. Ordering is `n` steps: the first verse
+    // is a real pick now, not given away for free.
     const s = makeSession({ rung: 'ordering' });
     playOrderingCleanly(s, PSALM_23);
 
     expect(s.isFinished).toBe(true);
-    expect(s.correctFirst).toBe(3);
-    expect(s.gradedTotal).toBe(3);
+    expect(s.correctFirst).toBe(4);
+    expect(s.gradedTotal).toBe(4);
     expect(s.score).toBe(1);
   });
 
@@ -280,22 +333,23 @@ describe('ordering - scoring', () => {
     // the moment it is spoiled, and can never earn credit afterwards.
     const s = makeSession({ rung: 'ordering' });
 
-    s.submit({ kind: 'ordering', verseId: PS23_4.verseId }); // wrong
+    s.submit({ kind: 'ordering', verseId: PS23_4.verseId }); // wrong (step 1: which comes first)
     s.submit({ kind: 'ordering', verseId: PS23_3.verseId }); // wrong again
-    const recovered = s.submit({ kind: 'ordering', verseId: PS23_2.verseId }); // right
+    const recovered = s.submit({ kind: 'ordering', verseId: PS23_1.verseId }); // right
     expect(recovered.correct).toBe(true);
 
     // One unit counted so far, none of it credited.
     expect(s.gradedTotal).toBe(1);
     expect(s.correctFirst).toBe(0);
 
+    s.submit({ kind: 'ordering', verseId: PS23_2.verseId });
     s.submit({ kind: 'ordering', verseId: PS23_3.verseId });
     s.submit({ kind: 'ordering', verseId: PS23_4.verseId });
 
     expect(s.isFinished).toBe(true);
-    expect(s.gradedTotal).toBe(3);
-    expect(s.correctFirst).toBe(2);
-    expect(s.score).toBeCloseTo(2 / 3, 10);
+    expect(s.gradedTotal).toBe(4);
+    expect(s.correctFirst).toBe(3);
+    expect(s.score).toBeCloseTo(3 / 4, 10);
 
     // The control: same length, same passage, no misses.
     const clean = makeSession({ rung: 'ordering' });
@@ -310,21 +364,21 @@ describe('ordering - scoring', () => {
     // zero, and the ladder would never promote anyone who ever hesitated.
     const s = makeSession({ rung: 'ordering' });
     for (let i = 0; i < 5; i++) {
-      s.submit({ kind: 'ordering', verseId: PS23_4.verseId });
+      s.submit({ kind: 'ordering', verseId: PS23_4.verseId }); // wrong every time
     }
     expect(s.gradedTotal).toBe(1);
-    s.submit({ kind: 'ordering', verseId: PS23_2.verseId });
+    s.submit({ kind: 'ordering', verseId: PS23_1.verseId }); // right, at last
     expect(s.gradedTotal).toBe(1);
   });
 
   it('gives a fresh step its own chance at credit after an earlier miss', async () => {
-    // `spoiled` is per-step state, not per-session. A user who fumbles verse
-    // two and then recites the rest perfectly must be able to earn those
-    // later points, or one slip would zero the whole attempt.
+    // `spoiled` is per-step state, not per-session. A user who fumbles the
+    // first verse and then recites the rest perfectly must be able to earn
+    // those later points, or one slip would zero the whole attempt.
     const s = makeSession({ rung: 'ordering' });
     s.submit({ kind: 'ordering', verseId: PS23_4.verseId }); // spoil step 1
-    s.submit({ kind: 'ordering', verseId: PS23_2.verseId }); // resolve step 1
-    s.submit({ kind: 'ordering', verseId: PS23_3.verseId }); // step 2, clean
+    s.submit({ kind: 'ordering', verseId: PS23_1.verseId }); // resolve step 1
+    s.submit({ kind: 'ordering', verseId: PS23_2.verseId }); // step 2, clean
     expect(s.correctFirst).toBe(1);
     expect(s.gradedTotal).toBe(2);
   });
@@ -487,8 +541,8 @@ describe('a finished session', () => {
     expect(s.isFinished).toBe(true);
     const view = s.view();
     expect(view.step).toBeNull();
-    expect(view.correctFirst).toBe(3);
-    expect(view.stepsTaken).toBe(3);
+    expect(view.correctFirst).toBe(4);
+    expect(view.stepsTaken).toBe(4);
     expect(s.score).toBe(1);
   });
 
@@ -502,8 +556,8 @@ describe('a finished session', () => {
 
     const late = s.submit({ kind: 'ordering', verseId: PS23_2.verseId });
     expect(late).toEqual({ correct: false, wrong: [], blocking: false });
-    expect(s.correctFirst).toBe(3);
-    expect(s.gradedTotal).toBe(3);
+    expect(s.correctFirst).toBe(4);
+    expect(s.gradedTotal).toBe(4);
   });
 
   it('treats an answer of the wrong kind as a blocking miss, not an exception', async () => {

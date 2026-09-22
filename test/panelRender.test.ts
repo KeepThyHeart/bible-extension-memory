@@ -921,6 +921,45 @@ describe('the ordering picker', () => {
     // Double-clicking a candidate must not score the step twice.
     expect(host.requests.filter((r) => r.type === 'submitStep').length).toBe(1);
   });
+
+  it('asks "which verse comes first?" when nothing has been placed yet', async () => {
+    // The first pick is a real choice now, not a given - see
+    // `session.ts#prepareStep`. Presupposing an answer in the prompt would be
+    // exactly the bug being fixed.
+    const step = { ...orderingStep(), placed: [], stepNumber: 1 };
+    const practice = await mountPractice(step, { rung: 'ordering' });
+
+    expect(spokenText(practice.root)).toContain('Which verse comes first?');
+    expect(spokenText(practice.root)).not.toContain('Which verse comes next?');
+  });
+
+  it('labels each card with the number that picks it', async () => {
+    const practice = await mountPractice(orderingStep(), { rung: 'ordering' });
+    const keys = Array.from(practice.root.querySelectorAll<HTMLElement>('.sm-choice-key')).map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(['1', '2', '3']);
+  });
+
+  it('picks a card by pressing the number printed on it, the same as a click', async () => {
+    const step = orderingStep();
+    let submitted: unknown = null;
+    host.handlers.submitStep = (req) => {
+      submitted = req.answer;
+      return {
+        ok: true,
+        data: { result: stepResult({ correct: true }), session: session(null), summary: null },
+      };
+    };
+
+    const practice = await mountPractice(step, { rung: 'ordering' });
+    const list = practice.root.querySelector('.sm-choices')!;
+    list.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true, cancelable: true }));
+    await settle();
+
+    // The step's SECOND candidate - the number printed on that card.
+    expect(submitted).toMatchObject({ kind: 'ordering', verseId: step.candidates[1]!.verseId });
+  });
 });
 
 // ---------------------------------------------------------------------------

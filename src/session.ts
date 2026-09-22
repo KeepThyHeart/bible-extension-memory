@@ -52,6 +52,23 @@ import { gradeFirstLetters } from './exercises/firstLetters';
 const PICKER_CHOICES = 4;
 
 /**
+ * How many of the next unplaced verses the ordering picker draws its
+ * candidates from.
+ *
+ * A window wider than `PICKER_CHOICES` so the pool the distractors are drawn
+ * from is not always exactly the set shown: with the window equal to the
+ * choice count, every unplaced verse had to appear (there was nothing else to
+ * pick from), and the correct verse's position - shuffled or not - was the
+ * only thing that varied. That degenerates into a fixed A/B/C/D cycle a user
+ * can learn without ever reading the text. Six gives room to leave a verse
+ * out entirely so which four appear is itself unpredictable, while staying
+ * close enough that a distractor is still a real neighbour of the passage
+ * (see `ordering.ts`'s own note on why distractors never come from outside
+ * it).
+ */
+const ORDERING_WINDOW = 6;
+
+/**
  * Fraction of words blanked.
  *
  * Fixed for v0 rather than adaptive. An adaptive difficulty that moves with
@@ -138,7 +155,7 @@ export class Session {
 
   /** How many verses (or ordering placements) this rung walks through. */
   private verseSteps(): number {
-    return this.rung === 'ordering' ? Math.max(1, this.verses.length - 1) : this.verses.length;
+    return this.rung === 'ordering' ? Math.max(1, this.verses.length) : this.verses.length;
   }
 
   // -- presentation ---------------------------------------------------------
@@ -146,13 +163,15 @@ export class Session {
   /**
    * How many steps the user will be asked to do, in presentation units.
    *
-   * Ordering is `n - 1` because the first verse is given: you cannot be asked
-   * what comes after nothing.
+   * Ordering is `n`: every verse in the passage is picked, including the
+   * first. An earlier version gave the first verse away for free ("you
+   * cannot be asked what comes after nothing"), but that meant the very first
+   * choice of every round was not a choice at all - see `prepareStep`.
    */
   get totalSteps(): number {
     switch (this.rung) {
       case 'ordering':
-        return Math.max(1, this.verses.length - 1);
+        return Math.max(1, this.verses.length);
       case 'refmatch':
         return 1;
       default:
@@ -208,21 +227,26 @@ export class Session {
     if (this.finished) return;
 
     if (this.rung === 'ordering') {
-      // The verse to find is the one after everything already placed. The
-      // distractors are drawn from the verses NOT yet placed, so a candidate
-      // the user has already seen placed cannot reappear as a decoy.
-      const remaining = this.verses.slice(this.cursor + 1);
+      // The verse to find is the one after everything already placed - which,
+      // with `cursor` counting verses placed so far, is `verses[cursor]`.
+      // Nothing is given for free any more: at `cursor === 0` this asks which
+      // verse comes FIRST, exactly like every later step asks which comes
+      // next (see `currentStep`'s prompt).
+      const remaining = this.verses.slice(this.cursor);
       const correct = remaining[0];
       if (!correct) {
         this.finished = true;
         return;
       }
-      this.currentCandidates = buildCandidates(
-        remaining,
-        correct.verseId,
-        PICKER_CHOICES,
-        this.rng,
-      );
+      // The candidate pool is a WINDOW of the next `ORDERING_WINDOW` unplaced
+      // verses, not every verse left in the passage. Two reasons: a distractor
+      // from far ahead in a long passage is rejected on unfamiliarity alone
+      // and teaches nothing (same logic as never drawing one from outside the
+      // passage), and a pool wider than what is shown means the four verses
+      // offered are themselves a random draw, not a deterministic "whatever is
+      // left". See `ORDERING_WINDOW`'s own note.
+      const pool = remaining.slice(0, ORDERING_WINDOW);
+      this.currentCandidates = buildCandidates(pool, correct.verseId, PICKER_CHOICES, this.rng);
       return;
     }
 
@@ -262,7 +286,7 @@ export class Session {
       case 'ordering': {
         return {
           kind: 'ordering',
-          placed: this.verses.slice(0, this.cursor + 1),
+          placed: this.verses.slice(0, this.cursor),
           candidates: this.currentCandidates,
           stepNumber: this.cursor + 1,
           totalSteps: this.totalSteps,
@@ -334,7 +358,7 @@ export class Session {
 
   private submitOrdering(answer: StepAnswer): StepResult {
     if (answer.kind !== 'ordering') return mismatch();
-    const expected = this.verses[this.cursor + 1];
+    const expected = this.verses[this.cursor];
     if (!expected) return mismatch();
 
     if (answer.verseId !== expected.verseId) {
@@ -344,7 +368,7 @@ export class Session {
 
     this.creditAndAdvanceUnit();
     this.cursor++;
-    if (this.cursor >= this.verses.length - 1) this.finished = true;
+    if (this.cursor >= this.verses.length) this.finished = true;
     this.prepareStep();
     return {
       correct: true,

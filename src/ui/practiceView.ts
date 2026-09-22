@@ -416,24 +416,31 @@ export class PracticeView {
    * to lose your keyboard focus.
    */
   private renderOrdering(step: OrderingStep): void {
-    this.exerciseEl.appendChild(
-      el('h2', { class: 'sm-prompt', text: 'Which verse comes next?' }),
-    );
+    // The first pick is a real choice now (see `session.ts#prepareStep`), so
+    // it gets its own prompt rather than one that presupposes an answer
+    // already given.
+    const isFirstPick = step.placed.length === 0;
+    const prompt = isFirstPick ? 'Which verse comes first?' : 'Which verse comes next?';
+    this.exerciseEl.appendChild(el('h2', { class: 'sm-prompt', text: prompt }));
 
     const list = el('ul', {
       class: 'sm-choices',
-      attrs: { 'aria-label': 'Choose the next verse' },
+      attrs: { 'aria-label': isFirstPick ? 'Choose the first verse' : 'Choose the next verse' },
     });
 
     const buttons: HTMLButtonElement[] = [];
 
-    step.candidates.forEach((candidate) => {
+    step.candidates.forEach((candidate, index) => {
       const choice = el('button', {
         class: 'sm-choice',
         attrs: { 'data-verse-id': String(candidate.verseId) },
       });
       choice.type = 'button';
       append(choice, [
+        // The number is the same one a user presses to pick this card - see
+        // `attachListKeys` - so it is part of the button's own accessible
+        // name, not decorative.
+        el('span', { class: 'sm-choice-key', text: String(index + 1) }),
         // The truncation mark is folded straight into the text rather than
         // drawn as a trailing sibling element. A sibling span sits outside the
         // text's own line flow, so on a preview that wraps it can land at the
@@ -454,10 +461,20 @@ export class PracticeView {
     // in a list of four or five options Tab is a poor fit - it walks out of the
     // group at the end instead of wrapping, and there is no way back but
     // Shift+Tab. Roving arrows make the group behave like the list it looks
-    // like, and Home/End reach the extremes.
+    // like, and Home/End reach the extremes. The number printed on each card
+    // (`sm-choice-key`) is also a shortcut: pressing it picks that card
+    // directly, without walking the list first.
     attachListKeys(list, buttons);
 
     this.exerciseEl.appendChild(list);
+
+    // Focus the first card as soon as the step renders. Without this the
+    // number/arrow shortcuts above do nothing at all on a fresh step - a
+    // keydown only reaches `list`'s listener once focus is somewhere inside
+    // it - which is exactly the bug this exists to fix: the visible number on
+    // each card implied a shortcut that, with nothing ever focused, could
+    // never fire.
+    focusQuietly(buttons[0] ?? null);
   }
 
   private async pickOrdering(
@@ -1157,6 +1174,20 @@ function attachListKeys(list: HTMLElement, buttons: HTMLButtonElement[]): void {
   if (buttons.length === 0) return;
 
   list.addEventListener('keydown', (ev) => {
+    // The number printed on each card (`sm-choice-key`) picks it outright -
+    // the same as a click, not just a focus move - so it works the instant
+    // the step renders. Checked before the roving-focus keys below and
+    // independent of which button currently has focus.
+    const digit = /^[1-9]$/.exec(ev.key)?.[0];
+    if (digit !== undefined) {
+      const picked = buttons[Number(digit) - 1];
+      if (picked && !picked.disabled) {
+        ev.preventDefault();
+        picked.click();
+      }
+      return;
+    }
+
     const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
     if (current < 0) return;
 

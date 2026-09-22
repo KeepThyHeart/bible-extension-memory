@@ -508,9 +508,17 @@ async function buildPlanView(): Promise<PlanView> {
   };
 }
 
-/** How many verses (or ordering placements) one pass through a rung takes. */
+/**
+ * How many verses (or ordering placements) one pass through a rung takes.
+ *
+ * Mirrors `Session#totalSteps` (`session.ts`) - kept in sync by hand because
+ * this is computed for a passage screen's paused-activity display, where no
+ * `Session` object exists to ask directly. The first verse is a real pick
+ * now, not given away for free, so `ordering` is `verseCount`, not
+ * `verseCount - 1` - see `session.ts#prepareStep`'s note.
+ */
 function totalStepsFor(rung: Rung, verseCount: number): number {
-  if (rung === 'ordering') return Math.max(1, verseCount - 1);
+  if (rung === 'ordering') return Math.max(1, verseCount);
   if (rung === 'refmatch') return 1;
   return verseCount;
 }

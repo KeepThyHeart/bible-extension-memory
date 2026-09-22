@@ -1327,7 +1327,10 @@ ul, ol {
 .sm-choice {
   font: inherit;
   font-family: var(--sm-bible-font);
-  font-size: calc(var(--sm-bible-size) * 0.85);
+  /* Matches `.sm-context`'s size exactly: this card's text IS passage text
+     (a verse preview), and reading it should not require adjusting to a
+     smaller size than the passage just above it. */
+  font-size: var(--sm-bible-size);
   line-height: 1.5;
   width: 100%;
   display: flex;
@@ -1355,6 +1358,25 @@ ul, ol {
 .sm-choice-text {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* The number that doubles as this card's keyboard shortcut (see
+   `attachListKeys`). A small filled badge rather than plain text so it reads
+   as a control, not as a list number that happens to be part of the copy. */
+.sm-choice-key {
+  flex: 0 0 auto;
+  width: 1.5em;
+  height: 1.5em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--sm-surface);
+  border: 1px solid var(--sm-border-strong);
+  font-family: var(--sm-ui-font);
+  font-size: 0.75em;
+  font-weight: 600;
+  color: var(--sm-text-dim);
 }
 
 /* Reserved space for the verdict glyph, always. Adding the mark on a wrong
@@ -1500,7 +1522,12 @@ ul, ol {
     text-align: left;
   }
 
-  .sm-context {
+  /* `.sm-choice` is listed alongside `.sm-context` so a picker card's text
+     keeps matching the passage text above it at this width too - the
+     `.sm-choices-compact` (refmatch) variant keeps its own control-size
+     regardless, since that rule's higher specificity wins either way. */
+  .sm-context,
+  .sm-choice {
     font-size: calc(var(--sm-bible-size) * 0.85);
   }
 

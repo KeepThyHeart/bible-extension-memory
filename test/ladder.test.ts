@@ -1,12 +1,15 @@
 /**
  * Ladder-shape and level tests.
  *
- * The single fact the `applicableRungs` block exists to protect is that there
- * are TWO ladders, not one, and which one applies is a property of the
- * *material* rather than of the user. A regression back to one ladder would
- * not throw anywhere - it would simply hand a user a single verse and ask
- * them to put it in order, which is not a question. So the shape is asserted
- * directly rather than inferred from anything downstream.
+ * The single fact the `applicableRungs` block exists to protect is that
+ * `ordering` and `refmatch` are two INDEPENDENT first rungs, not one ladder
+ * with a single opening move, and which ones apply is a property of the
+ * *material* rather than of the user: `ordering` needs more than one verse,
+ * `refmatch` needs another passage in the plan to be confused with, and a
+ * multi-verse passage with company gets both. A regression back to treating
+ * them as either/or would not throw anywhere - it would simply stop offering
+ * a multi-verse passage its own reference-matching exercise, silently. So the
+ * shape is asserted directly rather than inferred from anything downstream.
  *
  * The case that gets the most attention below is the third one - a single
  * verse ALONE in the collection, which starts at `blanks` because neither
@@ -28,13 +31,20 @@ import { RUNG_ORDER } from '../src/types';
 import type { Rung } from '../src/types';
 
 describe('applicableRungs - which ladder this material is on', () => {
-  it('puts a multi-verse passage on the ordering ladder', () => {
+  it('puts a multi-verse passage on the ordering ladder regardless of siblings', () => {
     // "Which verse comes next" is the cheapest test of the thing that breaks
     // first in a half-learned passage: not the words, the ORDER. Any passage
     // with more than one verse has an order, so it gets that rung regardless
     // of how many siblings it has.
     expect(applicableRungs(3, 1)).toEqual(['ordering', 'blanks', 'firstletters']);
-    expect(applicableRungs(3, 5)).toEqual(['ordering', 'blanks', 'firstletters']);
+  });
+
+  it('adds refmatch alongside ordering once there is something to confuse the reference with', () => {
+    // `ordering` and `refmatch` are independent, not either/or - a multi-verse
+    // passage with company in the plan gets both, because needing its own
+    // verses ordered and needing its reference recognised are two different
+    // things neither substitutes for.
+    expect(applicableRungs(3, 5)).toEqual(['ordering', 'refmatch', 'blanks', 'firstletters']);
   });
 
   it('puts a single verse with siblings on the refmatch ladder', () => {
@@ -44,6 +54,15 @@ describe('applicableRungs - which ladder this material is on', () => {
     // one thing to be confused with.
     expect(applicableRungs(1, 2)).toEqual(['refmatch', 'blanks', 'firstletters']);
     expect(applicableRungs(1, 9)).toEqual(['refmatch', 'blanks', 'firstletters']);
+  });
+
+  it('offers refmatch for a multi-verse passage too, matched as one passage-reference unit', () => {
+    // A 13-verse passage's `refmatch` step is exactly as meaningful as a lone
+    // verse's: match this passage's own text (a short preview) to its own
+    // whole-passage reference, never a per-verse breakdown - see
+    // `session.ts`'s `refmatch` case and `types.ts#RefMatchStep`.
+    expect(applicableRungs(13, 2)).toContain('refmatch');
+    expect(applicableRungs(13, 1)).not.toContain('refmatch');
   });
 
   it('gives a single verse ALONE in the collection neither first rung', () => {
