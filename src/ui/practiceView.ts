@@ -73,6 +73,7 @@ import {
   pickDueTarget,
 } from './format';
 import type { PanelHost } from './host';
+import type { Flow } from './state';
 import { plainWord, renderPassage } from './scripture';
 import type { WordRenderer } from './scripture';
 import { resolveWrongPositions, revealedWord } from './stepResult';
@@ -123,11 +124,29 @@ export class PracticeView {
   private disposed = false;
   private readonly timers = new Set<number>();
 
+  /**
+   * What the user pressed to reach this session (N6, `state.ts#Flow`) -
+   * `panel.ts` passes this alongside the same `SessionView` it already hands
+   * the constructor, sourced from the `NavState.flow` it just set via
+   * `sessionStarted`. Drives whether `renderHead` draws a Next button:
+   * `variety`/`activity` have a rule (`format.ts#pickFlowTarget`) to re-run
+   * excluding this passage; `passage` does not, so the button is omitted.
+   *
+   * Defaults to `{ kind: 'passage', passageId: session.passageId }` for the
+   * same reason `passageView.ts#renderPassageScreen`'s `viewRung` defaults to
+   * `null` - so every existing call in this file's own test suite, which
+   * predates N6 and has no flow to pass, keeps behaving exactly as it did
+   * (no Next button).
+   */
+  private readonly flow: Flow;
+
   constructor(
     private readonly host: PanelHost,
     session: SessionView,
+    flow: Flow = { kind: 'passage', passageId: session.passageId },
   ) {
     this.session = session;
+    this.flow = flow;
 
     this.headEl = el('header', { class: 'sm-practice-head' });
     this.contextEl = el('div', { class: 'sm-context' });
@@ -286,7 +305,21 @@ export class PracticeView {
           // asks that the activity name not be duplicated beside it.
           { label: reference },
         ],
-        actions: step !== null ? [el('span', { class: 'sm-crumbs-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })] : [],
+        actions: [
+          step !== null
+            ? el('span', { class: 'sm-crumbs-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })
+            : null,
+          // N6, Decision 4: only shown when the flow this session belongs to
+          // has another target to skip to - `variety`/`activity` re-run
+          // `pickFlowTarget`; a `passage` flow named this one passage
+          // directly and has nothing else to offer.
+          this.flow.kind !== 'passage'
+            ? button('Next', () => void this.onNext(), {
+                class: 'sm-btn sm-btn-quiet sm-btn-small',
+                attrs: { 'aria-label': 'Skip to the next passage' },
+              })
+            : null,
+        ],
       }),
       this.renderActivityTabs(),
       step !== null
@@ -1100,6 +1133,34 @@ export class PracticeView {
       return;
     }
     void this.host.startSession(target.passageId, target.rung);
+  }
+
+  /**
+   * The breadcrumb's Next button (N6, Decision 4): "not this one right now",
+   * not a failed attempt. Ends the current session exactly as the Home crumb
+   * does - `endSession` records nothing and preserves whatever resume point
+   * was already on disk - then re-runs this session's own flow, excluding
+   * the passage just left, so pressing Next cannot immediately re-offer the
+   * same passage.
+   *
+   * `flow` and the passage to exclude are captured before `endSession` runs:
+   * that call drives `host.go({ type: 'sessionEnded' })`, and in the running
+   * panel (not the test harness) that synchronously destroys this view from
+   * beneath itself - `this.session`/`this.flow` must not be read afterward.
+   *
+   * No "nothing found" handling is needed here the way `startNextDue` above
+   * has its own: `host.startFlow` already announces and stops when its own
+   * `pickFlowTarget` finds nothing, which is exactly the degrade this button
+   * wants too.
+   */
+  private async onNext(): Promise<void> {
+    // Defensive only - `renderHead` never draws this button for a `passage`
+    // flow, so a real click cannot reach here with one.
+    if (this.flow.kind === 'passage') return;
+    const flow = this.flow;
+    const exclude = new Set([this.session.passageId]);
+    await this.endSession();
+    void this.host.startFlow(flow, exclude);
   }
 
   private async endSession(): Promise<void> {

@@ -26,6 +26,7 @@ import type { ThemeInfo } from '@bible/extension-ui';
 import type { PanelReply, PanelRequest, PassageView, RequestMap, Rung } from './types';
 import { clear, el } from './ui/dom';
 import { errorBanner } from './ui/components';
+import { pickFlowTarget } from './ui/format';
 import type { PanelHost } from './ui/host';
 import { WordMeasurer } from './ui/measure';
 import { PracticeView } from './ui/practiceView';
@@ -35,7 +36,7 @@ import { renderPassageScreen } from './ui/passageView';
 import { renderSettings } from './ui/settingsView';
 import { call } from './ui/rpc';
 import { INITIAL_NAV, navReduce, sameView } from './ui/state';
-import type { NavAction, NavState } from './ui/state';
+import type { Flow, NavAction, NavState } from './ui/state';
 
 const bible = BibleExtUI.init();
 
@@ -104,7 +105,7 @@ const host: PanelHost = {
     return activeReference;
   },
 
-  async startSession(passageId: number, rung?: Rung, restart?: boolean): Promise<void> {
+  async startSession(passageId: number, rung?: Rung, restart?: boolean, flow?: Flow): Promise<void> {
     // Optional keys are omitted entirely rather than sent as `undefined`.
     // `types.ts` requires structured-cloneable JSON, and an explicit
     // `undefined` is the one value that does not survive that trip intact -
@@ -123,20 +124,47 @@ const host: PanelHost = {
     }
     const session = reply.data as RequestMap['startSession'];
 
+    // Every call site today (the passage screen's Practice/Resume/Restart,
+    // the practice screen's own tab strip and "Next due") names one specific
+    // passage the user was already looking at, not a flow - only `startFlow`
+    // below and the practice screen's Next button ever pass one. Defaulting
+    // here, rather than in `NavAction`/`navReduce`, keeps `sessionStarted` a
+    // plain record of what happened instead of a second place that has to
+    // know this default.
+    const sessionFlow: Flow = flow ?? { kind: 'passage', passageId: session.passageId };
+
     host.go({
       type: 'sessionStarted',
       sessionId: session.sessionId,
       passageId: session.passageId,
       rung: session.rung,
+      flow: sessionFlow,
     });
 
     // `render()` deliberately leaves the practice screen alone - that view
     // owns its own DOM and its own lifetime - so the mount happens here.
     practice?.destroy();
     clear(main);
-    practice = new PracticeView(host, session);
+    practice = new PracticeView(host, session, sessionFlow);
     practice.mount(main);
     announce('');
+  },
+
+  async startFlow(flow: Flow, exclude?: ReadonlySet<number>): Promise<void> {
+    const reply = await host.request({ type: 'getPlan' });
+    if (!reply.ok) {
+      showError(reply.error);
+      return;
+    }
+    const target = pickFlowTarget(reply.data, flow, host.now(), exclude);
+    if (!target) {
+      // Same degrade as the summary screen's "Next due" button when nothing
+      // is due: say so and stop, rather than starting nothing silently or
+      // leaving the caller (the Next button) mid-navigation.
+      announce('Nothing else to practice right now.');
+      return;
+    }
+    await host.startSession(target.passageId, target.rung, undefined, flow);
   },
 
   openInBible(verseId: number): void {

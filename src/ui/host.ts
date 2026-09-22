@@ -14,7 +14,7 @@
  */
 
 import type { PanelReply, PanelRequest, RequestMap, Rung } from '../types';
-import type { NavAction } from './state';
+import type { Flow, NavAction } from './state';
 import type { WordMeasurer } from './measure';
 
 export interface PanelHost {
@@ -52,8 +52,34 @@ export interface PanelHost {
    * somewhere that survives the view being replaced. `restart` clears any
    * paused position on that activity first - the passage screen's "Restart"
    * button, as opposed to "Resume" or an ordinary "Practice".
+   *
+   * `flow` is the panel-side flow (N6, `state.ts`) this session belongs to -
+   * every call site today names one specific passage the user was already
+   * looking at, so `flow` is optional here and the implementation (`panel.ts`)
+   * defaults an omitted one to `{ kind: 'passage', passageId }`. Only
+   * `startFlow` below, and the practice screen's own Next button, ever pass
+   * one explicitly.
    */
-  startSession(passageId: number, rung?: Rung, restart?: boolean): Promise<void>;
+  startSession(passageId: number, rung?: Rung, restart?: boolean, flow?: Flow): Promise<void>;
+
+  /**
+   * Starts whichever passage `flow`'s rule currently names (M2 tile presses,
+   * and the practice screen's own Next/skip button, N6), and switches to the
+   * practice screen for it.
+   *
+   * Reuses the existing `getPlan` request and `startSession` RPC - no new
+   * protocol entry. `pickFlowTarget` (`format.ts`) is a pure function of the
+   * plan it fetches, so this method is the only place that turns "run this
+   * flow" into an actual session start. `exclude` lets a caller rule out a
+   * passage it just left - the Next button's own use, so pressing it cannot
+   * re-offer the passage just skipped.
+   *
+   * When `pickFlowTarget` finds nothing (an empty plan, or every candidate
+   * excluded), this announces that rather than starting anything or leaving
+   * the caller mid-navigation - the same degrade already used by the summary
+   * screen's "Next due" button when nothing is due.
+   */
+  startFlow(flow: Flow, exclude?: ReadonlySet<number>): Promise<void>;
 
   /** Asks the main app to move its Bible pane to a verse. */
   openInBible(verseId: number): void;

@@ -19,6 +19,10 @@ import type { AnalyticsView, PassageView, PlanView, Rung, RungView } from '../ty
 import { RUNG_ORDER } from '../types';
 import { MIN_PASSAGES_FOR_REFMATCH } from '../ladder';
 import type { ActivityTile } from './activities';
+// Type-only: erased at compile time, so this creates no runtime edge back to
+// `state.ts` for `panel.ts`'s module graph to resolve, even though `state.ts`
+// itself imports nothing from here - see `Flow`'s own note in `state.ts`.
+import type { Flow } from './state';
 
 /**
  * The level at and above which an activity counts as mastered.
@@ -402,19 +406,6 @@ export function activityAvailability(
 }
 
 /**
- * A user-initiated run through the plan: either "give me whatever needs
- * practice most" (Variety) or "start this one activity" (an explicit tile
- * press).
- *
- * This is deliberately a *local, minimal* type - N6 formalises `Flow` for
- * real in `state.ts`/`NavState` once the Next/skip control needs to carry one
- * around as navigation state. Kept here, and exported, only so this
- * subtask's own signature is expressible and so N6 has a shape to start
- * from rather than inventing one from scratch.
- */
-export type Flow = { kind: 'variety' } | { kind: 'activity'; rung: Rung };
-
-/**
  * What a tile press should start.
  *
  * `variety`: reuses `pickDueTarget` then, if nothing is due, `pickStartTarget`
@@ -435,6 +426,13 @@ export type Flow = { kind: 'variety' } | { kind: 'activity'; rung: Rung };
  * `exclude` is applied to both flows alike, for a Next/skip control (N6) that
  * should be able to skip the currently-offered passage regardless of which
  * flow is running.
+ *
+ * `passage` (N6's third `Flow` variant, `state.ts`) names one specific
+ * passage the user was already looking at rather than a rule for choosing
+ * among several, so there is nothing here for it to pick - it returns `null`.
+ * In practice this case is never reached: the Next/skip control this function
+ * exists for is not shown when the current flow is `passage` (see the note on
+ * `NavState.flow` in `state.ts`), and no other caller passes one either.
  */
 export function pickFlowTarget(
   plan: PlanView,
@@ -442,11 +440,24 @@ export function pickFlowTarget(
   now: number,
   exclude?: ReadonlySet<number>,
 ): PracticeTarget | null {
-  if (flow.kind === 'variety') {
-    return pickDueTarget(plan, now, exclude) ?? pickStartTarget(plan, now, exclude);
-  }
+  switch (flow.kind) {
+    case 'variety':
+      return pickDueTarget(plan, now, exclude) ?? pickStartTarget(plan, now, exclude);
 
-  const rung = flow.rung;
+    case 'passage':
+      return null;
+
+    case 'activity':
+      return pickActivityTarget(plan, flow.rung, now, exclude);
+  }
+}
+
+function pickActivityTarget(
+  plan: PlanView,
+  rung: Rung,
+  now: number,
+  exclude?: ReadonlySet<number>,
+): PracticeTarget | null {
   const candidates = plan.passages.filter((pv) => {
     if (exclude?.has(pv.passage.id)) return false;
     const rv = pv.rungs.find((r) => r.rung === rung);

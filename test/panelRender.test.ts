@@ -73,7 +73,7 @@ import type {
   VerseText,
 } from '../src/types';
 import type { PanelHost } from '../src/ui/host';
-import type { NavAction } from '../src/ui/state';
+import type { Flow, NavAction } from '../src/ui/state';
 import { breadcrumb, icon, type Crumb, type IconName } from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { renderPassage } from '../src/ui/scripture';
@@ -517,7 +517,8 @@ class TestHost implements PanelHost {
   readonly requests: PanelRequest[] = [];
   readonly announcements: string[] = [];
   readonly navigations: NavAction[] = [];
-  readonly sessionsStarted: { passageId: number; rung?: Rung; restart?: boolean }[] = [];
+  readonly sessionsStarted: { passageId: number; rung?: Rung; restart?: boolean; flow?: Flow }[] = [];
+  readonly flowsStarted: { flow: Flow; exclude?: ReadonlySet<number> }[] = [];
   readonly openedVerses: number[] = [];
   reloads = 0;
   activeReference: string | null = null;
@@ -554,8 +555,12 @@ class TestHost implements PanelHost {
     this.reloads += 1;
   }
 
-  async startSession(passageId: number, rung?: Rung, restart?: boolean): Promise<void> {
-    this.sessionsStarted.push({ passageId, rung, restart });
+  async startSession(passageId: number, rung?: Rung, restart?: boolean, flow?: Flow): Promise<void> {
+    this.sessionsStarted.push({ passageId, rung, restart, flow });
+  }
+
+  async startFlow(flow: Flow, exclude?: ReadonlySet<number>): Promise<void> {
+    this.flowsStarted.push({ flow, exclude });
   }
 
   openInBible(verseId: number): void {
@@ -576,14 +581,23 @@ let container: HTMLElement;
 let host: TestHost;
 let view: PracticeView | null = null;
 
-/** Mounts a practice view with the standard Psalm 1 context available. */
+/**
+ * Mounts a practice view with the standard Psalm 1 context available.
+ *
+ * `flow` defaults to `undefined`, letting `PracticeView`'s own constructor
+ * default apply (`{ kind: 'passage', passageId }`, no Next button) - the same
+ * "existing calls keep behaving exactly as they did" reasoning its own
+ * default documents.
+ */
 async function mountPractice(
   step: Step | null,
   over: Partial<SessionView> = {},
   contextReply?: PanelReply<PassageContext>,
+  flow?: Flow,
 ): Promise<PracticeView> {
   host.handlers.getContext = () => contextReply ?? { ok: true, data: psalmContext() };
-  const practice = new PracticeView(host, session(step, over));
+  const practice =
+    flow !== undefined ? new PracticeView(host, session(step, over), flow) : new PracticeView(host, session(step, over));
   practice.mount(container);
   await settle();
   view = practice;
@@ -2462,5 +2476,94 @@ describe("the practice screen's activity tab strip", () => {
     expect(practice.root.querySelectorAll('[role="tab"]').length).toBe(0);
     // The exercise itself is already usable.
     expect(practice.root.querySelectorAll('.sm-blank').length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. The practice screen's Next button (N6, Decision 4)
+// ---------------------------------------------------------------------------
+
+describe("the practice screen's Next button", () => {
+  /** The breadcrumb's own action slot, where the Next button lives. */
+  function nextButton(root: HTMLElement): HTMLButtonElement | null {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-crumbs-actions button')).find(
+      (b) => b.textContent === 'Next',
+    ) ?? null;
+  }
+
+  it('is omitted for a passage flow (every call today, and PracticeView\'s own default)', async () => {
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+    expect(nextButton(practice.root)).toBeNull();
+  });
+
+  it('is omitted for an explicit passage flow, mid-exercise and on the summary screen alike', async () => {
+    const flow: Flow = { kind: 'passage', passageId: 1 };
+    const midExercise = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' }, undefined, flow);
+    expect(nextButton(midExercise.root)).toBeNull();
+
+    const onSummary = await mountPractice(null, { rung: 'blanks' }, undefined, flow);
+    expect(nextButton(onSummary.root)).toBeNull();
+  });
+
+  it('is shown for a variety flow', async () => {
+    const flow: Flow = { kind: 'variety' };
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' }, undefined, flow);
+    expect(nextButton(practice.root)).not.toBeNull();
+  });
+
+  it('is shown for an activity flow, including on the summary screen (no step)', async () => {
+    const flow: Flow = { kind: 'activity', rung: 'blanks' };
+    const practice = await mountPractice(null, { rung: 'blanks' }, undefined, flow);
+    expect(nextButton(practice.root)).not.toBeNull();
+  });
+
+  it('ends the session, then starts the flow again excluding the passage just left', async () => {
+    let endSessionCalled = false;
+    host.handlers.endSession = () => {
+      endSessionCalled = true;
+      return { ok: true, data: { summary: null } };
+    };
+    const flow: Flow = { kind: 'variety' };
+    const practice = await mountPractice(
+      blanksStep(PSALM_1_2, BLANKED),
+      { rung: 'blanks', passageId: 42 },
+      undefined,
+      flow,
+    );
+
+    nextButton(practice.root)!.click();
+    await settle();
+
+    expect(endSessionCalled).toBe(true);
+    // The Home crumb's own ending is a `sessionEnded` nav action - Next
+    // reuses the exact same `endSession`, so it must go through the same
+    // path (preserving the resume point, per the design doc) rather than a
+    // bespoke one.
+    expect(host.navigations).toContainEqual({ type: 'sessionEnded' });
+
+    expect(host.flowsStarted).toEqual([{ flow, exclude: new Set([42]) }]);
+  });
+
+  it('does not throw when the flow it re-runs finds nothing to start', async () => {
+    // `startFlow`'s own no-target degrade (announcing and stopping, mirroring
+    // `startNextDue`'s handling of the same situation - see `panel.ts`) is
+    // the real `PanelHost`'s job, not this view's: PracticeView only has to
+    // call `endSession` and hand off to `host.startFlow` without crashing,
+    // whatever that call eventually does or does not find. The stub host
+    // here does nothing at all in `startFlow`, which is the sharpest version
+    // of "found nothing" this view could be handed.
+    host.handlers.endSession = () => ({ ok: true, data: { summary: null } });
+    const flow: Flow = { kind: 'activity', rung: 'blanks' };
+    const practice = await mountPractice(
+      blanksStep(PSALM_1_2, BLANKED),
+      { rung: 'blanks', passageId: 5 },
+      undefined,
+      flow,
+    );
+
+    expect(() => nextButton(practice.root)!.click()).not.toThrow();
+    await settle();
+
+    expect(host.flowsStarted).toEqual([{ flow, exclude: new Set([5]) }]);
   });
 });

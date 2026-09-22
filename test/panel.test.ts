@@ -52,11 +52,11 @@ import {
   suggestedRungFor,
   wordCore,
 } from '../src/ui/format';
-import type { Flow } from '../src/ui/format';
 import { ACTIVITY_TILES } from '../src/ui/activities';
 import { MIN_PASSAGES_FOR_REFMATCH } from '../src/ladder';
 import { blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { INITIAL_NAV, navReduce, sameView } from '../src/ui/state';
+import type { Flow } from '../src/ui/state';
 import { resolveWrongPositions, revealedWord } from '../src/ui/stepResult';
 import type { HiddenWords } from '../src/ui/stepResult';
 
@@ -515,6 +515,15 @@ describe('pickFlowTarget', () => {
     ]);
     expect(pickFlowTarget(p, { kind: 'activity', rung: 'ordering' }, now)).toBeNull();
   });
+
+  it('for a passage flow, always returns null - it names one passage, not a rule to pick among several', () => {
+    // Unreached via the UI (the Next button that calls this is never shown
+    // for a `passage` flow - see `state.ts#NavState.flow`), but the
+    // signature accepts all three `Flow` kinds, so this is exercised
+    // directly.
+    const p = plan(now);
+    expect(pickFlowTarget(p, { kind: 'passage', passageId: 10 }, now)).toBeNull();
+  });
 });
 
 describe('sortPassagesByNeed', () => {
@@ -849,7 +858,13 @@ describe('calendarWeeks', () => {
 describe('navReduce', () => {
   it('returns a session started from the plan to the plan', () => {
     let state = INITIAL_NAV;
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's1', passageId: 1, rung: 'blanks' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 's1',
+      passageId: 1,
+      rung: 'blanks',
+      flow: { kind: 'passage', passageId: 1 },
+    });
     expect(state.view).toEqual({ name: 'practice', sessionId: 's1' });
 
     state = navReduce(state, { type: 'sessionEnded' });
@@ -861,7 +876,13 @@ describe('navReduce', () => {
     // the top level afterwards loses their place, which is the whole reason
     // this reducer holds a `returnTo` at all.
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 42 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's2', passageId: 42, rung: 'ordering' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 's2',
+      passageId: 42,
+      rung: 'ordering',
+      flow: { kind: 'passage', passageId: 42 },
+    });
     state = navReduce(state, { type: 'sessionEnded' });
 
     expect(state.view).toEqual({ name: 'passage', passageId: 42, rung: 'ordering' });
@@ -874,7 +895,13 @@ describe('navReduce', () => {
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 42 });
     expect(state.view).toEqual({ name: 'passage', passageId: 42, rung: null });
 
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's3', passageId: 42, rung: 'blanks' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 's3',
+      passageId: 42,
+      rung: 'blanks',
+      flow: { kind: 'passage', passageId: 42 },
+    });
     expect(state.returnTo).toEqual({ name: 'passage', passageId: 42, rung: 'blanks' });
 
     state = navReduce(state, { type: 'sessionEnded' });
@@ -883,9 +910,21 @@ describe('navReduce', () => {
 
   it('does not let practice become its own return target', () => {
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'a', passageId: 7, rung: 'ordering' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 'a',
+      passageId: 7,
+      rung: 'ordering',
+      flow: { kind: 'passage', passageId: 7 },
+    });
     // A second session started without ending the first - "Practice again".
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'b', passageId: 7, rung: 'ordering' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 'b',
+      passageId: 7,
+      rung: 'ordering',
+      flow: { kind: 'passage', passageId: 7 },
+    });
 
     expect(state.view).toEqual({ name: 'practice', sessionId: 'b' });
     expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
@@ -898,18 +937,40 @@ describe('navReduce', () => {
     // launched from - not be overwritten with the second session's passage
     // or rung, and not become practice itself either.
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'a', passageId: 7, rung: 'ordering' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 'a',
+      passageId: 7,
+      rung: 'ordering',
+      flow: { kind: 'passage', passageId: 7 },
+    });
     expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
 
     // Switch rung mid-flow on the same passage.
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'b', passageId: 7, rung: 'blanks' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 'b',
+      passageId: 7,
+      rung: 'blanks',
+      flow: { kind: 'passage', passageId: 7 },
+    });
     expect(state.view).toEqual({ name: 'practice', sessionId: 'b' });
     expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
 
     // "Next due" moves to an entirely different passage.
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 'c', passageId: 99, rung: 'refmatch' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 'c',
+      passageId: 99,
+      rung: 'refmatch',
+      flow: { kind: 'variety' },
+    });
     expect(state.view).toEqual({ name: 'practice', sessionId: 'c' });
     expect(state.returnTo).toEqual({ name: 'passage', passageId: 7, rung: 'ordering' });
+    // Unlike `returnTo`, `flow` is NOT pinned to the chain's first session -
+    // it names what the *current* session belongs to, so the third session's
+    // own flow replaces the first two's.
+    expect(state.flow).toEqual({ kind: 'variety' });
   });
 
   it('clears a stale return target when Analytics is opened', () => {
@@ -939,7 +1000,13 @@ describe('navReduce', () => {
     // Mid-answer is the worst possible moment to replace the screen. Only the
     // destination is repaired.
     let state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
-    state = navReduce(state, { type: 'sessionStarted', sessionId: 's', passageId: 7, rung: 'ordering' });
+    state = navReduce(state, {
+      type: 'sessionStarted',
+      sessionId: 's',
+      passageId: 7,
+      rung: 'ordering',
+      flow: { kind: 'passage', passageId: 7 },
+    });
     state = navReduce(state, { type: 'passageRemoved', passageId: 7 });
 
     expect(state.view).toEqual({ name: 'practice', sessionId: 's' });
@@ -959,6 +1026,78 @@ describe('navReduce', () => {
   it('goPassage without a rung sets it to null (suggested)', () => {
     const state = navReduce(INITIAL_NAV, { type: 'goPassage', passageId: 7 });
     expect(state.view).toEqual({ name: 'passage', passageId: 7, rung: null });
+  });
+
+  // -------------------------------------------------------------------------
+  // flow (N6, Decision 4)
+  // -------------------------------------------------------------------------
+
+  it('has no flow before any session has started', () => {
+    expect(INITIAL_NAV.flow).toBeNull();
+  });
+
+  it('records the flow a session started with', () => {
+    const activity: Flow = { kind: 'activity', rung: 'blanks' };
+    const state = navReduce(INITIAL_NAV, {
+      type: 'sessionStarted',
+      sessionId: 's1',
+      passageId: 1,
+      rung: 'blanks',
+      flow: activity,
+    });
+    expect(state.flow).toEqual(activity);
+  });
+
+  it('carries flow forward, unreset, through actions that are not sessionStarted', () => {
+    // Only `sessionStarted` is documented as writing `flow`; every other
+    // action - even ones that reset `view`/`returnTo` outright, like
+    // `goAnalytics` - carries whatever flow was already there forward
+    // unchanged. It is only ever read while `view.name === 'practice'`, so a
+    // stale value sitting here between sessions is harmless.
+    const variety: Flow = { kind: 'variety' };
+    let state = navReduce(INITIAL_NAV, {
+      type: 'sessionStarted',
+      sessionId: 's1',
+      passageId: 1,
+      rung: 'blanks',
+      flow: variety,
+    });
+    state = navReduce(state, { type: 'sessionEnded' });
+    expect(state.flow).toEqual(variety);
+
+    state = navReduce(state, { type: 'goAnalytics' });
+    expect(state.flow).toEqual(variety);
+
+    state = navReduce(state, { type: 'goSettings' });
+    expect(state.flow).toEqual(variety);
+
+    state = navReduce(state, { type: 'goPlan' });
+    expect(state.flow).toEqual(variety);
+
+    state = navReduce(state, { type: 'goPassage', passageId: 5 });
+    expect(state.flow).toEqual(variety);
+  });
+
+  it('carries flow forward through passageRemoved, on both the stranded and untouched paths', () => {
+    const activity: Flow = { kind: 'activity', rung: 'ordering' };
+    let state = navReduce(INITIAL_NAV, {
+      type: 'sessionStarted',
+      sessionId: 's1',
+      passageId: 1,
+      rung: 'ordering',
+      flow: activity,
+    });
+    state = navReduce(state, { type: 'sessionEnded' }); // back to plan, flow persists
+    state = navReduce(state, { type: 'goPassage', passageId: 7 });
+
+    // Stranded: the current passage screen is the one removed.
+    const stranded = navReduce(state, { type: 'passageRemoved', passageId: 7 });
+    expect(stranded.flow).toEqual(activity);
+
+    // Untouched: some other passage is removed - the `default`-like early
+    // return in `passageRemoved` still has to carry `flow`, not drop it.
+    const untouched = navReduce(state, { type: 'passageRemoved', passageId: 999 });
+    expect(untouched.flow).toEqual(activity);
   });
 });
 
