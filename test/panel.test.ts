@@ -111,6 +111,7 @@ function planOf(passages: PassageView[]): PlanView {
     collectionName: 'My plan',
     totalDue: 0,
     defaultAnswerMode: 'firstLetter',
+    sortOrder: 'bible',
     passages,
   };
 }
@@ -121,6 +122,7 @@ function plan(now: number): PlanView {
     collectionName: 'My plan',
     totalDue: 3,
     defaultAnswerMode: 'firstLetter',
+    sortOrder: 'bible',
     passages: [
       {
         passage: {

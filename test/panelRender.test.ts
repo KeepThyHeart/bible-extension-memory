@@ -61,6 +61,7 @@ import type {
   PanelRequest,
   Passage,
   PassageContext,
+  PassageSortOrder,
   PassageView,
   PlanView,
   RequestMap,
@@ -441,6 +442,7 @@ function emptyPlan(): PlanView {
     passages: [],
     totalDue: 0,
     defaultAnswerMode: 'firstLetter',
+    sortOrder: 'bible',
   };
 }
 
@@ -1442,6 +1444,7 @@ describe('the plan row', () => {
       collectionName: 'My plan',
       totalDue: 0,
       defaultAnswerMode: 'firstLetter',
+      sortOrder: 'bible',
       passages: [pv],
     };
   }
@@ -1509,6 +1512,136 @@ describe('the plan row', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 7a-2. The passage list's heading and sort control (M4, decisions 10 and 12)
+// ---------------------------------------------------------------------------
+
+describe('the passage list sort control', () => {
+  function planWithSort(passages: PassageView[], sortOrder: PassageSortOrder): PlanView {
+    return {
+      collectionId: 1,
+      collectionName: 'My plan',
+      totalDue: 0,
+      defaultAnswerMode: 'firstLetter',
+      sortOrder,
+      passages,
+    };
+  }
+
+  /**
+   * Two passages whose "bible order" (array order, as `store.ts#listPassages`
+   * would hand it back) disagrees with their "need" order: a well-practiced
+   * passage not due for a while, listed first, and a never-attempted one,
+   * listed second - `format.ts#sortPassagesByNeed` puts never-attempted
+   * passages ahead of anything merely leveled up, so 'need' order reverses
+   * this pair.
+   */
+  function needOrderDisagreesWithBibleOrder(): PassageView[] {
+    const wellPracticed = passageViewFixture({
+      passage: passageFixture({ id: 1, reference: 'Psalm 1:1-6' }),
+      bestLevel: 5,
+      dueCount: 0,
+      rungs: [rungView({ rung: 'blanks', level: 5, dueAt: NOW + 10 * 86_400_000 })],
+    });
+    const neverAttempted = passageViewFixture({
+      passage: passageFixture({ id: 2, reference: 'Romans 8:28-30' }),
+      bestLevel: 0,
+      dueCount: 0,
+      rungs: [rungView({ rung: 'blanks', level: 0, dueAt: null })],
+    });
+    return [wellPracticed, neverAttempted];
+  }
+
+  function rowReferences(root: HTMLElement): string[] {
+    return Array.from(root.querySelectorAll('.sm-row-ref')).map((el) => el.textContent ?? '');
+  }
+
+  it('renders the "Practice by Passage" heading with the sort select right above the list', () => {
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'bible'));
+    container.appendChild(root);
+
+    const heading = Array.from(root.querySelectorAll('h2')).find((h) => h.textContent === 'Practice by Passage');
+    expect(heading).toBeTruthy();
+
+    const select = root.querySelector<HTMLSelectElement>('.sm-select');
+    expect(select).toBeTruthy();
+    const options = Array.from(select!.querySelectorAll('option')).map((o) => ({
+      value: o.value,
+      label: o.textContent,
+    }));
+    expect(options).toEqual([
+      { value: 'bible', label: 'Bible order' },
+      { value: 'need', label: 'Needs practice' },
+    ]);
+
+    // The select sits directly above the passage `<ul>`, not merely
+    // somewhere on the screen.
+    const list = root.querySelector('.sm-list')!;
+    expect(select!.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('selects "Bible order" when plan.sortOrder is bible', () => {
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'bible'));
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('.sm-select')!;
+    expect(select.value).toBe('bible');
+  });
+
+  it('selects "Needs practice" when plan.sortOrder is need', () => {
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'need'));
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('.sm-select')!;
+    expect(select.value).toBe('need');
+  });
+
+  it('keeps plan.passages\' own order for "bible" - it is already ORDER BY start_verse_id, so nothing is re-sorted', () => {
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'bible'));
+    container.appendChild(root);
+
+    expect(rowReferences(root)).toEqual(['Psalm 1:1-6', 'Romans 8:28-30']);
+  });
+
+  it('reorders the list by need to practice for "need"', () => {
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'need'));
+    container.appendChild(root);
+
+    // Never-attempted outranks a merely well-leveled, not-yet-due passage -
+    // same rule `sortPassagesByNeed`'s own tests (panel.test.ts) cover.
+    expect(rowReferences(root)).toEqual(['Romans 8:28-30', 'Psalm 1:1-6']);
+  });
+
+  it('tells the worker and reloads when the sort choice is changed', async () => {
+    host.handlers.setPassageSortOrder = () => ({ ok: true, data: {} });
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'bible'));
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('.sm-select')!;
+    select.value = 'need';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'setPassageSortOrder', order: 'need' });
+    expect(host.reloads).toBeGreaterThan(0);
+  });
+
+  it('does not reload when persisting the choice fails', async () => {
+    host.handlers.setPassageSortOrder = () => ({ ok: false, error: 'boom' });
+    const root = renderPlan(host, planWithSort(needOrderDisagreesWithBibleOrder(), 'bible'));
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('.sm-select')!;
+    select.value = 'need';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'setPassageSortOrder', order: 'need' });
+    expect(host.reloads).toBe(0);
+    expect(host.announcements).toContain('boom');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 7b. The home screen's activity tile grid (round-2 UI review, M2)
 // ---------------------------------------------------------------------------
 
@@ -1519,6 +1652,7 @@ describe('the activity tile grid', () => {
       collectionName: 'My plan',
       totalDue: 0,
       defaultAnswerMode: 'firstLetter',
+      sortOrder: 'bible',
       passages,
     };
   }
@@ -1892,6 +2026,7 @@ describe('the settings screen', () => {
       collectionName: 'My plan',
       totalDue: 0,
       defaultAnswerMode: 'firstLetter',
+      sortOrder: 'bible',
       passages: [
         passageViewFixture({ passage: passageFixture({ id: 1, reference: 'Psalm 23:1-6', answerMode: 'fullWord' }) }),
         passageViewFixture({ passage: passageFixture({ id: 2, reference: 'John 3:16', answerMode: null }) }),
@@ -1910,6 +2045,7 @@ describe('the settings screen', () => {
       collectionName: 'My plan',
       totalDue: 0,
       defaultAnswerMode: 'firstLetter',
+      sortOrder: 'bible',
       passages: [
         passageViewFixture({ passage: passageFixture({ id: 7, reference: 'Psalm 23:1-6', answerMode: 'fullWord' }) }),
       ],
@@ -2519,6 +2655,7 @@ describe("the practice screen's activity tab strip", () => {
       collectionName: 'My plan',
       totalDue: 0,
       defaultAnswerMode: 'firstLetter',
+      sortOrder: 'bible',
       passages: [pv],
     };
   }

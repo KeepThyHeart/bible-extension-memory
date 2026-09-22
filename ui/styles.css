@@ -612,6 +612,17 @@ ul, ol {
   flex-wrap: wrap;
 }
 
+/* The "Practice by Passage" heading and its sort `<select>` (M4, decisions 10
+   and 12): same row, heading on the left, control on the right, wrapping
+   rather than truncating either one at the panel's narrowest width. */
+.sm-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sm-s2);
+}
+
 .sm-list {
   display: flex;
   flex-direction: column;

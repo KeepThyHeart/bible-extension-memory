@@ -401,6 +401,11 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       void api.panels.postMessage({ type: 'planChanged' });
       return {};
 
+    case 'setPassageSortOrder':
+      await store.setPassageSortOrder(req.order);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return {};
+
     case 'setPassageAnswerMode':
       await store.setPassageAnswerMode(req.passageId, req.mode);
       void api.panels.postMessage({ type: 'planChanged' });
@@ -505,6 +510,7 @@ async function buildPlanView(): Promise<PlanView> {
     passages: views,
     totalDue,
     defaultAnswerMode: await store.getDefaultAnswerMode(),
+    sortOrder: await store.getPassageSortOrder(),
   };
 }
 

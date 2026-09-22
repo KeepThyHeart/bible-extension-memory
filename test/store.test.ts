@@ -508,6 +508,30 @@ describe('answer mode', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Passage sort order (M4)
+// ---------------------------------------------------------------------------
+
+describe('passage sort order', () => {
+  it('defaults to bible order with no setting written', async () => {
+    const { store } = await freshStore();
+    expect(await store.getPassageSortOrder()).toBe('bible');
+  });
+
+  it('persists a changed sort order', async () => {
+    const { store } = await freshStore();
+    await store.setPassageSortOrder('need');
+    expect(await store.getPassageSortOrder()).toBe('need');
+  });
+
+  it('round-trips back to bible order explicitly', async () => {
+    const { store } = await freshStore();
+    await store.setPassageSortOrder('need');
+    await store.setPassageSortOrder('bible');
+    expect(await store.getPassageSortOrder()).toBe('bible');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Resume state
 // ---------------------------------------------------------------------------
 

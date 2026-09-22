@@ -20,6 +20,7 @@ import type {
   Card,
   Milestone,
   Passage,
+  PassageSortOrder,
   Rung,
 } from './types';
 import { applicableRungs, levelFromScore, WELL_LEARNED_LEVEL } from './ladder';
@@ -110,6 +111,9 @@ function stateLabelFor(level: number): string {
 
 const DEFAULT_ANSWER_MODE: AnswerMode = 'firstLetter';
 const SETTING_DEFAULT_ANSWER_MODE = 'defaultAnswerMode';
+
+const DEFAULT_PASSAGE_SORT_ORDER: PassageSortOrder = 'bible';
+const SETTING_PASSAGE_SORT_ORDER = 'passageSortOrder';
 
 export class MemoryStore {
   constructor(private readonly db: IExtensionDatabase) {}
@@ -212,6 +216,15 @@ export class MemoryStore {
 
   async setDefaultAnswerMode(mode: AnswerMode): Promise<void> {
     await this.setSetting(SETTING_DEFAULT_ANSWER_MODE, mode);
+  }
+
+  async getPassageSortOrder(): Promise<PassageSortOrder> {
+    const value = await this.getSetting(SETTING_PASSAGE_SORT_ORDER);
+    return value === 'need' ? 'need' : DEFAULT_PASSAGE_SORT_ORDER;
+  }
+
+  async setPassageSortOrder(order: PassageSortOrder): Promise<void> {
+    await this.setSetting(SETTING_PASSAGE_SORT_ORDER, order);
   }
 
   // -- cards ----------------------------------------------------------------

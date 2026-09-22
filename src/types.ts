@@ -173,6 +173,9 @@ export interface PassageView {
   wellLearned: boolean;
 }
 
+/** How the passage list orders its rows - see `format.ts#sortPassagesByNeed`. */
+export type PassageSortOrder = 'bible' | 'need';
+
 export interface PlanView {
   collectionId: number;
   collectionName: string;
@@ -180,6 +183,8 @@ export interface PlanView {
   totalDue: number;
   /** The panel's current answer-mode default, so "Start practicing" etc. need no second fetch. */
   defaultAnswerMode: AnswerMode;
+  /** The passage list's current sort choice, so the list needs no second fetch either. */
+  sortOrder: PassageSortOrder;
 }
 
 /** The user's answer-mode preference, and how it applies. */
@@ -431,6 +436,7 @@ export type PanelRequest =
   | { type: 'getAnalytics' }
   | { type: 'getSettings' }
   | { type: 'setDefaultAnswerMode'; mode: AnswerMode }
+  | { type: 'setPassageSortOrder'; order: PassageSortOrder }
   | { type: 'setPassageAnswerMode'; passageId: number; mode: AnswerMode | null }
   | { type: 'getContext'; passageId: number }
   | { type: 'addPassage'; reference: string }
@@ -460,6 +466,7 @@ export interface RequestMap {
   getAnalytics: AnalyticsView;
   getSettings: SettingsView;
   setDefaultAnswerMode: Record<string, never>;
+  setPassageSortOrder: Record<string, never>;
   setPassageAnswerMode: Record<string, never>;
   getContext: PassageContext;
   addPassage: { passage: Passage };

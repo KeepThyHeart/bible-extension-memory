@@ -9,10 +9,10 @@
  * an empty list with nothing to press.
  */
 
-import type { Passage, PassageView, PlanView } from '../types';
+import type { Passage, PassageSortOrder, PassageView, PlanView } from '../types';
 import { append, button, el, focusQuietly, replace } from './dom';
 import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner, icon } from './components';
-import { RUNG_LABEL, activityAvailability, countLabel, pickStartTarget } from './format';
+import { RUNG_LABEL, activityAvailability, countLabel, pickStartTarget, sortPassagesByNeed } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
 import { ACTIVITY_TILES, type ActivityTile } from './activities';
 import type { Flow } from './state';
@@ -54,15 +54,74 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
 
   root.appendChild(renderActivityTiles(host, plan, now));
 
+  root.appendChild(renderPassageListHeader(host, plan));
+
+  // 'bible' is `plan.passages`'s own order already - `store.ts#listPassages`'s
+  // `ORDER BY start_verse_id` - so only 'need' asks `sortPassagesByNeed` (M1)
+  // to do anything.
+  const sortedPassages = plan.sortOrder === 'need' ? sortPassagesByNeed(plan.passages, now) : plan.passages;
+
   root.appendChild(
     el(
       'ul',
       { class: 'sm-list', attrs: { 'aria-label': 'Passages in this plan' } },
-      plan.passages.map((pv) => renderPassageRow(host, pv)),
+      sortedPassages.map((pv) => renderPassageRow(host, pv)),
     ),
   );
 
   return root;
+}
+
+// ---------------------------------------------------------------------------
+// Passage list heading and sort control (M4, decisions 10 and 12)
+// ---------------------------------------------------------------------------
+
+/**
+ * "Practice by Passage" heading plus the Bible-order / Needs-practice sort
+ * `<select>`, in one header row right above the passage list.
+ *
+ * The choice persists (a since-answered open question in decision 12's own
+ * text reversed the original "panel memory only" call): it rides on
+ * `PlanView.sortOrder`, set via the `setPassageSortOrder` RPC, mirroring how
+ * `passageView.ts#renderAnswerModeRow` persists its own per-passage answer
+ * mode. `host.reload()` re-fetches `getPlan` rather than re-sorting
+ * client-side, so what is shown always matches what a reload would show.
+ */
+function renderPassageListHeader(host: PanelHost, plan: PlanView): HTMLElement {
+  const select = el('select', {
+    class: 'sm-select',
+    id: 'sm-passage-sort',
+    attrs: { 'aria-label': 'Sort passages' },
+  }) as HTMLSelectElement;
+
+  const options: { value: PassageSortOrder; label: string }[] = [
+    { value: 'bible', label: 'Bible order' },
+    { value: 'need', label: 'Needs practice' },
+  ];
+
+  for (const opt of options) {
+    const optionEl = el('option', { value: opt.value, text: opt.label });
+    if (plan.sortOrder === opt.value) optionEl.selected = true;
+    select.appendChild(optionEl);
+  }
+
+  select.addEventListener('change', () => {
+    const order = select.value as PassageSortOrder;
+    select.disabled = true;
+    void host.request({ type: 'setPassageSortOrder', order }).then((reply) => {
+      select.disabled = false;
+      if (!reply.ok) {
+        host.announce(reply.error);
+        return;
+      }
+      host.reload();
+    });
+  });
+
+  return el('div', { class: 'sm-list-header' }, [
+    el('h2', { class: 'sm-block-title', text: 'Practice by Passage' }),
+    select,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
