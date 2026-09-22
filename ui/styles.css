@@ -700,6 +700,17 @@ ul, ol {
   align-self: flex-start;
 }
 
+/* The Lists block's own two link controls (P5's "+ New list" and P7's "Add a
+   suggested list…"), grouped on one row with a small gap between them so
+   they read as related but separate - rather than either stacked (reads as
+   unrelated) or run together with no gap at all (reads as one control). */
+.sm-list-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sm-s3);
+}
+
 /* ==========================================================================
    Plan
    ========================================================================== */
@@ -767,6 +778,27 @@ ul, ol {
 
 .sm-batch-list-item {
   font-family: var(--sm-bible-font);
+}
+
+/* One catalogue entry in the "Add a suggested list" modal (P7): name,
+   description, and its own "Add this list" button, stacked with a small
+   gap. `.sm-modal-body` already puts a larger gap between entries
+   themselves, so a second catalogue entry later reads as a clearly separate
+   card without any change here. */
+.sm-suggested-list-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s1);
+}
+
+.sm-suggested-list-name {
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-suggested-list-description {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
 }
 
 /* The "Practice by Passage" heading and its sort `<select>` (M4, decisions 10

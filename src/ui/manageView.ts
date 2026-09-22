@@ -4,7 +4,9 @@
  *
  * **The lists table (P5).** One row per `CollectionView` from `getCollections`
  * - every list, not just the active one `plan` is scoped to - with Edit
- * (rename) and Delete per row, plus a "+ New list" control. This replaces
+ * (rename) and Delete per row, plus a "+ New list" control and, alongside
+ * it, "Add a suggested list…" (P7 - see `renderSuggestedListsControl` below).
+ * This replaces
  * P1's placeholder wholesale: that shell rendered exactly one hardcoded row
  * (`plan.collectionName`) with Edit enabled and Delete permanently disabled,
  * per Decision 14's "until P4 lands" wording. P4 built the real multi-list
@@ -41,6 +43,7 @@ import { button, el, focusQuietly, replace } from './dom';
 import { breadcrumb, emptyState, errorBanner, modal } from './components';
 import { countLabel } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
+import { SUGGESTED_LISTS, type SuggestedList } from './suggestedLists';
 import type { PanelHost } from './host';
 
 export function renderManage(host: PanelHost, plan: PlanView): HTMLElement {
@@ -97,7 +100,10 @@ function renderListsBlock(host: PanelHost): HTMLElement {
     el('h2', { class: 'sm-block-title', text: 'Lists' }),
     listEl,
     errorSlot,
-    renderNewListControl(host, loadCollections),
+    el('div', { class: 'sm-list-controls' }, [
+      renderNewListControl(host, loadCollections),
+      renderSuggestedListsControl(host, loadCollections),
+    ]),
   ]);
 }
 
@@ -376,6 +382,122 @@ function renderNewListControl(host: PanelHost, reload: () => void): HTMLElement 
   });
 
   return el('div', { class: 'sm-new-list' }, [openBtn, modalSlot]);
+}
+
+/**
+ * "Add a suggested list…" (P7, item 19/Decision 19): a link next to
+ * "+ New list", styled the same way but kept in its own wrapper (grouped
+ * with a small gap via `renderListsBlock`'s `.sm-list-controls`) so the two
+ * are not confused - one creates an empty list, this one creates a
+ * populated one from the catalogue in `suggestedLists.ts`.
+ *
+ * The popup is a loop over `SUGGESTED_LISTS`, not a hand-written form: today
+ * there is exactly one entry (the human's own words - "one token list of the
+ * Romans Road for now"), but a second entry later needs no change here.
+ */
+function renderSuggestedListsControl(host: PanelHost, reload: () => void): HTMLElement {
+  const modalSlot = el('div', { class: 'sm-suggested-lists-modal-slot' });
+
+  function openSuggestedListsModal(): void {
+    const closeBtn = button('Close', () => handle.close(), { class: 'sm-btn sm-btn-quiet' });
+
+    // `() => handle.close()`, not `handle` itself: `handle` is assigned by
+    // `modal()` below, after this map runs, so each entry gets a closure
+    // that reads `handle` lazily (only once "Add this list" is actually
+    // pressed) rather than the value itself, which is not yet initialised.
+    const entries = SUGGESTED_LISTS.map((list) =>
+      renderSuggestedListEntry(host, list, () => handle.close(), reload),
+    );
+
+    const handle = modal({
+      title: 'Add a suggested list',
+      body: entries,
+      actions: [closeBtn],
+    });
+
+    replace(modalSlot, [handle.element]);
+    handle.open();
+  }
+
+  const openBtn = button('Add a suggested list…', openSuggestedListsModal, {
+    class: 'sm-btn sm-btn-quiet sm-btn-small sm-link-btn',
+  });
+
+  return el('div', { class: 'sm-suggested-lists' }, [openBtn, modalSlot]);
+}
+
+/**
+ * One catalogue entry inside the "Add a suggested list" modal: its name,
+ * description, and an "Add this list" button that creates the collection,
+ * seeds it and switches to it.
+ *
+ * **The active-collection subtlety.** `addPassage`'s RPC (`main.ts`) has no
+ * `collectionId` field on the request at all - it always resolves
+ * `resolveActiveCollectionId()` itself, i.e. whichever list is currently
+ * active. So the newly created list must be made active *before*
+ * `addReferences` runs below, or the seed references would land in
+ * whatever list the user had open instead of the one just created for them.
+ */
+function renderSuggestedListEntry(
+  host: PanelHost,
+  list: SuggestedList,
+  closeModal: () => void,
+  reload: () => void,
+): HTMLElement {
+  const errorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+  const addBtn = button('Add this list', () => void doAdd(), { class: 'sm-btn sm-btn-small sm-btn-primary' });
+
+  async function doAdd(): Promise<void> {
+    addBtn.disabled = true;
+    replace(errorSlot, []);
+
+    const createReply = await host.request({ type: 'createCollection', name: list.name });
+    if (!createReply.ok) {
+      addBtn.disabled = false;
+      replace(errorSlot, [errorBanner(createReply.error)]);
+      return;
+    }
+
+    // See the function-level note above: the new list has to become active
+    // before `addReferences` runs, since `addPassage` acts on whichever
+    // collection is active and is never told one explicitly.
+    const activeReply = await host.request({
+      type: 'setActiveCollection',
+      collectionId: createReply.data.id,
+    });
+    if (!activeReply.ok) {
+      addBtn.disabled = false;
+      replace(errorSlot, [errorBanner(activeReply.error)]);
+      return;
+    }
+
+    // The same helper the batch "add several at once" modal uses (M5/P3) -
+    // it already parses, adds, consolidates overlaps, announces and reloads
+    // on any success. Its outcome is still respected here rather than
+    // assumed clean, even though a curated reference list should never fail.
+    const outcome = await addReferences(host, list.references);
+
+    closeModal();
+
+    host.announce(
+      outcome.failed.length === 0
+        ? `Added ${list.name} (${countLabel(outcome.added.length, 'reference')}).`
+        : `Added ${list.name}: ${countLabel(outcome.added.length, 'reference')} added, ${countLabel(outcome.failed.length, 'reference')} failed.`,
+    );
+    // `addReferences` only reloads when at least one reference was added; the
+    // new (now active) list should still be shown even in the - curated-list
+    // - unlikely case that every reference failed, so this reload is
+    // unconditional rather than trusting that one.
+    reload();
+    host.reload();
+  }
+
+  return el('div', { class: 'sm-suggested-list-entry' }, [
+    el('h3', { class: 'sm-suggested-list-name', text: list.name }),
+    el('p', { class: 'sm-suggested-list-description', text: list.description }),
+    addBtn,
+    errorSlot,
+  ]);
 }
 
 // ---------------------------------------------------------------------------

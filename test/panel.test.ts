@@ -53,6 +53,7 @@ import {
   wordCore,
 } from '../src/ui/format';
 import { ACTIVITY_TILES } from '../src/ui/activities';
+import { SUGGESTED_LISTS } from '../src/ui/suggestedLists';
 import { MIN_PASSAGES_FOR_REFMATCH } from '../src/ladder';
 import { blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { INITIAL_NAV, navReduce, sameView } from '../src/ui/state';
@@ -656,6 +657,24 @@ describe('ACTIVITY_TILES', () => {
       rung: null,
       title: 'Provide Reference',
       subtext: 'The passage text is shown, and you type its reference.',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suggested lists catalogue (P7)
+// ---------------------------------------------------------------------------
+
+describe('SUGGESTED_LISTS', () => {
+  it('has exactly one seed entry today, the classic Romans Road reference set', () => {
+    expect(SUGGESTED_LISTS.length).toBe(1);
+
+    const romansRoad = SUGGESTED_LISTS[0]!;
+    expect(romansRoad).toMatchObject({
+      id: 'romans-road',
+      name: 'Romans Road',
+      description: 'Five verses from Romans, traditionally used to walk through the message of salvation.',
+      references: ['Romans 3:23', 'Romans 6:23', 'Romans 5:8', 'Romans 10:9-10', 'Romans 10:13'],
     });
   });
 });

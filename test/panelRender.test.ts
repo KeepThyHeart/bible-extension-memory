@@ -86,6 +86,7 @@ import {
 } from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { ACTIVITY_TILES } from '../src/ui/activities';
+import { SUGGESTED_LISTS } from '../src/ui/suggestedLists';
 import { renderPassage } from '../src/ui/scripture';
 import { PracticeView } from '../src/ui/practiceView';
 import { renderPlan } from '../src/ui/planView';
@@ -2362,6 +2363,173 @@ describe('the manage passages screen', () => {
 
     expect(host.requests.filter((r) => r.type === 'createCollection')).toEqual([]);
     expect(spokenText(root)).toContain('Give the list a name.');
+  });
+
+  // -------------------------------------------------------------------------
+  // "Add a suggested list…" (P7)
+  // -------------------------------------------------------------------------
+
+  describe('"Add a suggested list…"', () => {
+    /** The suggested-lists modal's own dialog, however it got opened. */
+    function suggestedDialog(root: HTMLElement): HTMLElement {
+      return root.querySelector<HTMLElement>('[role="dialog"]')!;
+    }
+
+    function suggestedBackdrop(root: HTMLElement): HTMLElement {
+      return root.querySelector<HTMLElement>('.sm-modal-backdrop')!;
+    }
+
+    function openSuggestedListsModal(root: HTMLElement): void {
+      Array.from(root.querySelectorAll('button'))
+        .find((b) => b.textContent === 'Add a suggested list…')!
+        .click();
+    }
+
+    it('opens the modal, showing the Romans Road entry\'s name, description and an "Add this list" button', () => {
+      const root = renderManage(host, managePlan());
+      container.appendChild(root);
+
+      openSuggestedListsModal(root);
+
+      expect(suggestedBackdrop(root).hidden).toBe(false);
+      const romansRoad = SUGGESTED_LISTS.find((l) => l.id === 'romans-road')!;
+      const dialogText = spokenText(suggestedDialog(root));
+      expect(dialogText).toContain(romansRoad.name);
+      expect(dialogText).toContain(romansRoad.description);
+      expect(
+        Array.from(suggestedDialog(root).querySelectorAll('button')).some((b) => b.textContent === 'Add this list'),
+      ).toBe(true);
+    });
+
+    it('closes again on Close without creating anything', () => {
+      const root = renderManage(host, managePlan());
+      container.appendChild(root);
+
+      openSuggestedListsModal(root);
+      Array.from(suggestedDialog(root).querySelectorAll('button')).find((b) => b.textContent === 'Close')!.click();
+
+      expect(suggestedBackdrop(root).hidden).toBe(true);
+      expect(host.requests.filter((r) => r.type === 'createCollection')).toEqual([]);
+    });
+
+    it(
+      'pressing "Add this list" creates the collection, activates it *before* adding, ' +
+        'adds all five Romans Road references, reloads, closes the modal and announces the result',
+      async () => {
+        const references = ['Romans 3:23', 'Romans 6:23', 'Romans 5:8', 'Romans 10:9-10', 'Romans 10:13'];
+        host.handlers.createCollection = (req) => ({ ok: true, data: { id: 42, name: req.name } });
+        host.handlers.setActiveCollection = () => ({ ok: true, data: {} });
+        // Distinct id and non-overlapping verse range per reference (as the
+        // batch-add tests above do): otherwise every stubbed passage shares
+        // `passageFixture`'s default range and `addReferences`'s own overlap
+        // consolidation collapses all five into one, which is not what this
+        // test is about.
+        host.handlers.addPassage = (req) => {
+          const index = references.indexOf(req.reference);
+          return {
+            ok: true,
+            data: {
+              passage: passageFixture({
+                id: 200 + index,
+                reference: req.reference,
+                startVerseId: 45000000 + index * 100,
+                endVerseId: 45000000 + index * 100 + 5,
+              }),
+            },
+          };
+        };
+
+        const root = renderManage(host, managePlan());
+        container.appendChild(root);
+        await settle();
+
+        openSuggestedListsModal(root);
+        Array.from(suggestedDialog(root).querySelectorAll('button'))
+          .find((b) => b.textContent === 'Add this list')!
+          .click();
+        // Two sequential requests (create, then activate) ahead of five more
+        // (one per reference) is a longer chain than `settle()`'s own six
+        // ticks comfortably covers elsewhere in this file - a second call
+        // lets it fully drain rather than asserting mid-chain.
+        await settle();
+        await settle();
+
+        expect(host.requests).toContainEqual({ type: 'createCollection', name: 'Romans Road' });
+        expect(host.requests).toContainEqual({ type: 'setActiveCollection', collectionId: 42 });
+        expect(
+          host.requests.filter((r) => r.type === 'addPassage').map((r) => (r as { reference: string }).reference),
+        ).toEqual(['Romans 3:23', 'Romans 6:23', 'Romans 5:8', 'Romans 10:9-10', 'Romans 10:13']);
+
+        // The new list must be made active *before* any addPassage - that RPC
+        // has no collectionId of its own and always acts on whichever
+        // collection is currently active (`main.ts#resolveActiveCollectionId`).
+        const createIndex = host.requests.findIndex((r) => r.type === 'createCollection');
+        const activeIndex = host.requests.findIndex((r) => r.type === 'setActiveCollection');
+        const firstAddIndex = host.requests.findIndex((r) => r.type === 'addPassage');
+        expect(createIndex).toBeLessThan(activeIndex);
+        expect(activeIndex).toBeLessThan(firstAddIndex);
+
+        expect(host.announcements).toContainEqual('Added Romans Road (5 references).');
+        expect(host.reloads).toBeGreaterThan(0);
+        expect(suggestedBackdrop(root).hidden).toBe(true);
+      },
+    );
+
+    it('reports a failed reference rather than swallowing it, and still reloads', async () => {
+      const references = ['Romans 3:23', 'Romans 6:23', 'Romans 5:8', 'Romans 10:9-10', 'Romans 10:13'];
+      host.handlers.createCollection = (req) => ({ ok: true, data: { id: 7, name: req.name } });
+      host.handlers.setActiveCollection = () => ({ ok: true, data: {} });
+      // Distinct id/range per reference - see the note in the test above.
+      host.handlers.addPassage = (req) => {
+        if (req.reference === 'Romans 5:8') return { ok: false, error: 'boom' };
+        const index = references.indexOf(req.reference);
+        return {
+          ok: true,
+          data: {
+            passage: passageFixture({
+              id: 300 + index,
+              reference: req.reference,
+              startVerseId: 46000000 + index * 100,
+              endVerseId: 46000000 + index * 100 + 5,
+            }),
+          },
+        };
+      };
+
+      const root = renderManage(host, managePlan());
+      container.appendChild(root);
+      await settle();
+
+      openSuggestedListsModal(root);
+      Array.from(suggestedDialog(root).querySelectorAll('button'))
+        .find((b) => b.textContent === 'Add this list')!
+        .click();
+      await settle();
+      await settle();
+
+      expect(host.announcements).toContainEqual('Added Romans Road: 4 references added, 1 reference failed.');
+      expect(host.reloads).toBeGreaterThan(0);
+    });
+
+    it('shows the worker\'s error and does not add references when createCollection itself fails', async () => {
+      host.handlers.createCollection = () => ({ ok: false, error: 'Could not create the list.' });
+
+      const root = renderManage(host, managePlan());
+      container.appendChild(root);
+      await settle();
+
+      openSuggestedListsModal(root);
+      Array.from(suggestedDialog(root).querySelectorAll('button'))
+        .find((b) => b.textContent === 'Add this list')!
+        .click();
+      await settle();
+
+      expect(spokenText(suggestedDialog(root))).toContain('Could not create the list.');
+      expect(host.requests.filter((r) => r.type === 'setActiveCollection')).toEqual([]);
+      expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+      // Left open so the error is visible, not closed as if it had worked.
+      expect(suggestedBackdrop(root).hidden).toBe(false);
+    });
   });
 
   it('lists every passage in the plan', () => {
