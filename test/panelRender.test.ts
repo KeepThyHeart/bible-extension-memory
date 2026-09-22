@@ -2347,15 +2347,86 @@ describe('empty and error states', () => {
     input.dispatchEvent(event);
   }
 
-  /** Clicks the "Add N passages" button in the batch-confirm preview. */
-  function confirmBatch(root: HTMLElement): void {
-    const confirm = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-batch-actions button')).find((b) =>
-      (b.textContent ?? '').startsWith('Add'),
-    )!;
-    confirm.click();
+  /** The "add several at once" modal's dialog element, however it got opened. */
+  function batchDialog(root: HTMLElement): HTMLElement {
+    return root.querySelector<HTMLElement>('[role="dialog"]')!;
   }
 
-  it('shows the parsed batch and waits for confirmation before adding anything', async () => {
+  /** The modal's own backdrop - `.hidden` is how open/closed is asserted. */
+  function batchBackdrop(root: HTMLElement): HTMLElement {
+    return root.querySelector<HTMLElement>('.sm-modal-backdrop')!;
+  }
+
+  /** A button inside the batch modal whose label starts with `label` (e.g. "Find", "Add", "Back", "Cancel"). */
+  function batchButton(root: HTMLElement, label: string): HTMLButtonElement {
+    return Array.from(batchDialog(root).querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+      (b.textContent ?? '').startsWith(label),
+    )!;
+  }
+
+  /** The "Add several passages at once…" link below the single-line field. */
+  function addSeveralLink(root: HTMLElement): HTMLButtonElement {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+      (b.textContent ?? '').startsWith('Add several passages at once'),
+    )!;
+  }
+
+  it('opens the batch modal, blank, with the exact hint text, from the "Add several passages at once…" link', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    addSeveralLink(root).click();
+
+    expect(batchBackdrop(root).hidden).toBe(false);
+    const dialog = batchDialog(root);
+    expect(spokenText(dialog)).toContain(
+      'Paste a list of references, or any text that has references in it, and they will be auto-detected.',
+    );
+    const textarea = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+    expect(textarea.tagName).toBe('TEXTAREA');
+    expect(textarea.getAttribute('rows')).toBe('8');
+    expect(textarea.value).toBe('');
+  });
+
+  it('parses the textarea and shows the confirm list, with the right count and lines, when Find references is pressed', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    addSeveralLink(root).click();
+    const textarea = batchDialog(root).querySelector<HTMLTextAreaElement>('textarea')!;
+    textarea.value = 'John 3:16\nRomans 8:28\nPsalm 23:1-6';
+    batchButton(root, 'Find').click();
+
+    const dialog = batchDialog(root);
+    expect(spokenText(dialog)).toContain('Add 3 passages?');
+    const items = Array.from(dialog.querySelectorAll('.sm-batch-list-item')).map((li) => li.textContent);
+    expect(items).toEqual(['John 3:16', 'Romans 8:28', 'Psalm 23:1-6']);
+    // Nothing sent to the worker yet - the list still needs to be confirmed.
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+  });
+
+  it('returns to the textarea, with its text preserved, when Back is pressed from the confirm view', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    addSeveralLink(root).click();
+    const textarea = batchDialog(root).querySelector<HTMLTextAreaElement>('textarea')!;
+    textarea.value = 'John 3:16\nRomans 8:28';
+    batchButton(root, 'Find').click();
+
+    batchButton(root, 'Back').click();
+
+    // Same modal, still open - Back is not Cancel.
+    expect(batchBackdrop(root).hidden).toBe(false);
+    const dialog = batchDialog(root);
+    const textareaAgain = dialog.querySelector<HTMLTextAreaElement>('textarea')!;
+    expect(textareaAgain.value).toBe('John 3:16\nRomans 8:28');
+    expect(spokenText(dialog)).toContain(
+      'Paste a list of references, or any text that has references in it, and they will be auto-detected.',
+    );
+  });
+
+  it('opens the batch modal, pre-filled and already parsed, when a multi-candidate paste lands on the field', async () => {
     host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
     const root = renderPlan(host, emptyPlan());
     container.appendChild(root);
@@ -2365,15 +2436,24 @@ describe('empty and error states', () => {
     await settle();
 
     // Nothing sent to the worker yet - task 0004's follow-up review asked for
-    // bulk-add "after confirmation", not on the paste itself.
+    // bulk-add "after confirmation", not on the paste itself. But the modal
+    // - not the old inline confirm slot - is what is showing it, landing
+    // straight on the confirm view exactly as the old inline slot did.
     expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
-    const text = spokenText(root);
+    expect(batchBackdrop(root).hidden).toBe(false);
+    const dialog = batchDialog(root);
+    const text = spokenText(dialog);
     expect(text).toContain('John 3:16');
     expect(text).toContain('Romans 8:28');
     expect(text).toContain('Psalm 23:1-6');
+    // The confirm view has no textarea of its own to check directly - Back
+    // is what proves the pre-fill actually reached it.
+    batchButton(root, 'Back').click();
+    const textarea = batchDialog(root).querySelector<HTMLTextAreaElement>('textarea')!;
+    expect(textarea.value).toBe('John 3:16\nRomans 8:28\nPsalm 23:1-6');
   });
 
-  it('adds every line of a pasted list as its own passage, one reference per line, once confirmed', async () => {
+  it('adds every line of a pasted list as its own passage, one reference per line, once confirmed, via the lifted addReferences helper', async () => {
     const references = ['John 3:16', 'Romans 8:28', 'Psalm 23:1-6'];
     // Distinct id and non-overlapping verse range per reference: three real,
     // unrelated passages, not three copies of the same row - so the batch's
@@ -2400,31 +2480,30 @@ describe('empty and error states', () => {
 
     pasteInto(input, references.join('\n'));
     await settle();
-    confirmBatch(root);
+    batchButton(root, 'Add').click();
     await settle();
 
     expect(host.requests.filter((r) => r.type === 'addPassage').map((r) => (r as { reference: string }).reference)).toEqual(
       references,
     );
-    // The batch is announced by count, not by leaving the field full of text.
-    expect(input.value).toBe('');
     expect(host.announcements.some((a) => a.includes('Added 3 passages'))).toBe(true);
     expect(host.reloads).toBeGreaterThan(0);
+    // Any success closes the modal.
+    expect(batchBackdrop(root).hidden).toBe(true);
   });
 
-  it('adds nothing, and clears the preview, when a pasted batch is cancelled', async () => {
+  it('adds nothing, and leaves the modal open on the textarea, when Cancel is pressed', () => {
     host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
     const root = renderPlan(host, emptyPlan());
     container.appendChild(root);
     const input = root.querySelector<HTMLInputElement>('input')!;
 
     pasteInto(input, 'John 3:16\nRomans 8:28');
-    await settle();
-    root.querySelector<HTMLButtonElement>('.sm-batch-actions button:last-child')!.click();
+    batchButton(root, 'Back').click();
+    batchButton(root, 'Cancel').click();
 
     expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
-    expect(spokenText(root)).not.toContain('Romans 8:28');
-    expect(input.disabled).toBe(false);
+    expect(batchBackdrop(root).hidden).toBe(true);
   });
 
   it('does not let a multi-line paste land in the single-line field as concatenated text', async () => {
@@ -2436,9 +2515,9 @@ describe('empty and error states', () => {
     pasteInto(input, 'John 3:16\nRomans 8:28');
     await settle();
 
-    // Never briefly or finally holds anything but what the batch handler put
-    // there itself (nothing, then cleared on success) - the paste's default
-    // insertion is what would otherwise garble this.
+    // The single-line field is never touched by a multi-candidate paste at
+    // all - the text goes straight into the modal's textarea instead (see
+    // above), so the field is left exactly as it was before the paste.
     expect(input.value).toBe('');
   });
 
@@ -2454,7 +2533,7 @@ describe('empty and error states', () => {
     // Not a single line handed through whole - two candidates, each its own
     // reference, extracted out of the surrounding prose.
     expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
-    const text = spokenText(root);
+    const text = spokenText(batchDialog(root));
     expect(text).toContain('John 3:16');
     expect(text).toContain('Romans 8:28');
     expect(text).not.toContain('Check out');
@@ -2477,7 +2556,7 @@ describe('empty and error states', () => {
 
     pasteInto(input, 'John 3:16-17\nJohn 3:16');
     await settle();
-    confirmBatch(root);
+    batchButton(root, 'Add').click();
     await settle();
 
     // Both were added (each is a real add on the worker), then the narrower
@@ -2493,7 +2572,7 @@ describe('empty and error states', () => {
     ).toBe(true);
   });
 
-  it('reports which lines of a pasted batch failed, each with the worker\'s own reason', async () => {
+  it('reports which lines of a pasted batch failed, each with the worker\'s own reason, without closing the modal', async () => {
     host.handlers.addPassage = (req) => {
       if (req.reference === 'Psalm 151:1') return { ok: false, error: '"Psalm 151:1" is not a passage in this Bible.' };
       return { ok: true, data: { passage: passageFixture({ reference: req.reference }) } };
@@ -2505,14 +2584,17 @@ describe('empty and error states', () => {
 
     pasteInto(input, 'John 3:16\nPsalm 151:1');
     await settle();
-    confirmBatch(root);
+    batchButton(root, 'Add').click();
     await settle();
 
     expect(host.announcements.some((a) => a.includes('Added 1 passage') && a.includes('1 failed'))).toBe(true);
-    expect(spokenText(root)).toContain('Psalm 151:1: "Psalm 151:1" is not a passage in this Bible.');
+    expect(spokenText(batchDialog(root))).toContain('Psalm 151:1: "Psalm 151:1" is not a passage in this Bible.');
+    // A partial failure leaves the modal open rather than discarding the rest
+    // of the batch's context.
+    expect(batchBackdrop(root).hidden).toBe(false);
   });
 
-  it('leaves a single-line paste to the field\'s normal behaviour', async () => {
+  it('leaves a single-line paste to the field\'s normal behaviour, without opening the modal', async () => {
     host.handlers.addPassage = () => ({ ok: false, error: 'should not be reached' });
     const root = renderPlan(host, emptyPlan());
     container.appendChild(root);
@@ -2524,6 +2606,24 @@ describe('empty and error states', () => {
     // A single reference is not a batch: the paste is left alone rather than
     // pre-empted, and nothing is submitted until the user presses Add or Enter.
     expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+    expect(root.querySelector('.sm-modal-backdrop')).toBeNull();
+  });
+
+  it('opens the same batch modal, pre-filled and parsed, when Enter is pressed on typed text naming more than one reference', async () => {
+    host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+    const input = root.querySelector<HTMLInputElement>('input')!;
+
+    input.value = 'John 3:16 and Romans 8:28';
+    root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(host.requests.filter((r) => r.type === 'addPassage')).toEqual([]);
+    expect(batchBackdrop(root).hidden).toBe(false);
+    const text = spokenText(batchDialog(root));
+    expect(text).toContain('John 3:16');
+    expect(text).toContain('Romans 8:28');
   });
 
   it('keeps the exercise usable when the surrounding context cannot be fetched', async () => {

@@ -11,7 +11,7 @@
 
 import type { Passage, PassageSortOrder, PassageView, PlanView } from '../types';
 import { append, button, el, focusQuietly, replace } from './dom';
-import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner, icon, menu } from './components';
+import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner, icon, menu, modal } from './components';
 import { RUNG_LABEL, activityAvailability, countLabel, pickStartTarget, sortPassagesByNeed } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
 import { ACTIVITY_TILES, type ActivityTile } from './activities';
@@ -210,6 +210,105 @@ function renderAddAndStart(host: PanelHost): HTMLElement {
 // ---------------------------------------------------------------------------
 
 /**
+ * What `addReferences` reports back once every add (and any overlap
+ * consolidation) has settled. Deliberately thin: it says only what happened,
+ * not what a caller's own UI should do about it - see `addReferences`'s own
+ * note for why.
+ */
+export interface AddReferencesOutcome {
+  /** References that ended up added, after this batch's own overlap consolidation. Original wording, not the worker's. */
+  added: string[];
+  /** One entry per reference that failed, each with the worker's own message. */
+  failed: { reference: string; error: string }[];
+}
+
+/**
+ * Adds one or more references, in order, consolidates any that overlap within
+ * this same batch, and announces + reloads on any success - the one code path
+ * both the single-line field and the "add several at once" modal call, so the
+ * overlap consolidation and the announced wording are the same regardless of
+ * which UI a reference came in through (P3, lifted out of what was a closure
+ * inside `renderAddPassage`).
+ *
+ * A single reference keeps the original wording ("Added John 3:16.") so the
+ * common case reads exactly as it always has. A batch reports counts rather
+ * than naming every passage - the plan list is about to show them all anyway.
+ *
+ * This is deliberately decoupled from any one form's DOM: it does not touch
+ * `submit.disabled`/`input.disabled`/an error slot/`input.value` the way the
+ * old closure did, because two different UIs (a single-line input, a modal's
+ * textarea-then-confirm) each own that furniture differently. Instead it
+ * returns an `AddReferencesOutcome` with enough information - which
+ * references actually ended up added, and which failed with what message -
+ * for each caller to update its own inputs, its own error slot and its own
+ * focus. `host.announce` and `host.reload()` stay here rather than moving to
+ * callers because the wording and the "reload only on any success" rule are
+ * shared, not per-UI.
+ */
+export async function addReferences(host: PanelHost, references: string[]): Promise<AddReferencesOutcome> {
+  const addedPassages: Passage[] = [];
+  const failed: { reference: string; error: string }[] = [];
+
+  for (const reference of references) {
+    // Sequential, not `Promise.all` - these become real database rows and a
+    // race between them buys nothing while risking an interleaving no one
+    // asked for.
+    const reply = await host.request({ type: 'addPassage', reference });
+    if (reply.ok) addedPassages.push(reply.data.passage);
+    else failed.push({ reference, error: reply.error });
+  }
+
+  // Consolidate this batch's own overlaps ("if John 3:16-17 is in there,
+  // John 3:16 separately should be ignored" - task 0004's review). A passage
+  // id repeated in `addedPassages` (the same reference pasted twice, or two
+  // spellings that resolved to the same range) is collapsed to one entry
+  // first, so the range check below never mistakes "the same row twice" for
+  // "one range containing another" and removes the passage the user is
+  // trying to keep.
+  const distinct = dedupeById(addedPassages);
+  const { kept: survivors, dropped: subsumed } = dropContainedRanges(distinct);
+  const kept = [...survivors];
+  const dropped: Passage[] = [];
+  for (const passage of subsumed) {
+    // If removal itself fails - the passage disappeared already, a stray
+    // storage error - it is left counted as kept rather than reported gone
+    // while still sitting in the plan.
+    const reply = await host.request({ type: 'removePassage', passageId: passage.id });
+    if (reply.ok) dropped.push(passage);
+    else kept.push(passage);
+  }
+
+  const added = kept.map((p) => p.reference);
+
+  if (added.length > 0) {
+    const mergedNote =
+      dropped.length > 0
+        ? ` ${countLabel(dropped.length, 'reference')} already covered by another passage in this batch.`
+        : '';
+    host.announce(
+      added.length === 1 && failed.length === 0 && dropped.length === 0
+        ? `Added ${added[0]}.`
+        : failed.length === 0
+          ? `Added ${countLabel(added.length, 'passage')}.${mergedNote}`
+          : `Added ${countLabel(added.length, 'passage')}; ${failed.length} failed.${mergedNote}`,
+    );
+    host.reload();
+  }
+
+  return { added, failed };
+}
+
+/**
+ * The message a caller shows for one failed reference: the worker's reason
+ * verbatim for a lone reference, or prefixed with the reference itself when
+ * it was one line among several - the same rule `addReferences`'s old inline
+ * closure applied, now shared by both of its callers below.
+ */
+function addFailureMessage(references: string[], failure: { reference: string; error: string }): string {
+  return references.length === 1 ? failure.error : `${failure.reference}: ${failure.error}`;
+}
+
+/**
  * The add-passage field.
  *
  * The error slot below the field is populated with whatever the worker said,
@@ -233,13 +332,27 @@ function renderAddAndStart(host: PanelHost): HTMLElement {
  * is treated as a batch and never touches the input's value at all, so the
  * field never ends up holding a jumble of concatenated text.
  *
- * **Confirming a batch.** A follow-up review round asked that a pasted batch
- * be "auto-parsed and added in bulk (after confirmation)" rather than added
- * the instant the paste lands - a paste can carry far more than the intended
- * references (a whole verse list copied with a heading, say), and adding
- * every line unseen is the one place in this form that cannot be undone with
- * Ctrl+Z. So a multi-candidate paste shows the parsed list and waits for "Add
- * all" (or "Cancel") rather than calling the worker immediately.
+ * **The "add several at once" modal (P3).** A pasted or typed batch, and the
+ * "Add several passages at once…" link below the field, all open the same
+ * modal (`openBatchModal` below): a `<textarea>` plus "Find references",
+ * which swaps to a confirm view - the parsed list plus "Add N passages" /
+ * "Back" - built from the same markup shape the old inline confirm slot used.
+ * A paste or an Enter press that names more than one reference pre-fills the
+ * textarea with what was pasted/typed and runs "Find references"
+ * immediately, landing straight on the confirm view exactly as the old
+ * inline slot did; opening the modal from the link starts blank instead,
+ * since there is nothing yet to parse. "Back" returns to the textarea with
+ * its text untouched, so nothing already typed has to be retyped.
+ *
+ * A fresh `modal()` is built on every open (`components.ts#modal`'s own
+ * note): `batchModalSlot` holds at most one at a time, and opening again -
+ * from the link, or from another paste - replaces whatever was there,
+ * letting the previous instance and its listeners go rather than reusing one
+ * long-lived dialog across unrelated sessions. Within one open session,
+ * though, "Find references" and "Back" swap the same modal's body in place
+ * (`showEntry`/`showConfirm` below both `replace()` the same `body` element)
+ * rather than closing and reopening - that swap would be a jarring way to
+ * answer one click.
  *
  * **Sprinkled references, and consolidating overlaps.** A further round asked
  * for two more things: pasting "lots of text with random verse references
@@ -247,7 +360,7 @@ function renderAddAndStart(host: PanelHost): HTMLElement {
  * batch that names both a range and one of its own verses ("if John 3:16-17
  * is in there, John 3:16 separately should be ignored"). The first is
  * `extractReferenceCandidates`'s job; the second happens after every
- * candidate has been added, in `addReferences` below, since only the worker
+ * candidate has been added, in `addReferences` above, since only the worker
  * knows each reference's real verse range.
  */
 function renderAddPassage(host: PanelHost): HTMLElement {
@@ -276,10 +389,14 @@ function renderAddPassage(host: PanelHost): HTMLElement {
   const submit = el('button', { class: 'sm-btn', text: 'Add' }) as HTMLButtonElement;
   submit.type = 'submit';
 
-  // Populated only while a pasted batch is awaiting "Add all" / "Cancel".
-  // Kept outside the `<form>` so it survives independently of a submit or
-  // reset the form might otherwise trigger.
-  const batchConfirmSlot = el('div', { class: 'sm-batch-confirm-slot' });
+  // Holds the batch modal while it is open - at most one at a time (see the
+  // header note above for why a fresh `modal()` replaces whatever is here on
+  // every open rather than one instance being reused).
+  const batchModalSlot = el('div', { class: 'sm-batch-modal-slot' });
+
+  const addSeveralLink = button('Add several passages at once…', () => openBatchModal(''), {
+    class: 'sm-btn sm-btn-quiet sm-btn-small sm-link-btn',
+  });
 
   const form = el('form', { class: 'sm-add' }, [
     el('label', { class: 'sm-label', text: 'Add passage', attrs: { for: 'sm-add-reference' } }),
@@ -289,124 +406,132 @@ function renderAddPassage(host: PanelHost): HTMLElement {
       class: 'sm-hint',
       text: 'Paste a list to add several at once - one reference per line.',
     }),
+    addSeveralLink,
   ]) as HTMLFormElement;
 
   /**
-   * Adds one or more references, in order, consolidates any that overlap
-   * within this same batch, and reports the outcome.
-   *
-   * A single reference keeps the original wording ("Added John 3:16.") so the
-   * common case reads exactly as it always has. A batch reports counts rather
-   * than naming every passage - the plan list below is about to show them all
-   * anyway - and any failures are listed individually, each with the worker's
-   * own message, so a batch of twenty that missed one bad line does not force
-   * a search for which one.
+   * Runs the lifted `addReferences` against this form's own field: disables
+   * it for the duration, and reports the outcome exactly as the old closure
+   * did - the field is cleared on any success, and a failure is shown in this
+   * form's own error slot with focus sent back to the field.
    */
-  async function addReferences(references: string[]): Promise<void> {
+  async function runAdd(references: string[]): Promise<void> {
     submit.disabled = true;
     input.disabled = true;
     replace(errorSlot, []);
 
-    const addedPassages: Passage[] = [];
-    const failed: { reference: string; error: string }[] = [];
-
-    for (const reference of references) {
-      // Sequential, not `Promise.all` - these become real database rows and a
-      // race between them buys nothing while risking an interleaving no one
-      // asked for.
-      const reply = await host.request({ type: 'addPassage', reference });
-      if (reply.ok) addedPassages.push(reply.data.passage);
-      else failed.push({ reference, error: reply.error });
-    }
-
-    // Consolidate this batch's own overlaps ("if John 3:16-17 is in there,
-    // John 3:16 separately should be ignored" - task 0004's review). A
-    // passage id repeated in `addedPassages` (the same reference pasted
-    // twice, or two spellings that resolved to the same range) is collapsed
-    // to one entry first, so the range check below never mistakes "the same
-    // row twice" for "one range containing another" and removes the passage
-    // the user is trying to keep.
-    const distinct = dedupeById(addedPassages);
-    const { kept: survivors, dropped: subsumed } = dropContainedRanges(distinct);
-    const kept = [...survivors];
-    const dropped: Passage[] = [];
-    for (const passage of subsumed) {
-      // If removal itself fails - the passage disappeared already, a stray
-      // storage error - it is left counted as kept rather than reported gone
-      // while still sitting in the plan.
-      const reply = await host.request({ type: 'removePassage', passageId: passage.id });
-      if (reply.ok) dropped.push(passage);
-      else kept.push(passage);
-    }
+    const outcome = await addReferences(host, references);
 
     submit.disabled = false;
     input.disabled = false;
 
-    const added = kept.map((p) => p.reference);
+    if (outcome.added.length > 0) input.value = '';
 
-    if (added.length > 0) {
-      input.value = '';
-      const mergedNote =
-        dropped.length > 0
-          ? ` ${countLabel(dropped.length, 'reference')} already covered by another passage in this batch.`
-          : '';
-      host.announce(
-        added.length === 1 && failed.length === 0 && dropped.length === 0
-          ? `Added ${added[0]}.`
-          : failed.length === 0
-            ? `Added ${countLabel(added.length, 'passage')}.${mergedNote}`
-            : `Added ${countLabel(added.length, 'passage')}; ${failed.length} failed.${mergedNote}`,
-      );
-      host.reload();
-    }
-
-    if (failed.length > 0) {
-      replace(
-        errorSlot,
-        failed.map((f) => errorBanner(references.length === 1 ? f.error : `${f.reference}: ${f.error}`)),
-      );
+    if (outcome.failed.length > 0) {
+      replace(errorSlot, outcome.failed.map((f) => errorBanner(addFailureMessage(references, f))));
       focusQuietly(input);
     }
   }
 
   /**
-   * Shows the parsed batch and waits for the user to confirm or cancel it,
-   * rather than adding it the instant the paste lands.
+   * Opens the "add several at once" modal - see the header note above for the
+   * overall shape. `prefill` is the pasted or typed text to seed the textarea
+   * with; a non-empty `prefill` also runs "Find references" immediately, so a
+   * paste or Enter naming several references lands straight on the confirm
+   * view the way the old inline slot did. The link's own call passes `''`
+   * and gets the blank textarea view instead.
    */
-  function showBatchConfirm(lines: string[]): void {
-    input.disabled = true;
-    submit.disabled = true;
+  function openBatchModal(prefill: string): void {
+    const textarea = el('textarea', {
+      class: 'sm-textarea',
+      id: 'sm-batch-textarea',
+      attrs: { rows: '8' },
+    }) as HTMLTextAreaElement;
+    textarea.value = prefill;
 
-    const cancel = (): void => {
-      replace(batchConfirmSlot, []);
-      input.disabled = false;
-      submit.disabled = false;
-      focusQuietly(input);
-    };
+    // Swapped in place between the textarea-entry view and the confirm view -
+    // see the header note above for why this happens within one modal
+    // instance rather than by closing and reopening.
+    const body = el('div', { class: 'sm-modal-batch-body' });
+    const handle = modal({ title: 'Add several passages at once', body: [body], actions: [] });
 
-    replace(batchConfirmSlot, [
-      el('div', { class: 'sm-batch-confirm', attrs: { role: 'alert' } }, [
+    function showEntry(): void {
+      const entryErrorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+      const cancelBtn = button('Cancel', () => handle.close(), { class: 'sm-btn sm-btn-quiet' });
+      const findBtn = button(
+        'Find references',
+        () => {
+          const candidates = extractReferenceCandidates(textarea.value);
+          if (candidates.length === 0) {
+            replace(entryErrorSlot, [errorBanner('Type or paste at least one reference first.')]);
+            focusQuietly(textarea);
+            return;
+          }
+          showConfirm(candidates);
+        },
+        { class: 'sm-btn sm-btn-primary' },
+      );
+
+      replace(body, [
+        el('label', { class: 'sm-label', text: 'References', attrs: { for: 'sm-batch-textarea' } }),
+        textarea,
+        el('p', {
+          class: 'sm-hint',
+          text: 'Paste a list of references, or any text that has references in it, and they will be auto-detected.',
+        }),
+        entryErrorSlot,
+        el('div', { class: 'sm-modal-actions' }, [cancelBtn, findBtn]),
+      ]);
+      focusQuietly(textarea);
+    }
+
+    function showConfirm(lines: string[]): void {
+      const confirmErrorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+      // "Back", not "Cancel" - this view returns to the textarea (its text
+      // preserved, since `textarea` is the same element throughout) rather
+      // than closing the modal, unlike the old inline confirm's "Cancel".
+      const backBtn = button('Back', () => showEntry(), { class: 'sm-btn sm-btn-quiet' });
+      const addBtn = button(
+        `Add ${countLabel(lines.length, 'passage')}`,
+        () => {
+          addBtn.disabled = true;
+          backBtn.disabled = true;
+          void addReferences(host, lines).then((outcome) => {
+            if (outcome.failed.length === 0) {
+              // A clean success closes the modal - the plan list below is
+              // about to show the result, mirroring the single-line field
+              // clearing itself on success rather than staying open on a
+              // stale form. A *partial* success (below) keeps the modal open
+              // instead, since there is still something on screen worth the
+              // user's attention: which lines failed and why.
+              handle.close();
+              return;
+            }
+            addBtn.disabled = false;
+            backBtn.disabled = false;
+            replace(confirmErrorSlot, outcome.failed.map((f) => errorBanner(addFailureMessage(lines, f))));
+          });
+        },
+        { class: 'sm-btn sm-btn-primary' },
+      );
+
+      replace(body, [
         el('p', { class: 'sm-hint', text: `Add ${countLabel(lines.length, 'passage')}?` }),
         el(
           'ul',
           { class: 'sm-batch-list' },
           lines.map((line) => el('li', { class: 'sm-batch-list-item', text: line })),
         ),
-        el('div', { class: 'sm-batch-actions' }, [
-          button(
-            `Add ${countLabel(lines.length, 'passage')}`,
-            () => {
-              replace(batchConfirmSlot, []);
-              input.disabled = false;
-              submit.disabled = false;
-              void addReferences(lines);
-            },
-            { class: 'sm-btn sm-btn-primary sm-btn-small' },
-          ),
-          button('Cancel', cancel, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
-        ]),
-      ]),
-    ]);
+        confirmErrorSlot,
+        el('div', { class: 'sm-modal-actions' }, [backBtn, addBtn]),
+      ]);
+    }
+
+    replace(batchModalSlot, [handle.element]);
+    handle.open();
+
+    if (prefill.trim().length > 0) showConfirm(extractReferenceCandidates(prefill));
+    else showEntry();
   }
 
   input.addEventListener('paste', (event: ClipboardEvent) => {
@@ -418,10 +543,10 @@ function renderAddPassage(host: PanelHost): HTMLElement {
       // entirely rather than let the browser drop it into a single-line
       // field, which - depending on the browser - can silently strip
       // newlines and concatenate references into unparseable garbage. The
-      // batch itself waits for confirmation (above) rather than going
-      // straight to the worker.
+      // batch opens the modal, pre-filled and already parsed, rather than
+      // going straight to the worker.
       event.preventDefault();
-      showBatchConfirm(candidates);
+      openBatchModal(text);
     }
   });
 
@@ -440,17 +565,17 @@ function renderAddPassage(host: PanelHost): HTMLElement {
     }
 
     // Typed text can also name more than one reference ("John 3:16 and
-    // Romans 8:28"); it gets the same confirm-first treatment as a pasted
-    // batch rather than adding several passages on one Enter press unseen.
+    // Romans 8:28"); it gets the same modal treatment as a pasted batch
+    // rather than adding several passages on one Enter press unseen.
     if (references.length > 1) {
-      showBatchConfirm(references);
+      openBatchModal(input.value);
       return;
     }
 
-    void addReferences(references);
+    void runAdd(references);
   });
 
-  return el('div', { class: 'sm-add-wrapper' }, [form, batchConfirmSlot]);
+  return el('div', { class: 'sm-add-wrapper' }, [form, batchModalSlot]);
 }
 
 // ---------------------------------------------------------------------------

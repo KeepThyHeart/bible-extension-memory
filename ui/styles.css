@@ -398,7 +398,7 @@ ul, ol {
 
    The one floating/popover surface in this file - `.sm-menu-panel` sits
    `position: absolute`, so it needs a background, border and depth cue of
-   its own rather than sitting flush with the page the way `.sm-batch-confirm`
+   its own rather than sitting flush with the page the way `.sm-callout`
    (an in-flow panel, not a popover) can get away with using only a border.
    `--sm-surface-raised` and `--sm-border` are already this file's tokens for
    "a card lifted off the page" and its edge (see `:root`'s own colour block);
@@ -509,6 +509,18 @@ ul, ol {
   flex-direction: column;
   gap: var(--sm-s3);
   color: var(--sm-text);
+}
+
+/* The "add several at once" modal's own body wrapper (P3,
+   `planView.ts#openBatchModal`): `modal()`'s `body` is fixed at construction,
+   so this one element is what the textarea-entry and confirm views actually
+   get replaced inside of, via `replace()`, rather than closing and reopening
+   the dialog between them - same flex-column layout as `.sm-modal-body`
+   itself, one level deeper. */
+.sm-modal-batch-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
 }
 
 /* Right-aligned rather than full-width: `actions` is typically a two-button
@@ -658,6 +670,36 @@ ul, ol {
   color: var(--sm-input-placeholder);
 }
 
+/* The "add several at once" modal's textarea (P3) - `.sm-input`'s own look,
+   widened to the full body column and made resizable rather than flexed next
+   to a button the way `.sm-input` normally sits. */
+.sm-textarea {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  width: 100%;
+  padding: var(--sm-s2);
+  border: 1px solid var(--sm-input-border);
+  border-radius: var(--sm-radius);
+  background: var(--sm-input-bg);
+  color: var(--sm-input-text);
+  resize: vertical;
+}
+
+.sm-textarea::placeholder {
+  color: var(--sm-input-placeholder);
+}
+
+/* A `.sm-btn-quiet` given the one extra cue a plain "link" reads by -
+   `.sm-btn-quiet` alone is already borderless and accent-coloured, which is
+   the flat "secondary control" look this panel already uses for crumbs and
+   the hamburger, but "Add several passages at once…" (P3) sits inline in a
+   hint-like spot rather than a button row and reads better underlined. */
+.sm-link-btn {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  align-self: flex-start;
+}
+
 /* ==========================================================================
    Plan
    ========================================================================== */
@@ -712,19 +754,9 @@ ul, ol {
   flex-direction: column;
 }
 
-/* The "Add N passages?" preview a pasted batch waits in until it is
-   confirmed or cancelled (task 0004 review: bulk-add "after confirmation"). */
-.sm-batch-confirm {
-  margin-top: var(--sm-s2);
-  padding: var(--sm-s3);
-  border: 1px solid var(--sm-accent);
-  border-radius: var(--sm-radius-lg);
-  background: var(--sm-accent-light);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sm-s2);
-}
-
+/* The parsed-lines list in the "add several at once" modal's confirm view
+   (P3, `planView.ts#openBatchModal`'s `showConfirm`) - the same markup shape
+   the old inline batch-confirm slot used for its own preview list. */
 .sm-batch-list {
   display: flex;
   flex-direction: column;
@@ -735,12 +767,6 @@ ul, ol {
 
 .sm-batch-list-item {
   font-family: var(--sm-bible-font);
-}
-
-.sm-batch-actions {
-  display: flex;
-  gap: var(--sm-s2);
-  flex-wrap: wrap;
 }
 
 /* The "Practice by Passage" heading and its sort `<select>` (M4, decisions 10
