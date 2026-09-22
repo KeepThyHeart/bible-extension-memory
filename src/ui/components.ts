@@ -62,11 +62,12 @@ export interface Crumb {
  * "Home" - whether or not it is also the final crumb (the home screen itself
  * has a single, unclickable "Home" crumb).
  *
- * `menu` is a left-most slot for the hamburger the home screen will get
- * later (item 16); it is unused by every call site today and exists only so
- * that a later change does not have to touch this signature. `actions`
+ * `menu` is a left-most slot for the hamburger (item 16, `menu()` below) -
+ * the home screen's own `breadcrumb()` call is the only one that fills it,
+ * with Manage Passages / Analytics / Settings folded into it instead of
+ * sitting in `actions` as separate buttons the way they used to. `actions`
  * mirrors `toolbar()`'s own slot, e.g. the passage screen's "Show in Bible"
- * and answer-mode gear, or the plan screen's "Analytics" / "Settings" links.
+ * and answer-mode gear.
  */
 export function breadcrumb(opts: {
   crumbs: Crumb[];
@@ -101,6 +102,162 @@ export function breadcrumb(opts: {
     list,
     el('div', { class: 'sm-crumbs-actions' }, opts.actions ?? []),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Hamburger menu
+// ---------------------------------------------------------------------------
+
+/** One entry in a `menu()` panel. */
+export interface MenuItem {
+  label: string;
+  onClick: () => void;
+}
+
+/**
+ * The hamburger menu that fills `breadcrumb()`'s `menu` slot on the home
+ * screen (Decision 11 of the nav/chrome redesign, item 16): a trigger button
+ * plus a `role="menu"` popover of `role="menuitem"` buttons, replacing the
+ * separate "Analytics" / "Settings" buttons that used to sit in the
+ * breadcrumb's `actions` slot - Manage Passages joins them there now that
+ * there are three, not two, links off the home screen.
+ *
+ * The trigger is a bare hamburger glyph (`icon('menu')`) with `label` as its
+ * `aria-label` rather than visible text next to it, the same "icon speaks for
+ * itself" choice the passage screen's answer-mode gear already makes
+ * (`.sm-icon-btn`, `passageView.ts`) - three even bars is already this app's
+ * unambiguous "more" affordance (see `icon()`'s own note), and spelling it
+ * out in words would be the one string in the whole breadcrumb band that
+ * wraps.
+ *
+ * Not a native `<select>` or a `window.*` dialog (design doc, Decision 11):
+ * this panel runs inside a sandboxed iframe where the host can suppress
+ * modal dialogs outright, and a `<select>` cannot be given the roving
+ * Up/Down behaviour or the Escape/outside-close behaviour a `role="menu"`
+ * needs. `attachMenuKeys` below is the `role="menu"` analogue of
+ * `attachTabKeys` above: same roving-focus idea, different ARIA pattern
+ * (vertical arrows moving between `menuitem`s that are never in the page's
+ * own Tab order while the menu is open, rather than horizontal arrows moving
+ * a single roving tab stop).
+ */
+export function menu(opts: { label: string; items: MenuItem[] }): HTMLElement {
+  const wrapper = el('div', { class: 'sm-menu' });
+
+  const panel = el('div', {
+    class: 'sm-menu-panel',
+    hidden: true,
+    attrs: { role: 'menu', 'aria-label': opts.label },
+  });
+
+  const itemButtons = opts.items.map((item) =>
+    button(
+      item.label,
+      () => {
+        closeMenu();
+        item.onClick();
+      },
+      { class: 'sm-menu-item', attrs: { role: 'menuitem', tabindex: '-1' } },
+    ),
+  );
+  append(panel, itemButtons);
+
+  const trigger = button(opts.label, () => (panel.hidden ? openMenu() : closeMenu()), {
+    class: 'sm-btn sm-btn-quiet sm-icon-btn sm-menu-btn',
+    text: '',
+    attrs: { 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': opts.label },
+  });
+  append(trigger, [icon('menu')]);
+
+  // Registered only while the menu is open, and torn down the moment it
+  // closes by any route - Escape, an item press, or this handler firing
+  // itself - so an open panel never leaves a document-level listener behind
+  // once the interaction that needed it is over. A panel left open when the
+  // screen it lives on is replaced (a rare path: every item press already
+  // closes first) leaks the listener only until the next pointerdown
+  // anywhere in the document, which finds `wrapper` detached, does not match
+  // it, and calls `closeMenu()` anyway - a self-cleaning one-shot rather than
+  // a lasting leak.
+  let outsideListener: ((ev: PointerEvent) => void) | null = null;
+
+  function openMenu(): void {
+    panel.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    setRoving(0);
+    focusQuietly(itemButtons[0] ?? null);
+
+    outsideListener = (ev: PointerEvent) => {
+      if (ev.target instanceof Node && wrapper.contains(ev.target)) return;
+      closeMenu();
+    };
+    document.addEventListener('pointerdown', outsideListener, true);
+  }
+
+  function closeMenu(): void {
+    if (panel.hidden) return;
+    panel.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (outsideListener) {
+      document.removeEventListener('pointerdown', outsideListener, true);
+      outsideListener = null;
+    }
+  }
+
+  function setRoving(index: number): void {
+    itemButtons.forEach((b, i) => {
+      b.tabIndex = i === index ? 0 : -1;
+    });
+  }
+
+  attachMenuKeys(panel, itemButtons, setRoving, () => {
+    closeMenu();
+    focusQuietly(trigger);
+  });
+
+  append(wrapper, [trigger, panel]);
+  return wrapper;
+}
+
+/**
+ * Up/Down over an open `role="menu"`, wrapping at the ends, plus Escape - the
+ * `role="menu"` analogue of `attachTabKeys` above (see `menu()`'s own note
+ * for why it is not the same function). Left/Right, Home and End are a
+ * tablist's own pattern, not a menu's, so they are left out here rather than
+ * copied over.
+ */
+function attachMenuKeys(
+  panel: HTMLElement,
+  itemButtons: HTMLButtonElement[],
+  setRoving: (index: number) => void,
+  onEscape: () => void,
+): void {
+  if (itemButtons.length === 0) return;
+
+  panel.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      onEscape();
+      return;
+    }
+
+    const current = itemButtons.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0) return;
+
+    let target = -1;
+    switch (ev.key) {
+      case 'ArrowDown':
+        target = (current + 1) % itemButtons.length;
+        break;
+      case 'ArrowUp':
+        target = (current - 1 + itemButtons.length) % itemButtons.length;
+        break;
+      default:
+        return;
+    }
+
+    ev.preventDefault();
+    setRoving(target);
+    focusQuietly(itemButtons[target] ?? null);
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -75,7 +75,7 @@ import type {
 } from '../src/types';
 import type { PanelHost } from '../src/ui/host';
 import type { Flow, NavAction } from '../src/ui/state';
-import { breadcrumb, icon, type Crumb, type IconName } from '../src/ui/components';
+import { breadcrumb, icon, menu as menuComponent, type Crumb, type IconName } from '../src/ui/components';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { ACTIVITY_TILES } from '../src/ui/activities';
 import { renderPassage } from '../src/ui/scripture';
@@ -2726,6 +2726,173 @@ describe('breadcrumb()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 9b. menu() - the hamburger that fills breadcrumb()'s menu slot (M3)
+// ---------------------------------------------------------------------------
+
+describe('menu()', () => {
+  function threeItemMenu(): { el: HTMLElement; clicked: string[] } {
+    const clicked: string[] = [];
+    const el = menuComponent({
+      label: 'Menu',
+      items: [
+        { label: 'Manage Passages', onClick: () => clicked.push('Manage Passages') },
+        { label: 'Analytics', onClick: () => clicked.push('Analytics') },
+        { label: 'Settings', onClick: () => clicked.push('Settings') },
+      ],
+    });
+    return { el, clicked };
+  }
+
+  function trigger(root: HTMLElement): HTMLButtonElement {
+    return root.querySelector<HTMLButtonElement>('.sm-menu-btn')!;
+  }
+
+  function panel(root: HTMLElement): HTMLElement {
+    return root.querySelector<HTMLElement>('[role="menu"]')!;
+  }
+
+  function menuItems(root: HTMLElement): HTMLButtonElement[] {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+  }
+
+  it('renders a trigger with aria-haspopup and aria-expanded="false", closed by default', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    const btn = trigger(el);
+    expect(btn.tagName).toBe('BUTTON');
+    expect(btn.type).toBe('button');
+    expect(btn.getAttribute('aria-haspopup')).toBe('menu');
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    expect(panel(el).hidden).toBe(true);
+  });
+
+  it('clicking the trigger opens the menu with all three items, in order, and flips aria-expanded', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+
+    expect(trigger(el).getAttribute('aria-expanded')).toBe('true');
+    expect(panel(el).hidden).toBe(false);
+    expect(menuItems(el).map(spokenText)).toEqual(['Manage Passages', 'Analytics', 'Settings']);
+    expect(menuItems(el).every((b) => b.getAttribute('role') === 'menuitem')).toBe(true);
+  });
+
+  it('clicking the trigger again closes it', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    trigger(el).click();
+
+    expect(trigger(el).getAttribute('aria-expanded')).toBe('false');
+    expect(panel(el).hidden).toBe(true);
+  });
+
+  it.each([
+    ['Manage Passages', 0],
+    ['Analytics', 1],
+    ['Settings', 2],
+  ])('clicking "%s" calls its onClick and closes the menu', (label, index) => {
+    const { el, clicked } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    menuItems(el)[index]!.click();
+
+    expect(clicked).toEqual([label]);
+    expect(panel(el).hidden).toBe(true);
+    expect(trigger(el).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('Escape closes the menu and returns focus to the trigger', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    expect(document.activeElement).toBe(menuItems(el)[0]);
+
+    menuItems(el)[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(panel(el).hidden).toBe(true);
+    expect(trigger(el).getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger(el));
+  });
+
+  it('a pointerdown outside the menu (and its trigger) closes it', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+    const outside = document.createElement('div');
+    container.appendChild(outside);
+
+    trigger(el).click();
+    expect(panel(el).hidden).toBe(false);
+
+    outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+
+    expect(panel(el).hidden).toBe(true);
+    expect(trigger(el).getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('a pointerdown on an item inside the menu does not close it via the outside handler', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    menuItems(el)[1]!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+
+    // Still open - only the item's own click handler (tested above) closes
+    // the menu when an item is the target, not the outside-pointerdown path.
+    expect(panel(el).hidden).toBe(false);
+  });
+
+  it('Down moves focus to the next item and wraps from the last back to the first', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    const items = menuItems(el);
+    expect(document.activeElement).toBe(items[0]);
+
+    items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement).toBe(items[1]);
+
+    items[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement).toBe(items[2]);
+
+    items[2]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement).toBe(items[0]);
+  });
+
+  it('Up moves focus to the previous item and wraps from the first back to the last', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    const items = menuItems(el);
+
+    items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(document.activeElement).toBe(items[2]);
+
+    items[2]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(document.activeElement).toBe(items[1]);
+  });
+
+  it('keeps a roving tabindex: only the focused item sits in the page Tab order', () => {
+    const { el } = threeItemMenu();
+    container.appendChild(el);
+
+    trigger(el).click();
+    const items = menuItems(el);
+    expect(items.map((b) => b.tabIndex)).toEqual([0, -1, -1]);
+
+    items[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(items.map((b) => b.tabIndex)).toEqual([-1, 0, -1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 10. The crumb trail on each screen
 // ---------------------------------------------------------------------------
 
@@ -2744,6 +2911,44 @@ describe('the crumb trail on each screen', () => {
     expect(root.querySelector('button.sm-crumb')).toBeNull();
     const heading = root.querySelector<HTMLElement>('h1.sm-crumb-current')!;
     expect(heading.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('plan (home): Manage Passages, Analytics and Settings live only behind the hamburger menu (M3)', () => {
+    const root = renderPlan(host, emptyPlan());
+    container.appendChild(root);
+
+    // Gone from the breadcrumb's own actions slot - the menu replaces them
+    // entirely on this screen (M3 scope, item 5 of its spec). The only place
+    // "Analytics" / "Settings" / "Manage Passages" now appear is as
+    // `menuitem`s inside the (closed) popover, not as separately clickable
+    // buttons sitting in the breadcrumb itself.
+    expect(root.querySelector('.sm-crumbs-actions')!.children.length).toBe(0);
+    const namedButtons = Array.from(root.querySelectorAll('.sm-crumbs button:not([role="menuitem"])')).map(
+      spokenText,
+    );
+    expect(namedButtons).not.toContain('Analytics');
+    expect(namedButtons).not.toContain('Settings');
+    expect(namedButtons).not.toContain('Manage Passages');
+
+    const trigger = root.querySelector<HTMLButtonElement>('.sm-menu-btn')!;
+    expect(trigger).not.toBeNull();
+    trigger.click();
+
+    const items = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    expect(items.map(spokenText)).toEqual(['Manage Passages', 'Analytics', 'Settings']);
+
+    items[0]!.click();
+    expect(host.navigations).toContainEqual({ type: 'goManage' });
+    // The click also closed the menu (menu()'s own contract, tested above).
+    expect(root.querySelector('[role="menu"]')!.hidden).toBe(true);
+
+    trigger.click();
+    Array.from(root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))[1]!.click();
+    expect(host.navigations).toContainEqual({ type: 'goAnalytics' });
+
+    trigger.click();
+    Array.from(root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))[2]!.click();
+    expect(host.navigations).toContainEqual({ type: 'goSettings' });
   });
 
   it('passage: Home > the passage\'s own reference, and Home goes to the plan', () => {

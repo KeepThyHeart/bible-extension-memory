@@ -11,7 +11,7 @@
 
 import type { Passage, PassageSortOrder, PassageView, PlanView } from '../types';
 import { append, button, el, focusQuietly, replace } from './dom';
-import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner, icon } from './components';
+import { activitySquares, breadcrumb, dueBadge, emptyState, errorBanner, icon, menu } from './components';
 import { RUNG_LABEL, activityAvailability, countLabel, pickStartTarget, sortPassagesByNeed } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
 import { ACTIVITY_TILES, type ActivityTile } from './activities';
@@ -28,10 +28,18 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
       // unclickable crumb (design doc's crumb-trail table) - not the plan's
       // own name, which nothing else on this screen shows either.
       crumbs: [{ label: 'Home' }],
-      actions: [
-        button('Analytics', () => host.go({ type: 'goAnalytics' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
-        button('Settings', () => host.go({ type: 'goSettings' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
-      ],
+      // The hamburger (M3, decision 11): Manage Passages, Analytics and
+      // Settings folded into one menu in the breadcrumb's left slot, on this
+      // screen only, rather than as separate `actions` buttons.
+      menu: menu({
+        label: 'Menu',
+        items: [
+          { label: 'Manage Passages', onClick: () => host.go({ type: 'goManage' }) },
+          { label: 'Analytics', onClick: () => host.go({ type: 'goAnalytics' }) },
+          { label: 'Settings', onClick: () => host.go({ type: 'goSettings' }) },
+        ],
+      }),
+      actions: [],
     }),
   );
 

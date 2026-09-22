@@ -394,6 +394,67 @@ ul, ol {
 }
 
 /* ==========================================================================
+   Hamburger menu (M3, `components.ts#menu()`)
+
+   The one floating/popover surface in this file - `.sm-menu-panel` sits
+   `position: absolute`, so it needs a background, border and depth cue of
+   its own rather than sitting flush with the page the way `.sm-batch-confirm`
+   (an in-flow panel, not a popover) can get away with using only a border.
+   `--sm-surface-raised` and `--sm-border` are already this file's tokens for
+   "a card lifted off the page" and its edge (see `:root`'s own colour block);
+   the shadow itself has no host token to reach for - the file header already
+   says the host serves none - so it is a plain local value, same as every
+   other shadow in this file.
+   ========================================================================== */
+
+.sm-menu {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+}
+
+/* The trigger itself needs no rules of its own: `components.ts#menu()`
+   already gives it `.sm-btn .sm-btn-quiet .sm-icon-btn` - the same bare
+   icon-only toggle look as the passage screen's answer-mode gear - and
+   `.sm-menu-btn` exists only as the design doc's own named hook for a future
+   caller (a test, a later tweak) that wants the trigger without reaching for
+   those three classes together. */
+
+.sm-menu-panel {
+  position: absolute;
+  top: calc(100% + var(--sm-s1));
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 11rem;
+  padding: var(--sm-s1);
+  background: var(--sm-surface-raised);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.sm-menu-item {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  display: block;
+  width: 100%;
+  padding: var(--sm-s2) var(--sm-s3);
+  border: 0;
+  border-radius: var(--sm-radius);
+  background: transparent;
+  color: var(--sm-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sm-menu-item:hover,
+.sm-menu-item:focus-visible {
+  background: var(--sm-hover);
+}
+
+/* ==========================================================================
    Icons
 
    `components.ts#icon()` returns a bare `<svg>` sized to `1em` by `1em` via
