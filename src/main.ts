@@ -39,6 +39,15 @@ import { resolveReference, ReferenceError, MAX_PASSAGE_VERSES } from './referenc
 const DB_NAME = 'memory';
 const DEFAULT_COLLECTION_NAME = 'My plan';
 
+/**
+ * How long a soft-deleted passage (Decision 16, task 0028/P6) stays revivable
+ * before `purgeOldDeletedPassages` hard-deletes it for real. No manual
+ * "delete permanently" was designed - this automatic window is the only path
+ * back to a real `DELETE`, so it lives here as a named constant rather than a
+ * magic number at its one call site.
+ */
+const DELETED_PASSAGE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** This extension's manifest id, used to namespace the command ids it binds. */
 const EXTENSION_ID = 'ext.bible-app.scripture-memory';
 
@@ -150,6 +159,21 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
         `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
     );
     return;
+  }
+
+  // Runs on every activation, not just once: a soft-deleted passage (Decision
+  // 16, task 0028/P6) becomes hard-deletable, for real, once it has sat past
+  // the revival window - see `MemoryStore#purgeOldDeletedPassages`. Wrapped on
+  // its own rather than folded into the `try` above: nothing else in
+  // `activate` depends on this having run, and a failure here is not "the
+  // database could not be opened" - it must not report itself as that, and it
+  // must not stop the rest of activation (panel registration, commands,
+  // context menu) from proceeding.
+  try {
+    const purged = await store.purgeOldDeletedPassages(Date.now(), DELETED_PASSAGE_MAX_AGE_MS);
+    if (purged > 0) console.log(`Scripture Memory: purged ${purged} soft-deleted passage(s).`);
+  } catch (err) {
+    console.warn('Scripture Memory: could not purge old deleted passages:', err);
   }
 
   await verifyVerseIdEncoding();
@@ -478,12 +502,15 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       // deciding it explicitly here (rather than leaning on that fallback as
       // the only mechanism) is what keeps the *stored* setting itself honest
       // rather than quietly stale. `deleteCollection` never leaves the plan
-      // with zero lists: `listCollections` after the delete either names a
-      // survivor - the real, common case now that P5's table lets a lone
-      // list be deleted too - or, on a lone list deleted, `ensureDefaultCollection`
-      // recreates the one v0 always shipped, so the app is never left broken.
+      // with zero lists: as of Decision 16 (task 0028/P6) the store method
+      // itself guarantees a survivor - it soft-deletes the list's passages
+      // into another surviving collection, creating one first if this was
+      // the last (mirroring `ensureDefaultCollection`'s own fallback, with
+      // the same display name) - so `listCollections` below always finds
+      // one; the `ensureDefaultCollection` call stays as a defensive second
+      // layer rather than the only mechanism, same as it was before.
       const wasActive = (await resolveActiveCollectionId()) === req.collectionId;
-      await store.deleteCollection(req.collectionId);
+      await store.deleteCollection(req.collectionId, Date.now(), DEFAULT_COLLECTION_NAME);
       if (wasActive) {
         const remaining = await store.listCollections();
         const fallbackId =
@@ -512,7 +539,7 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
     }
 
     case 'removePassage':
-      await store.removePassage(req.passageId);
+      await store.removePassage(req.passageId, Date.now());
       await refreshStatusBar();
       return {};
 
@@ -783,7 +810,7 @@ async function addPassageFromReference(reference: string) {
   const now = Date.now();
   const collectionId = await resolveActiveCollectionId();
 
-  const { passage, created } = await store.addPassage(
+  const { passage, created, revived } = await store.addPassage(
     {
       collectionId,
       moduleId,
@@ -795,7 +822,11 @@ async function addPassageFromReference(reference: string) {
     },
   );
 
-  if (created) await refreshStatusBar();
+  // A revived passage (Decision 16, task 0028/P6) can bring back cards that
+  // were already due before the passage was removed, so the status bar's due
+  // count needs the same refresh a brand new passage gets - `created` alone
+  // would miss it.
+  if (created || revived) await refreshStatusBar();
   void api.panels.postMessage({ type: 'planChanged' });
   return passage;
 }

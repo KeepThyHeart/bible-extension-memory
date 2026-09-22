@@ -125,6 +125,28 @@ const MIGRATIONS: readonly string[][] = [
        updated_at    INTEGER NOT NULL
      )`,
   ],
+
+  // --- v3: task 0028/P6 - soft delete, so re-adding a removed passage can ---
+  // --- restore its progress instead of starting a fresh ladder -------------
+  //
+  // `removePassage` used to `DELETE` the row outright, and `store.ts` had a
+  // comment stating on purpose that this took the passage's cards and
+  // attempts with it. Decision 16 reverses that rule: `removePassage` now
+  // writes `deleted_at` instead of deleting, every read path (`listPassages`,
+  // `listAllPassages`, `countAllPassages`, `getPassage`, `analytics`,
+  // `dueCount`/`nextDueCard`, the sibling counts) filters `deleted_at IS
+  // NULL` so a soft-deleted passage disappears from the app exactly as a
+  // hard-deleted one always did, and `addPassage` gains a revive branch that
+  // finds a soft-deleted row matching the same `(module_id, start_verse_id,
+  // end_verse_id)` - in any collection, which is what makes "delete a list,
+  // re-add the same passages into a new one" restore progress - and clears
+  // `deleted_at` rather than inserting a fresh row. `deleted_at` is nullable
+  // and defaults to NULL on this `ALTER TABLE`, so every existing row is
+  // implicitly "not deleted" the moment this migration runs, with no data to
+  // backfill. Rows past `purgeOldDeletedPassages`'s 7-day window are hard
+  // -deleted for real, which is the only path that still relies on the
+  // `card`/`attempt` cascade this column's own passages sit above.
+  [`ALTER TABLE passage ADD COLUMN deleted_at INTEGER`],
 ];
 
 /** The version a fresh database is brought to. */

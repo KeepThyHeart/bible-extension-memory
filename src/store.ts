@@ -38,6 +38,8 @@ interface PassageRow {
   verse_count: number;
   added_at: number;
   answer_mode: string | null;
+  /** Epoch ms, or `null` while the passage is in the plan. See Decision 16 (task 0028/P6). */
+  deleted_at: number | null;
 }
 
 interface CardRow {
@@ -156,12 +158,20 @@ export class MemoryStore {
    * `passageCount` is aggregated in SQL (a `LEFT JOIN` + `COUNT`, zero for an
    * empty list) rather than by calling `listPassages` per row, so the table's
    * one request stays one query regardless of how many lists exist.
+   *
+   * The join condition itself carries `deleted_at IS NULL` (Decision 16, task
+   * 0028/P6), not a `WHERE` on the outer query: `deleteCollection` parks a
+   * deleted list's soft-deleted passages in another surviving collection, and
+   * those must not inflate that collection's shown count - but a `WHERE`
+   * would turn this back into an inner join and drop an otherwise-empty
+   * collection (one with only soft-deleted rows, or none at all) out of the
+   * result entirely, where it should show `passageCount: 0`.
    */
   async listCollections(): Promise<CollectionView[]> {
     const rows = await this.db.query<{ id: number; name: string; passageCount: number }>(
       `SELECT c.id AS id, c.name AS name, COUNT(p.id) AS passageCount
          FROM collection c
-         LEFT JOIN passage p ON p.collection_id = c.id
+         LEFT JOIN passage p ON p.collection_id = c.id AND p.deleted_at IS NULL
         GROUP BY c.id, c.name
         ORDER BY c.id`,
     );
@@ -178,18 +188,90 @@ export class MemoryStore {
   }
 
   /**
-   * Deletes a list and everything in it.
+   * Deletes a list, soft-deleting its passages the same way `removePassage`
+   * does rather than letting them go with it.
    *
-   * No separate cleanup is needed: `passage.collection_id` is
-   * `ON DELETE CASCADE`, and `card`/`attempt`/`resume_state` already cascade
-   * from `passage` (see `removePassage`'s own note and `db.ts`'s schema), so
-   * one `DELETE` here reaches every row the list owns, three tables deep.
-   * Whether the deleted list was the active one is the caller's problem
-   * (`main.ts`'s `deleteCollection` handler) - the store does not know what
-   * "active" means.
+   * `passage.collection_id` is still `ON DELETE CASCADE`, and that CASCADE
+   * does not know or care about `deleted_at` - a plain `DELETE FROM
+   * collection` would hard-delete every passage row pointing at it,
+   * soft-deleted or not, which would defeat Decision 16 (task 0028/P6) for a
+   * whole-list delete: "re-add into a new list restores progress" would
+   * silently stop working the moment the list itself was gone, even though it
+   * keeps working for a single `removePassage` from within a surviving list.
+   *
+   * So before the collection row goes, every passage it owns - including any
+   * that were already soft-deleted while this list still existed - is
+   * reassigned to another surviving collection (`targetId` below) and
+   * soft-deleted at the same time, so the CASCADE that follows has nothing
+   * left to touch. If this was the last collection, one is created first
+   * (`fallbackName`, mirroring `ensureDefaultCollection` in `db.ts` and its
+   * own `createCollection`) purely to hold the orphaned rows until a later
+   * `addPassage` revives them elsewhere - it is not made active here; that
+   * stays `main.ts`'s job, the same as it always has been for "whether the
+   * deleted list was the active one".
+   *
+   * One edge case: `targetId` can already have its own row for the same
+   * `(module_id, start_verse_id, end_verse_id)` - the user had the same
+   * reference in both lists independently - and the `passage_range_unique`
+   * index (scoped per collection) forbids a second one there. Decision 16
+   * only names one target collection for this move, so that duplicate is
+   * hard-deleted outright rather than left to block the whole list's
+   * deletion; the row already sitting in `targetId` keeps its own history and
+   * is what a later `addPassage` revives instead.
+   *
+   * The whole move-then-delete runs in one transaction: a failure partway
+   * through must not leave passages reassigned while the collection row they
+   * used to belong to is still there, or vice versa.
    */
-  async deleteCollection(collectionId: number): Promise<void> {
-    await this.db.run(`DELETE FROM collection WHERE id = ?`, [collectionId]);
+  async deleteCollection(collectionId: number, now: number, fallbackName: string): Promise<void> {
+    const existing = await this.db.queryOne<{ id: number }>(
+      `SELECT id FROM collection WHERE id = ?`,
+      [collectionId],
+    );
+    if (!existing) return;
+
+    await this.db.transaction(async (tx) => {
+      // Unfiltered: a passage already soft-deleted in this list has to be
+      // carried over too, or its revival key would be lost the moment its
+      // holding list disappears.
+      const passages = await tx.query<PassageRow>(`SELECT * FROM passage WHERE collection_id = ?`, [
+        collectionId,
+      ]);
+
+      if (passages.length > 0) {
+        const other = await tx.queryOne<{ id: number }>(
+          `SELECT id FROM collection WHERE id != ? ORDER BY id LIMIT 1`,
+          [collectionId],
+        );
+        let targetId = other?.id;
+        if (targetId === undefined) {
+          const created = await tx.run(`INSERT INTO collection (name, created_at) VALUES (?, ?)`, [
+            fallbackName,
+            now,
+          ]);
+          targetId = Number(created.lastInsertRowid);
+        }
+
+        for (const p of passages) {
+          const collision = await tx.queryOne<{ id: number }>(
+            `SELECT id FROM passage
+              WHERE collection_id = ? AND module_id = ? AND start_verse_id = ? AND end_verse_id = ?`,
+            [targetId, p.module_id, p.start_verse_id, p.end_verse_id],
+          );
+          if (collision) {
+            await tx.run(`DELETE FROM passage WHERE id = ?`, [p.id]);
+            continue;
+          }
+          await tx.run(`UPDATE passage SET deleted_at = ?, collection_id = ? WHERE id = ?`, [
+            p.deleted_at ?? now,
+            targetId,
+            p.id,
+          ]);
+        }
+      }
+
+      await tx.run(`DELETE FROM collection WHERE id = ?`, [collectionId]);
+    });
   }
 
   /**
@@ -226,9 +308,10 @@ export class MemoryStore {
 
   // -- passages -------------------------------------------------------------
 
+  /** `deleted_at IS NULL` - see Decision 16 (task 0028/P6) - so a soft-deleted passage is invisible here, same as a hard-deleted one always was. */
   async listPassages(collectionId: number): Promise<Passage[]> {
     const rows = await this.db.query<PassageRow>(
-      `SELECT * FROM passage WHERE collection_id = ? ORDER BY start_verse_id`,
+      `SELECT * FROM passage WHERE collection_id = ? AND deleted_at IS NULL ORDER BY start_verse_id`,
       [collectionId],
     );
     return rows.map(toPassage);
@@ -241,42 +324,93 @@ export class MemoryStore {
    * scoped to one list: `refmatch`'s distractor pool and its sibling count
    * (`syncLadders` below, and `main.ts`'s mirrors of the same computation),
    * and Analytics. Never used for the plan view itself, which stays scoped to
-   * the active list.
+   * the active list. `deleted_at IS NULL` for the same reason as
+   * `listPassages` - Decision 16 (task 0028/P6).
    */
   async listAllPassages(): Promise<Passage[]> {
-    const rows = await this.db.query<PassageRow>(`SELECT * FROM passage ORDER BY start_verse_id`);
+    const rows = await this.db.query<PassageRow>(
+      `SELECT * FROM passage WHERE deleted_at IS NULL ORDER BY start_verse_id`,
+    );
     return rows.map(toPassage);
   }
 
   /** `listAllPassages().length`, without fetching rows the caller only wants to count. */
   async countAllPassages(): Promise<number> {
-    const row = await this.db.queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM passage`);
+    const row = await this.db.queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM passage WHERE deleted_at IS NULL`,
+    );
     return row ? row.n : 0;
   }
 
+  /**
+   * A single passage by id, or `undefined` if it does not exist - or, since
+   * Decision 16 (task 0028/P6), if it has been soft-deleted. Every existing
+   * caller (`buildContext`, `startSession`, `isPassageWellLearned` in
+   * `main.ts`) already treats a miss here as "no longer in your plan", which
+   * is exactly right for a soft-deleted row too; the row itself still exists
+   * physically, but only `addPassage`'s revive branch and
+   * `purgeOldDeletedPassages` look past `deleted_at` to find it.
+   */
   async getPassage(id: number): Promise<Passage | undefined> {
-    const row = await this.db.queryOne<PassageRow>(`SELECT * FROM passage WHERE id = ?`, [id]);
+    const row = await this.db.queryOne<PassageRow>(
+      `SELECT * FROM passage WHERE id = ? AND deleted_at IS NULL`,
+      [id],
+    );
     return row ? toPassage(row) : undefined;
   }
 
   /**
    * Insert a passage and give it the ladder its shape implies.
    *
-   * Returns the existing row if this exact range is already in the collection
-   * rather than throwing on the unique index: adding a passage twice is a
-   * user slip, not an error worth a dialog, and the second add should simply
-   * land on the passage they already have.
+   * Two ways this can avoid a fresh `INSERT`, checked in order:
+   *
+   *  1. This exact range is already active in the target collection - a user
+   *     slip, not an error worth a dialog - so the second add simply lands on
+   *     the passage they already have (`created: false`, `revived: false`).
+   *  2. Decision 16 (task 0028/P6): a soft-deleted row matching this exact
+   *     `(module_id, start_verse_id, end_verse_id)` exists in ANY collection
+   *     - left behind by `removePassage` or `deleteCollection` - in which
+   *     case it is revived in place (`deleted_at` cleared, `collection_id`
+   *     moved to the target) rather than starting a new row with a fresh
+   *     ladder. Matching across every collection, not just the target one, is
+   *     what makes "delete a list, re-add the same passages into a new list"
+   *     restore progress. `created` stays `false` for this case too - nothing
+   *     new was created - and `revived: true` is the one bit that lets a
+   *     future caller tell the two `created: false` cases apart; no caller
+   *     needs that distinction yet (`main.ts`'s two callers use `.passage`
+   *     and `.created` only), so it is exposed rather than hidden behind a
+   *     history-losing guess.
    */
   async addPassage(
     input: Omit<Passage, 'id' | 'answerMode'>,
-  ): Promise<{ passage: Passage; created: boolean }> {
+  ): Promise<{ passage: Passage; created: boolean; revived: boolean }> {
     const existing = await this.db.queryOne<PassageRow>(
       `SELECT * FROM passage
         WHERE collection_id = ? AND module_id = ?
-          AND start_verse_id = ? AND end_verse_id = ?`,
+          AND start_verse_id = ? AND end_verse_id = ?
+          AND deleted_at IS NULL`,
       [input.collectionId, input.moduleId, input.startVerseId, input.endVerseId],
     );
-    if (existing) return { passage: toPassage(existing), created: false };
+    if (existing) return { passage: toPassage(existing), created: false, revived: false };
+
+    const revivable = await this.db.queryOne<PassageRow>(
+      `SELECT * FROM passage
+        WHERE module_id = ? AND start_verse_id = ? AND end_verse_id = ?
+          AND deleted_at IS NOT NULL
+        ORDER BY id DESC LIMIT 1`,
+      [input.moduleId, input.startVerseId, input.endVerseId],
+    );
+    if (revivable) {
+      await this.db.run(`UPDATE passage SET deleted_at = NULL, collection_id = ? WHERE id = ?`, [
+        input.collectionId,
+        revivable.id,
+      ]);
+      // The revived passage can change what applies to its new list's
+      // siblings, exactly like a fresh insert does below.
+      await this.syncLadders(input.collectionId);
+      const passage = await this.getPassage(revivable.id);
+      return { passage: passage as Passage, created: false, revived: true };
+    }
 
     const res = await this.db.run(
       `INSERT INTO passage
@@ -299,22 +433,55 @@ export class MemoryStore {
     await this.syncLadders(input.collectionId);
 
     const passage = await this.getPassage(id);
-    return { passage: passage as Passage, created: true };
+    return { passage: passage as Passage, created: true, revived: false };
   }
 
   /**
-   * Delete a passage and everything hanging off it.
+   * Soft-delete a passage: sets `deleted_at` instead of removing the row.
    *
-   * The cascade takes its cards and their attempts. That is the one place the
-   * never-prune rule yields: keeping the attempt history of a passage the user
-   * has explicitly removed would mean their "delete" did not delete, and the
-   * Analytics screen would keep counting work against material that is gone.
+   * This is a deliberate REVERSAL of what used to be this method's own rule -
+   * that deleting a passage deletes its history on purpose, so Analytics does
+   * not keep counting work on deleted material. Decision 16 (task 0028/P6)
+   * overturns that: item 18 asked for a passage's progress to survive being
+   * removed and re-added later (even into a different list), which is only
+   * possible if the row and its cards/attempts are still there for
+   * `addPassage`'s revive branch to find. The Analytics guarantee the old
+   * rule protected is instead now made by every read path filtering
+   * `deleted_at IS NULL` (`listPassages`, `listAllPassages`,
+   * `countAllPassages`, `getPassage`, `analytics`, `dueCount`/`nextDueCard`):
+   * a soft-deleted passage disappears from the app exactly as a hard-deleted
+   * one always did. `purgeOldDeletedPassages` is what eventually reaches for
+   * the real `DELETE`, and cards/attempts only go then, via the same cascade
+   * this method used to trigger directly.
    */
-  async removePassage(id: number): Promise<void> {
+  async removePassage(id: number, now: number): Promise<void> {
     const passage = await this.getPassage(id);
     if (!passage) return;
-    await this.db.run(`DELETE FROM passage WHERE id = ?`, [id]);
+    await this.db.run(`UPDATE passage SET deleted_at = ? WHERE id = ?`, [now, id]);
     await this.syncLadders(passage.collectionId);
+  }
+
+  /**
+   * Hard-deletes passages that have been soft-deleted for longer than
+   * `maxAgeMs` - the automatic purge policy behind Decision 16's soft delete
+   * (no manual "delete permanently" escape hatch was designed; this is the
+   * only path back to a real `DELETE`). `now` and `maxAgeMs` both travel in
+   * rather than being read from the clock or a constant here, matching every
+   * other store method that needs "now" (`addPassage`'s `input.addedAt`,
+   * `createCollection`'s `now`) - `main.ts` owns the 7-day policy value as a
+   * named constant and calls this once per activation.
+   *
+   * The `DELETE` itself reaches a purged passage's cards and attempts through
+   * the ordinary `ON DELETE CASCADE` chain (`card` from `passage`, `attempt`
+   * from `card`) - the same cascade `removePassage` used to trigger directly
+   * before Decision 16, now deferred until the revival window has passed.
+   */
+  async purgeOldDeletedPassages(now: number, maxAgeMs: number): Promise<number> {
+    const cutoff = now - maxAgeMs;
+    const res = await this.db.run(`DELETE FROM passage WHERE deleted_at IS NOT NULL AND deleted_at < ?`, [
+      cutoff,
+    ]);
+    return res.changes;
   }
 
   async setPassageAnswerMode(passageId: number, mode: AnswerMode | null): Promise<void> {
@@ -477,9 +644,20 @@ export class MemoryStore {
 
   // -- scheduling queries ---------------------------------------------------
 
+  /**
+   * Joined against `passage` and filtered `deleted_at IS NULL` (Decision 16,
+   * task 0028/P6): `card` rows are untouched by a soft delete, so without
+   * this join a just-removed passage's still-due cards would keep inflating
+   * the status bar's count until `purgeOldDeletedPassages` eventually catches
+   * up - a soft-deleted passage has to stop being due immediately, the same
+   * as a hard-deleted one always did.
+   */
   async dueCount(now: number): Promise<number> {
     const row = await this.db.queryOne<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM card WHERE due_at IS NOT NULL AND due_at <= ?`,
+      `SELECT COUNT(*) AS n
+         FROM card c
+         JOIN passage p ON p.id = c.passage_id
+        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL`,
       [now],
     );
     return row ? row.n : 0;
@@ -492,11 +670,20 @@ export class MemoryStore {
    * rungs due is worked from the bottom up rather than in row order - being
    * asked for first letters before the ordering rung of the same passage
    * would be backwards.
+   *
+   * Joined against `passage` and filtered `deleted_at IS NULL` for the same
+   * reason as `dueCount` (Decision 16, task 0028/P6) - and for an extra
+   * reason specific to this query: without the join, a soft-deleted
+   * passage's still-due card could be the single row this picks (`LIMIT 1`),
+   * and the `getPassage` call below would then return `undefined` for it and
+   * make the whole method report "nothing due" even while a real due card
+   * exists further down the queue.
    */
   async nextDueCard(now: number): Promise<{ card: Card; passage: Passage } | undefined> {
     const row = await this.db.queryOne<CardRow>(
       `SELECT c.* FROM card c
-        WHERE c.due_at IS NOT NULL AND c.due_at <= ?
+        JOIN passage p ON p.id = c.passage_id
+        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL
         ORDER BY c.due_at ASC,
                  CASE c.rung
                    WHEN 'ordering' THEN 0
@@ -530,6 +717,11 @@ export class MemoryStore {
    * screen. There is therefore no `collectionId` parameter any more - the
    * one call site (`main.ts`'s `getAnalytics` handler) used to pass the
    * active collection's id and now passes nothing.
+   *
+   * `listAllPassages()` below already filters `deleted_at IS NULL` (Decision
+   * 16, task 0028/P6), so `versesLearned`/`passagesWellLearned` never count a
+   * soft-deleted passage's material without this method needing its own
+   * filter - the guarantee the old hard-delete rule protected still holds.
    */
   async analytics(now: number): Promise<AnalyticsView> {
     const passages = await this.listAllPassages();

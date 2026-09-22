@@ -85,6 +85,39 @@ function passageInput(
 
 const rungsOf = (cards: { rung: Rung }[]) => cards.map((c) => c.rung).sort();
 
+/**
+ * Give a passage's card real, scored practice history - a scheduled result
+ * (`applySchedule`) plus the attempt row that produced it, the same two
+ * writes a live session leaves behind (see `main.ts#submitStep`). Used by the
+ * revive tests below to prove a revived passage gets back the SAME card and
+ * attempt rows, not a fresh ladder that merely looks similar.
+ */
+async function practiceCard(
+  store: MemoryStore,
+  passageId: number,
+  rung: Rung,
+  at: number,
+  score: number,
+): Promise<void> {
+  const card = await store.getCard(passageId, rung);
+  const result = schedule({
+    intervalStep: card!.intervalStep,
+    streak: card!.streak,
+    score,
+    now: at,
+    rng: makeRng(1),
+  });
+  await store.applySchedule(card!.id, result, score);
+  await store.recordAttempt({
+    cardId: card!.id,
+    at,
+    score,
+    correctFirst: score >= 1 ? 1 : 0,
+    totalSteps: 1,
+    durationMs: 2000,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
@@ -167,6 +200,19 @@ describe('migrate', () => {
     expect(await store.listPassages(collectionId)).toHaveLength(1);
     const metaRows = await harness.query(`SELECT * FROM meta`);
     expect(metaRows).toHaveLength(1);
+  });
+
+  it('adds the v3 deleted_at column to passage', async () => {
+    // Decision 16 (task 0028/P6): `removePassage` becomes an `UPDATE` that
+    // sets this column instead of a `DELETE`, and every read path
+    // (`listPassages`, `listAllPassages`, `countAllPassages`, `getPassage`,
+    // `analytics`, `dueCount`/`nextDueCard`) filters `deleted_at IS NULL`. A
+    // missed `ALTER TABLE` here would surface as "no such column" the moment
+    // anything tried to soft-delete or filter on it.
+    const harness = new SqliteHarness();
+    await migrate(harness);
+    const passageCols = await harness.query<{ name: string }>(`PRAGMA table_info(passage)`);
+    expect(passageCols.map((c) => c.name)).toContain('deleted_at');
   });
 
   it('keeps foreign keys enforceable, which the cascades depend on', async () => {
@@ -375,7 +421,7 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
       durationMs: 4000,
     });
 
-    await store.removePassage(second.id);
+    await store.removePassage(second.id, NOW);
 
     const survivor = await store.getCard(first.id, 'refmatch');
     expect(survivor).toBeDefined();
@@ -458,12 +504,14 @@ describe('plan-wide sibling count', () => {
 // ---------------------------------------------------------------------------
 
 describe('removePassage', () => {
-  it('cascades to the passage\'s cards and their attempts', async () => {
-    // The one place the never-prune rule yields. Keeping the attempt history
-    // of a passage the user explicitly removed would mean their delete did
-    // not delete, and the Analytics screen would go on counting work against
-    // material that is gone. This only works if the FK cascade is real, which
-    // is why it is asserted against SQLite rather than against a fake.
+  it("soft-deletes: the row, its cards and its attempts all survive, only hidden from every normal read", async () => {
+    // Decision 16 (task 0028/P6) REVERSES the rule this test used to assert
+    // (a hard `DELETE` that took the cards and attempts with it via `ON
+    // DELETE CASCADE`, "on purpose", per `removePassage`'s old comment).
+    // Keeping the row and its history around is what lets `addPassage`'s
+    // revive branch restore this exact progress if the same reference is
+    // added again later - so this test now asserts the opposite of what it
+    // used to.
     const { store, collectionId, harness } = await freshStore();
     const { passage } = await store.addPassage(
       passageInput(collectionId, 19023001, 3, 'Psalm 23:1-3'),
@@ -481,14 +529,21 @@ describe('removePassage', () => {
     }
     expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(3);
 
-    await store.removePassage(passage.id);
+    await store.removePassage(passage.id, NOW);
 
+    // Invisible everywhere a soft-deleted passage must behave like a
+    // hard-deleted one always did...
     expect(await store.getPassage(passage.id)).toBeUndefined();
-    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(0);
-    // The cascade has to reach two levels: passage -> card -> attempt. A
-    // schema that cascaded only the first level would leave orphan attempt
-    // rows that `analytics()` still counts.
-    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(0);
+    expect(await store.listPassages(collectionId)).toEqual([]);
+
+    // ...but the row itself, and everything hanging off it, is still there.
+    const rawPassage = await harness.queryOne<{ id: number; deleted_at: number | null }>(
+      `SELECT id, deleted_at FROM passage WHERE id = ?`,
+      [passage.id],
+    );
+    expect(rawPassage).toMatchObject({ id: passage.id, deleted_at: NOW });
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(3);
+    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(3);
   });
 
   it('leaves other passages and their history untouched', async () => {
@@ -509,7 +564,7 @@ describe('removePassage', () => {
       durationMs: null,
     });
 
-    await store.removePassage(drop.id);
+    await store.removePassage(drop.id, NOW);
 
     expect(await store.getPassage(keep.id)).toBeDefined();
     expect(
@@ -521,7 +576,26 @@ describe('removePassage', () => {
     // Two panels open on the same plan can both send `removePassage` for the
     // same row. The second must not throw across the RPC boundary.
     const { store } = await freshStore();
-    await expect(store.removePassage(4242)).resolves.toBeUndefined();
+    await expect(store.removePassage(4242, NOW)).resolves.toBeUndefined();
+  });
+
+  it('is a no-op for a passage that is already soft-deleted', async () => {
+    // `getPassage` filters `deleted_at IS NULL`, so a second `removePassage`
+    // on the same id sees nothing to act on and must not overwrite the
+    // original `deleted_at` (which is what `purgeOldDeletedPassages` uses to
+    // decide the row's age).
+    const { store, collectionId, harness } = await freshStore();
+    const { passage } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    await store.removePassage(passage.id, NOW);
+    await store.removePassage(passage.id, NOW + DAY_MS);
+
+    const rawPassage = await harness.queryOne<{ deleted_at: number }>(
+      `SELECT deleted_at FROM passage WHERE id = ?`,
+      [passage.id],
+    );
+    expect(rawPassage?.deleted_at).toBe(NOW);
   });
 });
 
@@ -646,12 +720,18 @@ describe('createCollection', () => {
 });
 
 describe('deleteCollection', () => {
-  it("cascades to the list's own passages, their cards and their attempts", async () => {
-    // Mirrors `removePassage`'s own cascade test, one level up: deleting a
-    // whole list has to reach passage -> card -> attempt just as deleting one
-    // passage does, since `collection`'s cascade onto `passage` is what P4
-    // relies on to avoid any migration - see `db.ts`'s schema.
-    const { store, harness } = await freshStore();
+  const FALLBACK_NAME = 'My plan';
+
+  it("soft-deletes the list's own passages into a surviving collection, keeping their cards and attempts", async () => {
+    // Decision 16 (task 0028/P6) REVERSES the rule this test used to assert
+    // (a plain `DELETE FROM collection` that let its `ON DELETE CASCADE`
+    // reach passage -> card -> attempt). A collection row cascading straight
+    // through would defeat the whole point of a soft delete for a whole-list
+    // delete - see `deleteCollection`'s own comment on the CASCADE problem -
+    // so this now asserts the opposite: the collection row is gone, but the
+    // passage (and its cards and attempts) survives, reassigned rather than
+    // removed.
+    const { store, collectionId, harness } = await freshStore();
     const other = await store.createCollection('List B', NOW);
     const { passage } = await store.addPassage(passageInput(other.id, 19023001, 3, 'Psalm 23:1-3'));
     const cards = await store.listCards(passage.id);
@@ -667,14 +747,23 @@ describe('deleteCollection', () => {
     }
     expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(3);
 
-    await store.deleteCollection(other.id);
+    await store.deleteCollection(other.id, NOW, FALLBACK_NAME);
 
+    // The collection row itself is really gone...
     expect(await harness.query(`SELECT id FROM collection WHERE id = ?`, [other.id])).toHaveLength(0);
-    expect(
-      await harness.query(`SELECT id FROM passage WHERE collection_id = ?`, [other.id]),
-    ).toHaveLength(0);
-    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(0);
-    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(0);
+    // ...and the passage is invisible everywhere a soft-deleted passage
+    // should be, same as `removePassage` leaves one...
+    expect(await store.listPassages(collectionId)).toEqual([]);
+    expect(await store.getPassage(passage.id)).toBeUndefined();
+    // ...but its row, cards and attempts all still physically exist, moved
+    // into the surviving collection rather than gone with the CASCADE.
+    const rawPassage = await harness.queryOne<{ collection_id: number; deleted_at: number | null }>(
+      `SELECT collection_id, deleted_at FROM passage WHERE id = ?`,
+      [passage.id],
+    );
+    expect(rawPassage).toMatchObject({ collection_id: collectionId, deleted_at: NOW });
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(3);
+    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(3);
   });
 
   it('leaves other lists and their passages untouched', async () => {
@@ -685,9 +774,12 @@ describe('deleteCollection', () => {
     const other = await store.createCollection('List B', NOW);
     await store.addPassage(passageInput(other.id, 45008028, 1, 'Romans 8:28'));
 
-    await store.deleteCollection(other.id);
+    await store.deleteCollection(other.id, NOW, FALLBACK_NAME);
 
     expect(await store.getPassage(keep.id)).toBeDefined();
+    // `other`'s soft-deleted passage was reassigned into `collectionId` (the
+    // only survivor) but must not inflate its shown count - see
+    // `listCollections`'s own `deleted_at IS NULL` join condition.
     expect(await store.listCollections()).toEqual([
       { id: collectionId, name: 'My plan', passageCount: 1 },
     ]);
@@ -695,7 +787,249 @@ describe('deleteCollection', () => {
 
   it('is a no-op for a list that is already gone', async () => {
     const { store } = await freshStore();
-    await expect(store.deleteCollection(99999)).resolves.toBeUndefined();
+    await expect(store.deleteCollection(99999, NOW, FALLBACK_NAME)).resolves.toBeUndefined();
+  });
+
+  it('hard-deletes a passage that collides with one already in the target collection', async () => {
+    // The one edge case `deleteCollection`'s own comment calls out: the
+    // target collection already has its own row for the exact same
+    // reference (the user had added it to both lists independently), and the
+    // `passage_range_unique` index (scoped per collection) forbids
+    // reassigning a second one there. Decision 16 names only one target
+    // collection for this move, so the duplicate is hard-deleted outright
+    // rather than left to block the whole list's deletion - the survivor
+    // already in the target keeps its own history untouched.
+    const { store, collectionId, harness } = await freshStore();
+    const { passage: survivor } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    const other = await store.createCollection('List B', NOW);
+    const { passage: duplicate } = await store.addPassage(
+      passageInput(other.id, 43003016, 1, 'John 3:16'),
+    );
+
+    await store.deleteCollection(other.id, NOW, FALLBACK_NAME);
+
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [duplicate.id])).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [duplicate.id])).toHaveLength(0);
+    expect(await store.getPassage(survivor.id)).toBeDefined();
+    expect(await store.listPassages(collectionId)).toHaveLength(1);
+  });
+
+  it('recreates a default collection to hold orphaned passages when the last list is deleted', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const { passage } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+
+    await store.deleteCollection(collectionId, NOW, FALLBACK_NAME);
+
+    const collections = await harness.query<{ id: number; name: string }>(`SELECT id, name FROM collection`);
+    expect(collections).toHaveLength(1);
+    expect(collections[0]!.name).toBe(FALLBACK_NAME);
+    const rawPassage = await harness.queryOne<{ collection_id: number; deleted_at: number | null }>(
+      `SELECT collection_id, deleted_at FROM passage WHERE id = ?`,
+      [passage.id],
+    );
+    expect(rawPassage).toMatchObject({ collection_id: collections[0]!.id, deleted_at: NOW });
+  });
+
+  it('leaves the app usable afterwards: the recreated default can take a new passage and revive an old one', async () => {
+    // Not just "a row exists" - the whole app has to keep working through
+    // this edge case: a fresh add lands in the recreated default normally,
+    // AND the original (soft-deleted) passage can still be found by its own
+    // revive branch afterwards.
+    const { store, collectionId, harness } = await freshStore();
+    const { passage: original } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+
+    await store.deleteCollection(collectionId, NOW, FALLBACK_NAME);
+    const recreated = (
+      await harness.query<{ id: number }>(`SELECT id FROM collection`)
+    )[0]!;
+
+    const fresh = await store.addPassage(
+      passageInput(recreated.id, 45008028, 1, 'Romans 8:28'),
+    );
+    expect(fresh.created).toBe(true);
+    expect(await store.listPassages(recreated.id)).toHaveLength(1);
+
+    const revived = await store.addPassage(
+      passageInput(recreated.id, 43003016, 1, 'John 3:16'),
+    );
+    expect(revived.revived).toBe(true);
+    expect(revived.passage.id).toBe(original.id);
+    expect(await store.listPassages(recreated.id)).toHaveLength(2); // fresh + revived
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Restoring progress on re-add (Decision 16, task 0028/P6)
+// ---------------------------------------------------------------------------
+
+describe('addPassage revive branch', () => {
+  it('revives a soft-deleted passage back into the SAME collection, restoring its cards and attempts', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const { passage } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    await practiceCard(store, passage.id, 'blanks', NOW, 0.9);
+    const blanks = await store.getCard(passage.id, 'blanks');
+    const attemptsBefore = await harness.query(`SELECT id FROM attempt WHERE card_id = ?`, [blanks!.id]);
+    expect(attemptsBefore).toHaveLength(1);
+
+    await store.removePassage(passage.id, NOW + DAY_MS);
+    expect(await store.listPassages(collectionId)).toEqual([]);
+
+    const revived = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+
+    expect(revived.created).toBe(false);
+    expect(revived.revived).toBe(true);
+    expect(revived.passage.id).toBe(passage.id); // the SAME row, not a new one
+
+    const revivedBlanks = await store.getCard(revived.passage.id, 'blanks');
+    expect(revivedBlanks!.id).toBe(blanks!.id); // the SAME card, not a fresh ladder
+    expect(revivedBlanks!.lastScore).toBe(0.9);
+    expect(revivedBlanks!.streak).toBe(1);
+
+    const attemptsAfter = await harness.query(`SELECT id FROM attempt WHERE card_id = ?`, [blanks!.id]);
+    expect(attemptsAfter).toEqual(attemptsBefore); // no new or duplicated history
+  });
+
+  it("does NOT revive when a soft-deleted row exists but this exact reference is already active - the ordinary duplicate-add case comes first", async () => {
+    const { store, collectionId } = await freshStore();
+    const { passage: unrelated } = await store.addPassage(
+      passageInput(collectionId, 45008028, 1, 'Romans 8:28'),
+    );
+    await store.removePassage(unrelated.id, NOW); // an unrelated soft-deleted row exists
+
+    const { passage: active } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    const second = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+
+    expect(second.created).toBe(false);
+    expect(second.revived).toBe(false); // matched the active row first, never looked at the soft-deleted one
+    expect(second.passage.id).toBe(active.id);
+  });
+
+  it('revives a soft-deleted passage into a DIFFERENT collection - the whole-list-delete scenario', async () => {
+    // This is the scenario item 18 actually asks for, and the single most
+    // important test in this subtask: a list is deleted OUTRIGHT (not just
+    // one passage removed from a surviving list), and the same reference is
+    // re-added into a brand new list. `deleteCollection`'s own
+    // reassign-then-delete fix is what keeps the row alive for this to find;
+    // a revive search scoped to the passage's old collection alone would miss
+    // it entirely the moment that collection is gone.
+    const { store, collectionId: listA, harness } = await freshStore();
+    const { passage } = await store.addPassage(passageInput(listA, 43003016, 1, 'John 3:16'));
+
+    // Real progress on two separate practice sessions, not a placeholder.
+    await practiceCard(store, passage.id, 'blanks', NOW, 0.85);
+    await practiceCard(store, passage.id, 'blanks', NOW + DAY_MS, 1);
+    const blanks = await store.getCard(passage.id, 'blanks');
+    const attemptsBefore = await harness.query<{ id: number; score: number }>(
+      `SELECT id, score FROM attempt WHERE card_id = ? ORDER BY id`,
+      [blanks!.id],
+    );
+    expect(attemptsBefore).toHaveLength(2);
+
+    // Delete the WHOLE list, not just the passage.
+    await store.deleteCollection(listA, NOW + 2 * DAY_MS, 'My plan');
+    expect(await harness.query(`SELECT id FROM collection WHERE id = ?`, [listA])).toHaveLength(0);
+
+    // Re-add the same reference into a brand new, unrelated list.
+    const listB = await store.createCollection('List B', NOW + 3 * DAY_MS);
+    const revived = await store.addPassage(passageInput(listB.id, 43003016, 1, 'John 3:16'));
+
+    expect(revived.created).toBe(false);
+    expect(revived.revived).toBe(true);
+    expect(revived.passage.id).toBe(passage.id);
+    expect(revived.passage.collectionId).toBe(listB.id);
+
+    // Real progress continuity, not a fresh ladder: the SAME card row, with
+    // its scheduling state intact, and BOTH prior attempts still attached.
+    const revivedBlanks = await store.getCard(revived.passage.id, 'blanks');
+    expect(revivedBlanks!.id).toBe(blanks!.id);
+    expect(revivedBlanks!.lastScore).toBe(1);
+    expect(revivedBlanks!.streak).toBe(2); // two consecutive passes, carried over
+
+    const attemptsAfter = await harness.query<{ id: number; score: number }>(
+      `SELECT id, score FROM attempt WHERE card_id = ? ORDER BY id`,
+      [blanks!.id],
+    );
+    expect(attemptsAfter).toEqual(attemptsBefore); // the exact same two rows, not new ones
+
+    // And it shows up in list B's own plan now, not list A's - which no
+    // longer exists at all.
+    expect(await store.listPassages(listB.id)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Purging old soft-deleted passages (Decision 16, task 0028/P6)
+// ---------------------------------------------------------------------------
+
+describe('purgeOldDeletedPassages', () => {
+  const SEVEN_DAYS_MS = 7 * DAY_MS;
+
+  it('leaves a soft-deleted passage younger than the max age untouched', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const { passage } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    await store.removePassage(passage.id, NOW);
+
+    const purged = await store.purgeOldDeletedPassages(NOW + SEVEN_DAYS_MS - 1, SEVEN_DAYS_MS);
+
+    expect(purged).toBe(0);
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [passage.id])).toHaveLength(1);
+  });
+
+  it('hard-deletes a soft-deleted passage older than the max age, cards and attempts included', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const { passage } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+    await practiceCard(store, passage.id, 'blanks', NOW, 0.9);
+    const blanks = await store.getCard(passage.id, 'blanks');
+    expect(await harness.query(`SELECT id FROM attempt WHERE card_id = ?`, [blanks!.id])).toHaveLength(1);
+
+    await store.removePassage(passage.id, NOW);
+
+    const purged = await store.purgeOldDeletedPassages(NOW + SEVEN_DAYS_MS + 1, SEVEN_DAYS_MS);
+
+    expect(purged).toBe(1);
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [passage.id])).toHaveLength(0);
+    // The cascade reaches two levels down, same as it always did for a hard
+    // delete: passage -> card -> attempt.
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM attempt WHERE card_id = ?`, [blanks!.id])).toHaveLength(0);
+  });
+
+  it('leaves active (non-deleted) passages untouched no matter how old', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const { passage } = await store.addPassage(
+      passageInput(collectionId, 43003016, 1, 'John 3:16'),
+    );
+
+    const purged = await store.purgeOldDeletedPassages(NOW + 365 * DAY_MS, SEVEN_DAYS_MS);
+
+    expect(purged).toBe(0);
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [passage.id])).toHaveLength(1);
+  });
+
+  it('purges several old passages in one call and reports how many', async () => {
+    const { store, collectionId } = await freshStore();
+    const { passage: a } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    const { passage: b } = await store.addPassage(passageInput(collectionId, 45008028, 1, 'Romans 8:28'));
+    await store.removePassage(a.id, NOW);
+    await store.removePassage(b.id, NOW);
+
+    const purged = await store.purgeOldDeletedPassages(NOW + SEVEN_DAYS_MS + 1, SEVEN_DAYS_MS);
+
+    expect(purged).toBe(2);
   });
 });
 
@@ -726,14 +1060,18 @@ describe('active collection', () => {
     await store.setActiveCollectionId(other.id);
     expect(await store.getActiveCollectionId()).toBe(other.id);
 
-    await store.deleteCollection(other.id);
+    await store.deleteCollection(other.id, NOW, 'My plan');
 
     expect(await store.getActiveCollectionId()).toBe(collectionId);
   });
 
   it('returns undefined only once no collection exists at all', async () => {
+    // The lone collection here has no passages, so `deleteCollection` has
+    // nothing to reassign and skips creating a fallback - unlike the "last
+    // list deleted" case in `describe('deleteCollection')` above, this really
+    // does leave zero collections.
     const { store, harness, collectionId } = await freshStore();
-    await store.deleteCollection(collectionId);
+    await store.deleteCollection(collectionId, NOW, 'My plan');
     expect(await harness.query(`SELECT * FROM collection`)).toHaveLength(0);
     expect(await store.getActiveCollectionId()).toBeUndefined();
   });
