@@ -2351,6 +2351,77 @@ describe('the manage passages screen', () => {
     expect(spokenText(root)).not.toContain("can't be deleted");
   });
 
+  describe('switching the active list (task 0031)', () => {
+    function twoLists(): void {
+      host.handlers.getCollections = () => ({
+        ok: true,
+        data: [
+          collectionViewFixture({ id: 1, name: 'My plan' }),
+          collectionViewFixture({ id: 2, name: 'Sunday memory verses' }),
+        ],
+      });
+    }
+    const switchBtn = (row: HTMLElement): HTMLButtonElement | undefined =>
+      Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Switch to this list');
+
+    it('marks the active row "Current" and omits its switch button, while other rows get one', async () => {
+      twoLists();
+      const root = renderManage(host, managePlan()); // collectionId 1 is active
+      container.appendChild(root);
+      await settle();
+
+      const active = listRow(root, 'My plan');
+      expect(spokenText(active)).toContain('Current');
+      expect(switchBtn(active)).toBeUndefined();
+
+      const other = listRow(root, 'Sunday memory verses');
+      expect(spokenText(other)).not.toContain('Current');
+      expect(switchBtn(other)).toBeDefined();
+    });
+
+    it('pressing "Switch to this list" sends setActiveCollection, announces and reloads', async () => {
+      twoLists();
+      host.handlers.setActiveCollection = () => ({ ok: true, data: {} });
+      const root = renderManage(host, managePlan());
+      container.appendChild(root);
+      await settle();
+
+      const reloadsBefore = host.reloads;
+      switchBtn(listRow(root, 'Sunday memory verses'))!.click();
+      await settle();
+
+      expect(host.requests).toContainEqual({ type: 'setActiveCollection', collectionId: 2 });
+      expect(host.announcements).toContainEqual('Switched to Sunday memory verses.');
+      expect(host.reloads).toBeGreaterThan(reloadsBefore);
+    });
+
+    it('shows the worker\'s error and does not reload when the switch fails', async () => {
+      twoLists();
+      host.handlers.setActiveCollection = () => ({ ok: false, error: 'Could not switch.' });
+      const root = renderManage(host, managePlan());
+      container.appendChild(root);
+      await settle();
+
+      const reloadsBefore = host.reloads;
+      switchBtn(listRow(root, 'Sunday memory verses'))!.click();
+      await settle();
+
+      expect(spokenText(listRow(root, 'Sunday memory verses'))).toContain('Could not switch.');
+      expect(host.reloads).toBe(reloadsBefore);
+    });
+
+    it('marks whichever list the plan says is active, not always the first row', async () => {
+      twoLists();
+      const root = renderManage(host, { ...managePlan(), collectionId: 2, collectionName: 'Sunday memory verses' });
+      container.appendChild(root);
+      await settle();
+
+      expect(spokenText(listRow(root, 'Sunday memory verses'))).toContain('Current');
+      expect(switchBtn(listRow(root, 'Sunday memory verses'))).toBeUndefined();
+      expect(switchBtn(listRow(root, 'My plan'))).toBeDefined();
+    });
+  });
+
   it('renames a row (not just the first one) on Save, and reloads both the table and the screen', async () => {
     host.handlers.getCollections = () => ({
       ok: true,

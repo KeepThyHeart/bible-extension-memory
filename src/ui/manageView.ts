@@ -3,8 +3,9 @@
  * passage list, each with the action this screen supports (P1/P4/P5, M5).
  *
  * **The lists table (P5).** One row per `CollectionView` from `getCollections`
- * - every list, not just the active one `plan` is scoped to - with Edit
- * (rename) and Delete per row, plus a "+ New list" control and, alongside
+ * - every list, not just the active one `plan` is scoped to - with Switch
+ * (make it the active list, task 0031; the active row shows a "Current"
+ * badge instead), Edit (rename) and Delete per row, plus a "+ New list" control and, alongside
  * it, "Add a suggested list…" (P7 - see `renderSuggestedListsControl` below).
  * This replaces
  * P1's placeholder wholesale: that shell rendered exactly one hardcoded row
@@ -58,7 +59,7 @@ export function renderManage(host: PanelHost, plan: PlanView): HTMLElement {
     }),
   );
 
-  root.appendChild(renderListsBlock(host));
+  root.appendChild(renderListsBlock(host, plan.collectionId));
   root.appendChild(renderAddPassageBlock(host));
   root.appendChild(renderPassagesBlock(host, plan));
 
@@ -80,7 +81,7 @@ export function renderManage(host: PanelHost, plan: PlanView): HTMLElement {
  * loading gap of one microtask is the tradeoff, the same one `TestHost`'s own
  * `settle()` helper exists for in the test suite.
  */
-function renderListsBlock(host: PanelHost): HTMLElement {
+function renderListsBlock(host: PanelHost, activeCollectionId: number): HTMLElement {
   const listEl = el('ul', { class: 'sm-list', attrs: { 'aria-label': 'Lists' } });
   const errorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
 
@@ -91,7 +92,7 @@ function renderListsBlock(host: PanelHost): HTMLElement {
       return;
     }
     replace(errorSlot, []);
-    replace(listEl, reply.data.map((c) => renderListRow(host, c, loadCollections)));
+    replace(listEl, reply.data.map((c) => renderListRow(host, c, c.id === activeCollectionId, loadCollections)));
   }
 
   void loadCollections();
@@ -118,12 +119,26 @@ function renderListsBlock(host: PanelHost): HTMLElement {
  * former note, still true here: trust the reload, not the locally-typed
  * value, to match whatever the worker actually stored).
  */
-function renderListRow(host: PanelHost, collection: CollectionView, reload: () => void): HTMLElement {
+function renderListRow(
+  host: PanelHost,
+  collection: CollectionView,
+  isActive: boolean,
+  reload: () => void,
+): HTMLElement {
   const row = el('li', { class: 'sm-row' });
 
   const showView = (): void => {
     replace(row, [
       el('span', { class: 'sm-row-ref', text: collection.name }),
+      // The active list gets a "Current" badge instead of a switch button
+      // (task 0031): a "Switch to this list" on the list already in use would
+      // be a no-op, so it is omitted rather than shown disabled.
+      isActive
+        ? el('span', { class: 'sm-badge sm-badge-suggested sm-badge-current', text: 'Current' })
+        : button('Switch to this list', () => void doSwitch(), {
+            class: 'sm-btn sm-btn-small sm-btn-quiet',
+            attrs: { 'aria-label': `Switch to ${collection.name}` },
+          }),
       button('Edit', showEdit, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
       button('Delete', showDeleteChecking, {
         class: 'sm-btn sm-btn-small sm-btn-danger-quiet',
@@ -131,6 +146,28 @@ function renderListRow(host: PanelHost, collection: CollectionView, reload: () =
       }),
     ]);
   };
+
+  /**
+   * Makes this list the active one (`setActiveCollection`, persisted by the
+   * worker so it survives a reload). Follows the same shape as the other
+   * setters on this screen: announce, then `host.reload()` so the plan, the
+   * home screen's data and this table's own "Current" badge are re-fetched
+   * from the worker rather than patched locally.
+   */
+  async function doSwitch(): Promise<void> {
+    const reply = await host.request({ type: 'setActiveCollection', collectionId: collection.id });
+    if (!reply.ok) {
+      replace(row, [
+        el('span', { class: 'sm-row-ref', text: collection.name }),
+        errorBanner(reply.error),
+        button('Cancel', showView, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
+      ]);
+      return;
+    }
+    host.announce(`Switched to ${collection.name}.`);
+    reload();
+    host.reload();
+  }
 
   function showEdit(): void {
     const input = el('input', {
