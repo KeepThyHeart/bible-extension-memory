@@ -151,11 +151,11 @@ describe('activation', () => {
 
   it('subscribes to active verse changes', async () => {
     const subscribe = vi.fn().mockResolvedValue({ dispose: vi.fn() });
-    const api = createMockApi({ bible: { onDidChangeActiveVerse: { subscribe } } });
+    const api = createMockApi({ events: { subscribe } });
 
     await activate(api);
 
-    expect(subscribe).toHaveBeenCalled();
+    expect(subscribe).toHaveBeenCalledWith('verse.activeChanged', expect.any(Function));
   });
 
   it('contributes a verse context menu item pointing at a bound command', async () => {

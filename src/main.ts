@@ -352,7 +352,7 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
   await registerContextMenu();
   await refreshStatusBar();
 
-  await api.bible.onDidChangeActiveVerse.subscribe((event) => {
+  await api.events.subscribe('verse.activeChanged', (event) => {
     activeVerseId = event ? event.verseId : null;
     if (event?.module) activeModule = event.module;
     postActiveVerse();
