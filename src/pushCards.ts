@@ -59,7 +59,8 @@ function normalizeDays(v: unknown): Weekday[] | null {
   if (!Array.isArray(v)) return null;
   const days = new Set<number>();
   for (const d of v) if (Number.isInteger(d) && d >= 0 && d <= 6) days.add(d as number);
-  return days.size ? ([...days].sort((a, b) => a - b) as Weekday[]) : null;
+  // An empty list is valid: the slot exists but never fires.
+  return [...days].sort((a, b) => a - b) as Weekday[];
 }
 
 function normalizeSlot(raw: unknown, index: number): ReminderSlot | null {
@@ -96,7 +97,8 @@ export function normalizePushSettings(raw: unknown): PushCardSettings {
         ids.add(slot.id);
         slots.push(slot);
       });
-      if (slots.length) out.plan.slots = slots;
+      // An explicitly provided list (even empty) is kept as is.
+      out.plan.slots = slots;
     }
     const q = raw.plan.quiet;
     if (isObj(q) && typeof q.start === 'string' && typeof q.end === 'string') {
@@ -133,7 +135,7 @@ export interface SelectOptions {
  * already used that local day. Preference: most overdue first, then (for
  * 'dueThenReview') well-learned passages seen longest ago. A fire with no
  * candidate is dropped rather than padded. After each assignment the passage
- * is treated as seen at that fire and not due again for a day (plus slack), so one run
+ * is treated as seen at that fire and not due again until the next local day, so one run
  * spreads across passages and tomorrow morning does not repeat today's.
  */
 export function selectForFires(
@@ -172,7 +174,8 @@ export function selectForFires(
 
     out.push({ at: t, passageId: pick.id });
     pick.lastSeen = t;
-    pick.due = t + DAY_MS + HOUR_MS; // an hour of slack so a 23-hour day cannot repeat it
+    // Not due again until the next local day; usedByDay stops same-day repeats.
+    pick.due = opts.cal.addDays(day, 1);
     usedToday.add(pick.id);
     used.set(day, usedToday);
   }

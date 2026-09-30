@@ -407,6 +407,8 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
     await push.start();
     await refreshStatusBar();
   } catch (err) {
+    push?.dispose();
+    push = null;
     console.warn(`Scripture Memory: push cards unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 

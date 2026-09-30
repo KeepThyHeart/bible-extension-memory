@@ -48,7 +48,8 @@ class Host {
   }
   request<R extends PanelRequest>(r: R): Promise<PanelReply<RequestMap[R['type']]>> {
     this.requests.push(r);
-    const data = this.reply ?? view();
+    const data =
+      this.reply ?? (r.type === 'setPushSettings' ? view({ settings: (r as { settings: PushCardSettings }).settings }) : view());
     return Promise.resolve({ ok: true, data } as PanelReply<RequestMap[R['type']]>);
   }
   go(): void {}

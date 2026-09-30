@@ -768,7 +768,7 @@ export interface RequestMap {
   getCardStack: CardStackView;
   gradeRecall: { nextDueAt: number | null; stack: CardStackView };
   snoozeCard: { snoozedUntil: number };
-  consumeLaunchIntent: { showCard: boolean };
+  consumeLaunchIntent: { showCard: boolean; key?: string };
 }
 
 // ---------------------------------------------------------------------------

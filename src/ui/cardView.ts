@@ -51,9 +51,15 @@ export function renderCardStack(host: PanelHost, initial: CardStackView): HTMLEl
   root.appendChild(body);
 
   // --- keyboard -----------------------------------------------------------
+  let observer: MutationObserver | null = null;
+  const cleanup = (): void => {
+    document.removeEventListener('keydown', onKey);
+    observer?.disconnect();
+    observer = null;
+  };
   const onKey = (ev: KeyboardEvent): void => {
     if (!root.isConnected) {
-      document.removeEventListener('keydown', onKey);
+      cleanup();
       return;
     }
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -74,6 +80,15 @@ export function renderCardStack(host: PanelHost, initial: CardStackView): HTMLEl
     }
   };
   document.addEventListener('keydown', onKey);
+  // Unbind as soon as the screen leaves the document, not on the next key press.
+  if (typeof MutationObserver !== 'undefined' && document.body) {
+    let wasConnected = false;
+    observer = new MutationObserver(() => {
+      if (root.isConnected) wasConnected = true;
+      else if (wasConnected) cleanup();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
 
   // --- actions ------------------------------------------------------------
   const versesBox = el('div', { class: 'sm-card-verses', attrs: { 'aria-live': 'polite' } });
@@ -145,6 +160,7 @@ export function renderCardStack(host: PanelHost, initial: CardStackView): HTMLEl
       return;
     }
     replace(body, [cardElement(card)]);
+    host.announce(`${handled + 1} of ${handled + stack.cards.length}: ${card.reference}`);
     (revealButton as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
 

@@ -18,7 +18,6 @@ import {
   MIN_WINDOW_GAP_MIN,
   type Calendar,
 } from '../src/reminderPlan';
-import { makeRng } from '../src/scheduler';
 import type { ReminderPlan, Weekday } from '../src/pushTypes';
 
 const cal = fixedOffsetCalendar(0);
@@ -28,7 +27,6 @@ const DAY = 24 * HOUR;
 const MON = Date.UTC(2026, 8, 28);
 const ALL: Weekday[] = [0, 1, 2, 3, 4, 5, 6];
 const at = (day: number, h: number, m = 0) => MON + day * DAY + h * HOUR + m * 60_000;
-const rng = () => makeRng(42);
 
 function plan(p: Partial<ReminderPlan>): ReminderPlan {
   return { slots: [], maxPerDay: 12, ...p };
@@ -71,7 +69,7 @@ describe('inQuiet', () => {
 describe('expandPlan: fixed slots', () => {
   it('fires each day over a 3-day horizon', () => {
     const p = plan({ slots: [{ id: 'a', kind: 'fixed', time: '08:00', days: ALL }] });
-    const fires = expandPlan(p, MON, 3 * DAY, cal, rng());
+    const fires = expandPlan(p, MON, 3 * DAY, cal);
     expect(fires.map((f) => f.at)).toEqual([at(0, 8), at(1, 8), at(2, 8)]);
     expect(fires.every((f) => f.slotId === 'a')).toBe(true);
   });
@@ -79,16 +77,16 @@ describe('expandPlan: fixed slots', () => {
   it('honours the weekday filter', () => {
     // Monday = 1, Wednesday = 3.
     const p = plan({ slots: [{ id: 'a', kind: 'fixed', time: '08:00', days: [1, 3] }] });
-    const fires = expandPlan(p, MON, 7 * DAY, cal, rng());
+    const fires = expandPlan(p, MON, 7 * DAY, cal);
     expect(fires.map((f) => f.at)).toEqual([at(0, 8), at(2, 8)]);
   });
 
   it('stops at the horizon', () => {
     const p = plan({ slots: [{ id: 'a', kind: 'fixed', time: '20:00', days: ALL }] });
-    const fires = expandPlan(p, MON, 2 * DAY, cal, rng());
+    const fires = expandPlan(p, MON, 2 * DAY, cal);
     expect(fires.map((f) => f.at)).toEqual([at(0, 20), at(1, 20)]);
-    expect(expandPlan(p, MON, 2 * DAY - 1, cal, rng()).length).toBe(2);
-    expect(expandPlan(p, MON, at(1, 20) - MON, cal, rng()).length).toBe(1);
+    expect(expandPlan(p, MON, 2 * DAY - 1, cal).length).toBe(2);
+    expect(expandPlan(p, MON, at(1, 20) - MON, cal).length).toBe(1);
   });
 
   it('dedupes identical instants from different slots', () => {
@@ -98,7 +96,7 @@ describe('expandPlan: fixed slots', () => {
         { id: 'b', kind: 'fixed', time: '08:00', days: ALL },
       ],
     });
-    expect(expandPlan(p, MON, DAY, cal, rng())).toHaveLength(1);
+    expect(expandPlan(p, MON, DAY, cal)).toHaveLength(1);
   });
 
   it('returns fires sorted across slots', () => {
@@ -108,7 +106,7 @@ describe('expandPlan: fixed slots', () => {
         { id: 'early', kind: 'fixed', time: '07:00', days: ALL },
       ],
     });
-    expect(expandPlan(p, MON, DAY, cal, rng()).map((f) => f.slotId)).toEqual(['early', 'late']);
+    expect(expandPlan(p, MON, DAY, cal).map((f) => f.slotId)).toEqual(['early', 'late']);
   });
 });
 
@@ -117,9 +115,9 @@ describe('expandPlan: quiet hours', () => {
     plan({ slots: [{ id: 'a', kind: 'fixed', time: t, days: ALL }], quiet: { start: '21:30', end: '07:00' } });
 
   it('drops fires at 23:00 and 06:30, keeps 07:00', () => {
-    expect(expandPlan(fixedAt('23:00'), MON, DAY, cal, rng())).toHaveLength(0);
-    expect(expandPlan(fixedAt('06:30'), MON, DAY, cal, rng())).toHaveLength(0);
-    expect(expandPlan(fixedAt('07:00'), MON, DAY, cal, rng())).toHaveLength(1);
+    expect(expandPlan(fixedAt('23:00'), MON, DAY, cal)).toHaveLength(0);
+    expect(expandPlan(fixedAt('06:30'), MON, DAY, cal)).toHaveLength(0);
+    expect(expandPlan(fixedAt('07:00'), MON, DAY, cal)).toHaveLength(1);
   });
 
   it('a non-wrapping quiet range drops only inside it', () => {
@@ -130,7 +128,7 @@ describe('expandPlan: quiet hours', () => {
       ],
       quiet: { start: '12:00', end: '14:00' },
     });
-    expect(expandPlan(p, MON, DAY, cal, rng()).map((f) => f.slotId)).toEqual(['b']);
+    expect(expandPlan(p, MON, DAY, cal).map((f) => f.slotId)).toEqual(['b']);
   });
 
   it('start == end means no quiet hours', () => {
@@ -138,7 +136,7 @@ describe('expandPlan: quiet hours', () => {
       slots: [{ id: 'a', kind: 'fixed', time: '23:00', days: ALL }],
       quiet: { start: '22:00', end: '22:00' },
     });
-    expect(expandPlan(p, MON, DAY, cal, rng())).toHaveLength(1);
+    expect(expandPlan(p, MON, DAY, cal)).toHaveLength(1);
   });
 });
 
@@ -151,13 +149,13 @@ describe('expandPlan: maxPerDay', () => {
   }));
 
   it('keeps the earliest fires of each day', () => {
-    const fires = expandPlan(plan({ slots, maxPerDay: 2 }), MON, 2 * DAY, cal, rng());
+    const fires = expandPlan(plan({ slots, maxPerDay: 2 }), MON, 2 * DAY, cal);
     expect(fires.map((f) => f.at)).toEqual([at(0, 8), at(0, 10), at(1, 8), at(1, 10)]);
   });
 
   it('counts fires earlier today that have already passed', () => {
     // From 11:00: 08:00 and 10:00 already fired today and use up the cap.
-    const fires = expandPlan(plan({ slots, maxPerDay: 2 }), at(0, 11), DAY, cal, rng());
+    const fires = expandPlan(plan({ slots, maxPerDay: 2 }), at(0, 11), DAY, cal);
     expect(fires.filter((f) => f.at >= at(0, 11) && f.at < at(1, 0))).toEqual([]);
   });
 });
@@ -167,12 +165,13 @@ describe('expandPlan: window slots', () => {
     plan({ slots: [{ id: 'w', kind: 'window', start, end, count, days: ALL }] });
 
   it('places count fires inside the window, at least 45 minutes apart', () => {
-    for (let seed = 1; seed <= 50; seed++) {
-      const fires = expandPlan(win(4), MON, DAY, cal, makeRng(seed));
+    for (let d = 0; d < 50; d++) {
+      const fires = expandPlan(win(4), MON + d * DAY, DAY, cal).filter((f) => f.at >= MON + d * DAY);
+      const base = MON + d * DAY;
       expect(fires).toHaveLength(4);
       for (const f of fires) {
-        expect(f.at).toBeGreaterThanOrEqual(at(0, 10));
-        expect(f.at).toBeLessThan(at(0, 18));
+        expect(f.at).toBeGreaterThanOrEqual(base + 10 * HOUR);
+        expect(f.at).toBeLessThan(base + 18 * HOUR);
       }
       for (let i = 1; i < fires.length; i++) {
         expect(fires[i].at - fires[i - 1].at).toBeGreaterThanOrEqual(MIN_WINDOW_GAP_MIN * 60_000);
@@ -180,19 +179,20 @@ describe('expandPlan: window slots', () => {
     }
   });
 
-  it('is deterministic for a seed and varies between seeds', () => {
-    const a = expandPlan(win(3), MON, DAY, cal, makeRng(7));
-    const b = expandPlan(win(3), MON, DAY, cal, makeRng(7));
-    const c = expandPlan(win(3), MON, DAY, cal, makeRng(8));
-    expect(a).toEqual(b);
-    expect(a).not.toEqual(c);
+  it('is deterministic per local day and slot, whatever `from` is', () => {
+    const a = expandPlan(win(3), MON, DAY, cal);
+    const b = expandPlan(win(3), MON + 5 * HOUR, DAY - 5 * HOUR, cal);
+    expect(a).toHaveLength(3);
+    expect(b).toEqual(a);
+    const next = expandPlan(win(3), MON + DAY, DAY, cal).map((f) => f.at - (MON + DAY));
+    expect(next).not.toEqual(a.map((f) => f.at - MON));
   });
 
   it('reduces the count when the window is too short', () => {
     // 100 minutes fits at most 3 points 45 minutes apart.
-    const fires = expandPlan(win(6, '10:00', '11:40'), MON, DAY, cal, makeRng(3));
+    const fires = expandPlan(win(6, '10:00', '11:40'), MON, DAY, cal);
     expect(fires).toHaveLength(3);
-    expect(expandPlan(win(2, '10:00', '10:30'), MON, DAY, cal, makeRng(3))).toHaveLength(1);
+    expect(expandPlan(win(2, '10:00', '10:30'), MON, DAY, cal)).toHaveLength(1);
   });
 });
 
@@ -214,14 +214,14 @@ describe('expandPlan: DST', () => {
 
   it('a wall time in a skipped hour still fires once, an hour later', () => {
     const p = plan({ slots: [{ id: 'a', kind: 'fixed', time: '02:30', days: ALL }] });
-    const fires = expandPlan(p, MON, 3 * DAY, stub, rng());
+    const fires = expandPlan(p, MON, 3 * DAY, stub);
     expect(fires).toHaveLength(3);
     expect(fires[1].at).toBe(at(1, 3, 30));
   });
 
   it('a repeated wall time fires once per day, not twice', () => {
     const p = plan({ slots: [{ id: 'a', kind: 'fixed', time: '01:30', days: ALL }] });
-    expect(expandPlan(p, MON, 3 * DAY, stub, rng())).toHaveLength(3);
+    expect(expandPlan(p, MON, 3 * DAY, stub)).toHaveLength(3);
   });
 
   it('quiet hours are judged on the resolved instant', () => {
@@ -230,7 +230,7 @@ describe('expandPlan: DST', () => {
       quiet: { start: '00:00', end: '03:00' },
     });
     // Day 1's fire resolves to 03:30, outside quiet; days 0 and 2 stay quiet.
-    expect(expandPlan(p, MON, 3 * DAY, stub, rng()).map((f) => f.at)).toEqual([at(1, 3, 30)]);
+    expect(expandPlan(p, MON, 3 * DAY, stub).map((f) => f.at)).toEqual([at(1, 3, 30)]);
   });
 });
 

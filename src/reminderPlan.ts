@@ -12,6 +12,7 @@
  */
 
 import type { FireTime, QuietHours, ReminderPlan, Weekday } from './pushTypes';
+import { makeRng } from './scheduler';
 
 /** Milliseconds in a day. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -121,8 +122,22 @@ function windowPoints(lengthMin: number, n: number, rng: () => number): number[]
   return draws.map((d, i) => d + i * MIN_WINDOW_GAP_MIN);
 }
 
+/** Stable 32-bit hash (FNV-1a) of a local day and slot id, seeding that slot's draws. */
+function slotSeed(dayStart: number, slotId: string): number {
+  let h = 0x811c9dc5;
+  const str = dayStart + ':' + slotId;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
 /**
  * Expand a plan into fire times, sorted ascending.
+ *
+ * Random window points are deterministic per local day and slot id, so
+ * recomputing later the same day yields the same times.
  *
  * Walks local days from the start of the day containing `from` (so fires
  * earlier today that have already passed still count against `maxPerDay`, and
@@ -135,7 +150,6 @@ export function expandPlan(
   from: number,
   horizonMs: number,
   cal: Calendar,
-  rng: () => number,
 ): FireTime[] {
   const out: FireTime[] = [];
   const limit = from + horizonMs;
@@ -157,7 +171,7 @@ export function expandPlan(
         const startMin = a.h * 60 + a.m;
         let endMin = b.h * 60 + b.m;
         if (endMin <= startMin) endMin += 24 * 60; // window wraps midnight
-        for (const p of windowPoints(endMin - startMin, slot.count, rng)) {
+        for (const p of windowPoints(endMin - startMin, slot.count, makeRng(slotSeed(day, slot.id)))) {
           const min = startMin + p;
           today.push({ at: cal.atWallTime(day, Math.floor(min / 60), min % 60), slotId: slot.id });
         }

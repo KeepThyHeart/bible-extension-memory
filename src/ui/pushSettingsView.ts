@@ -32,15 +32,26 @@ export function renderPushSettings(host: PanelHost, initial: PushSettingsView): 
   const root = el('section', { class: 'sm-block sm-push', attrs: { 'aria-labelledby': 'sm-push-title' } });
   const statusBox = el('div', { class: 'sm-push-status' });
 
+  let seq = 0;
+
   function send(redraw: boolean): void {
     if (redraw) draw();
+    const mine = ++seq;
+    const sent = JSON.stringify(settings);
     void host.request({ type: 'setPushSettings', settings }).then((reply) => {
+      if (mine !== seq) return; // a newer edit is in flight; ignore this stale reply
       if (!reply.ok) {
         host.announce(reply.error);
         return;
       }
       view = reply.data;
-      drawStatus();
+      if (JSON.stringify(reply.data.settings) !== sent) {
+        // The worker normalised something; show what it actually saved.
+        settings = structuredCloneSafe(reply.data.settings);
+        draw();
+      } else {
+        drawStatus();
+      }
     });
   }
 
@@ -96,10 +107,11 @@ export function renderPushSettings(host: PanelHost, initial: PushSettingsView): 
         renderQuiet(),
         renderMax(),
         renderSource(),
-        radioGroup('Notification text', 'prompt', settings.prompt, [
+        radioGroup('Card prompt (in the app)', 'prompt', settings.prompt, [
           ['reference', 'Reference only'],
           ['firstWords', 'Reference and first words'],
         ], (v) => update((s) => (s.prompt = v as PushCardSettings['prompt']))),
+        el('p', { class: 'sm-hint', text: 'Notifications only ever show the reference, never the verse or its first words.' }),
         radioGroup('On the lock screen', 'lockScreen', settings.lockScreen, [
           ['reference', 'Show the reference'],
           ['generic', 'Generic ("A memory card is ready.")'],

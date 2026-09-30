@@ -77,10 +77,15 @@ describe('selectForFires', () => {
     expect(ids(r)).toEqual([2]);
   });
 
-  it('does not repeat next morning: assigned passages are not due for a day', () => {
+  it('offers a single due passage at 08:00 on consecutive days', () => {
+    const r = selectForFires([fire(0, 8), fire(1, 8), fire(2, 8)], [cand(1)], base);
+    expect(ids(r)).toEqual([1, 1, 1]);
+  });
+
+  it('does not repeat the same day; others go first next morning', () => {
     const r = selectForFires([fire(0, 8), fire(1, 8)], [cand(1), cand(2)], base);
     expect(ids(r)).toEqual([1, 2]);
-    expect(ids(selectForFires([fire(0, 8), fire(1, 8)], [cand(1)], base))).toEqual([1]);
+    expect(ids(selectForFires([fire(0, 8), fire(0, 12)], [cand(1)], base))).toEqual([1]);
   });
 
   it('dueThenReview falls back to well-learned passages, least recently seen', () => {
@@ -99,8 +104,8 @@ describe('selectForFires', () => {
 
   it('pinned restricts the pool to pinned passages', () => {
     const cs = [cand(1, { lastAttemptAt: D0 - 9 * DAY }), cand(2)];
-    const r = selectForFires([fire(0, 8), fire(1, 8)], cs, { ...base, source: 'pinned', pinned: [2] });
-    expect(ids(r)).toEqual([2]); // passage 1 is excluded; 2 is not repeated next morning
+    const r = selectForFires([fire(0, 8), fire(0, 12)], cs, { ...base, source: 'pinned', pinned: [2] });
+    expect(ids(r)).toEqual([2]); // passage 1 is excluded; 2 is not repeated the same day
   });
 });
 
@@ -209,7 +214,7 @@ describe('normalizePushSettings', () => {
     expect(low.kind === 'window' && low.count).toBe(1);
   });
 
-  it('drops slots with bad times or no valid days, falling back to defaults when none remain', () => {
+  it('drops slots with bad times; keeps an empty days list; keeps an explicitly empty slots array', () => {
     const s = normalizePushSettings({
       plan: {
         slots: [
@@ -218,7 +223,9 @@ describe('normalizePushSettings', () => {
         ],
       },
     });
-    expect(s.plan.slots).toEqual(DEFAULT_PUSH_SETTINGS.plan.slots);
+    expect(s.plan.slots).toEqual([{ id: 'b', kind: 'fixed', time: '09:00', days: [] }]);
+    expect(normalizePushSettings({ plan: { slots: [] } }).plan.slots).toEqual([]);
+    expect(normalizePushSettings({ plan: {} }).plan.slots).toEqual(DEFAULT_PUSH_SETTINGS.plan.slots);
   });
 
   it('dedupes and filters days, keeps valid slots', () => {

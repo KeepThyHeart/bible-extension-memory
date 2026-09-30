@@ -169,7 +169,7 @@ describe('the card stack', () => {
     btn(root, 'Show verse').click();
     btn(root, 'Missed').click();
     await settle();
-    expect(host.announcements).toEqual(['boom']);
+    expect(host.announcements).toEqual(['1 of 1: Ref 1', 'boom']);
     expect(root.textContent).toContain('Ref 1');
     expect(btn(root, 'Missed').disabled).toBe(false);
   });
@@ -190,6 +190,11 @@ describe('the card stack', () => {
     await settle();
     expect(host.requests[0]).toMatchObject({ type: 'snoozeCard', passageId: 1, key: 'card:1:1' });
     expect(root.textContent).toContain('Ref 2');
+  });
+
+  it('announces each card as "i of n: reference"', () => {
+    renderCardStack(host, stackOf(card(1), card(2)));
+    expect(host.announcements).toContain('1 of 2: Ref 1');
   });
 
   it('stops listening to keys once detached', async () => {

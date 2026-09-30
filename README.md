@@ -93,6 +93,15 @@ Due dates carry ±15% jitter. That is not decoration: the schedule is determinis
 
 **Analytics.** A streak of consecutive practice days, a running total of verses genuinely learned, a five-week practice calendar, a list of recently reached milestones, and the next round number of verses to aim for. "Verses learned" and "passages well learned" both use the same "well learned" rule as the passage screen's badge, and both are scoped to whichever list (or "All Lists") is currently selected - switch lists on the home screen and this screen's numbers switch with it.
 
+### Memory cards (push cards)
+
+An opt-in notification at times you choose shows a passage reference (never verse text; a "generic" lock-screen text option hides even that). Clicking it opens a card: recite, reveal the verse, then self-grade Missed / Partly / Knew it. Grades go through the normal spaced-repetition ladder on a separate `recall` card per passage (scores 0.3 / 0.7 / 1.0); they never change the typed-activity levels, except that Missed on a well-learned passage makes its hardest activity due now. Settings has a "Memory cards" section (times or windows, days, quiet hours, daily cap, which passages, prompt style).
+
+- The reminders engine is a host feature (task 0083, `api.reminders`) that is not built yet. The extension feature-detects it (`pushController.ts#detectReminders`). Without it, or when notification permission is missing, due cards simply wait: a "N memory cards waiting" banner on Home and a suffix on the status bar item. `extension.json` does not yet declare the `notifications:schedule` permission or the `onReminder` activation event: the manifest schema has no such entries. Add both once core lands them.
+- `src/reminderPlan.ts` is a local stand-in for core's `expandPlan`; `src/pushTypes.ts` holds a local copy of the `api.reminders` contract. Swap both for core's when 0083 lands.
+- Schema v7 adds the `push_card` table (scheduled / fired / waiting / done / dropped). v6 is an empty placeholder reserved for task 0071: replace it with 0071's migration when merging.
+- Desktop first. Web delivery waits on web extension hosting (0086) and PWA push (0085).
+
 ## Known limitations
 
 - **Module choice.** New passages are recorded against the translation you are reading, which the host reports with the active verse and with each context-menu click. Until it has reported one (a reference typed before any verse was chosen), the first installed module is used. The module is stored per passage, so a passage keeps its translation.

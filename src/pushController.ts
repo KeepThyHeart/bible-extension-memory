@@ -54,6 +54,8 @@ const DAY = 24 * HOUR;
 export const PLAN_HORIZON_MS = 3 * DAY;
 /** Missed-while-away rows older than this are dropped instead of waiting. */
 export const WAITING_MAX_AGE_MS = 12 * HOUR;
+/** A notification click the panel never asked about stops counting after this. */
+export const LAUNCH_INTENT_MAX_AGE_MS = 5 * 60 * 1000;
 export const PRUNE_AGE_MS = 30 * DAY;
 const MAX_ATTEMPT_MS = 30 * 60 * 1000;
 const MIN_LEAD_MS = 60 * 1000;
@@ -130,7 +132,10 @@ export class PushController {
   private debounce: ReturnType<typeof setTimeout> | null = null;
   private interval: ReturnType<typeof setInterval> | null = null;
   private handles: Handle[] = [];
-  private launchIntent: string | null = null;
+  /** A notification click the panel has not yet asked about. Expires. */
+  private pendingOpen: { key: string; at: number } | null = null;
+  /** The clicked card, shown first in the stack until it is graded or snoozed. */
+  private priorityKey: string | null = null;
   private disposed = false;
   private lastRecomputeAt = 0;
   private lastRecomputeDay = -1;
@@ -236,7 +241,7 @@ export class PushController {
 
   private async doRecompute(): Promise<void> {
     if (this.disposed) return;
-    const { store, calendar, rng } = this.deps;
+    const { store, calendar } = this.deps;
     const now = this.deps.now();
     await this.refreshCaps();
     const settings = await this.loadSettings();
@@ -245,7 +250,8 @@ export class PushController {
     this.lastRecomputeDay = calendar.startOfDay(now);
 
     if (!settings.enabled) {
-      await store.deleteAllScheduled();
+      // Keep snooze rows: a snooze made while cards are off survives re-enabling.
+      await store.deleteFutureScheduled(Number.MIN_SAFE_INTEGER, 'plan');
       if (this.reminders && this.reminders.caps.permission === 'granted') {
         await this.replaceAll([]);
       }
@@ -266,7 +272,7 @@ export class PushController {
       wellLearned: wellLearned.has(f.passageId),
     }));
 
-    const fires = expandPlan(settings.plan, now, PLAN_HORIZON_MS, calendar, rng).filter(
+    const fires = expandPlan(settings.plan, now, PLAN_HORIZON_MS, calendar).filter(
       (f) => f.at > now + MIN_LEAD_MS,
     );
     const dayStart = calendar.startOfDay(now);
@@ -328,6 +334,7 @@ export class PushController {
   }
 
   private async postWaiting(): Promise<void> {
+    await this.deps.refreshStatus();
     this.deps.post({ type: 'cardsWaitingChanged', count: await this.deps.store.waitingCount() });
   }
 
@@ -350,47 +357,71 @@ export class PushController {
 
   // -- host events --------------------------------------------------------------
 
-  async handleMissed(e: { keys: string[] }): Promise<void> {
-    const { store } = this.deps;
-    const now = this.deps.now();
-    let changed = false;
-    for (const key of e?.keys ?? []) {
-      const row = await store.getPushCard(key);
-      if (!row || row.state === 'done' || row.state === 'dropped') continue;
-      await store.setPushCardState(key, 'waiting', now);
-      changed = true;
-    }
-    if (changed) await this.postWaiting();
+  handleMissed(e: { keys: string[] }): Promise<void> {
+    return this.enqueue(async () => {
+      const { store } = this.deps;
+      const now = this.deps.now();
+      let changed = false;
+      for (const key of e?.keys ?? []) {
+        const row = await store.getPushCard(key);
+        if (!row || row.state === 'done' || row.state === 'dropped') continue;
+        if (now - row.fireAt > WAITING_MAX_AGE_MS) {
+          await store.setPushCardState(key, 'dropped', now);
+        } else {
+          await store.setPushCardState(key, 'waiting', now);
+        }
+        changed = true;
+      }
+      if (changed) await this.postWaiting();
+    });
   }
 
-  async handleActivated(e: { key: string; data?: JsonValue; firedAt: number }): Promise<void> {
-    const { store } = this.deps;
-    const now = this.deps.now();
-    const row = await store.getPushCard(e.key);
-    if (row) {
-      if (row.state !== 'done') await store.setPushCardState(e.key, 'waiting', now);
-    } else {
-      const pid = (e.data as { passageId?: unknown } | null | undefined)?.passageId;
-      if (typeof pid !== 'number' || !(await store.getPassage(pid))) return;
-      await store.insertPushCards([
-        {
-          key: e.key,
-          passageId: pid,
-          fireAt: typeof e.firedAt === 'number' ? e.firedAt : now,
-          origin: 'plan',
-          state: 'waiting',
-          updatedAt: now,
-        },
-      ]);
-    }
-    this.launchIntent = e.key;
+  handleActivated(e: { key: string; data?: JsonValue; firedAt: number }): Promise<void> {
+    return this.enqueue(async () => {
+      const { store } = this.deps;
+      const now = this.deps.now();
+      const row = await store.getPushCard(e.key);
+      if (row && (row.state === 'done' || row.state === 'dropped')) {
+        // Already handled: do not revive it, just bring the app up.
+        await this.openPanelSafe();
+        return;
+      }
+      if (row) {
+        await store.setPushCardState(e.key, 'waiting', now);
+      } else {
+        const pid = (e.data as { passageId?: unknown } | null | undefined)?.passageId;
+        if (typeof pid !== 'number' || !(await store.getPassage(pid))) return;
+        await store.insertPushCards([
+          {
+            key: e.key,
+            passageId: pid,
+            fireAt: typeof e.firedAt === 'number' ? e.firedAt : now,
+            origin: 'plan',
+            state: 'waiting',
+            updatedAt: now,
+          },
+        ]);
+      }
+      this.pendingOpen = { key: e.key, at: now };
+      this.priorityKey = e.key;
+      await this.openPanelSafe();
+      this.deps.post({ type: 'showCard', key: e.key });
+      await this.postWaiting();
+    });
+  }
+
+  private async openPanelSafe(): Promise<void> {
     try {
       await this.deps.openPanel?.();
     } catch {
       /* the panel may already be open */
     }
-    this.deps.post({ type: 'showCard', key: e.key });
-    await this.postWaiting();
+  }
+
+  private clearIntent(key: string | undefined): void {
+    if (!key) return;
+    if (this.pendingOpen?.key === key) this.pendingOpen = null;
+    if (this.priorityKey === key) this.priorityKey = null;
   }
 
   // -- panel requests -------------------------------------------------------------
@@ -420,6 +451,9 @@ export class PushController {
   }
 
   async requestPermission(): Promise<PushSettingsView> {
+    if (!this.reminders) {
+      this.reminders = await detectReminders(this.deps.api, this.deps.capabilitiesTimeoutMs ?? 2000);
+    }
     if (this.reminders) {
       try {
         await this.reminders.api.requestPermission();
@@ -435,10 +469,12 @@ export class PushController {
     return this.deps.store.waitingCount();
   }
 
-  consumeLaunchIntent(): { showCard: boolean } {
-    const showCard = this.launchIntent !== null;
-    this.launchIntent = null;
-    return { showCard };
+  /** Whether a recent notification click asked for a card. Keeps the stack ordering. */
+  consumeLaunchIntent(): { showCard: boolean; key?: string } {
+    const p = this.pendingOpen;
+    this.pendingOpen = null;
+    if (p && this.deps.now() - p.at <= LAUNCH_INTENT_MAX_AGE_MS) return { showCard: true, key: p.key };
+    return { showCard: false };
   }
 
   async getStack(): Promise<CardStackView> {
@@ -447,8 +483,8 @@ export class PushController {
     const settings = await this.loadSettings();
     const waiting = await store.listPushCards(['waiting']);
     const ordered = [
-      ...waiting.filter((r) => r.key === this.launchIntent),
-      ...waiting.filter((r) => r.key !== this.launchIntent),
+      ...waiting.filter((r) => r.key === this.priorityKey),
+      ...waiting.filter((r) => r.key !== this.priorityKey),
     ];
     const facts = await store.listPushCandidateFacts();
     const factById = new Map(facts.map((f) => [f.passageId, f]));
@@ -512,7 +548,16 @@ export class PushController {
     return { cards, waitingCount: cards.length };
   }
 
-  async grade(req: {
+  grade(req: {
+    passageId: number;
+    grade: RecallGrade;
+    key?: string;
+    durationMs?: number;
+  }): Promise<{ nextDueAt: number | null; stack: CardStackView }> {
+    return this.enqueue(() => this.gradeNow(req));
+  }
+
+  private async gradeNow(req: {
     passageId: number;
     grade: RecallGrade;
     key?: string;
@@ -522,7 +567,9 @@ export class PushController {
     const passage = await store.getPassage(req.passageId);
     if (!passage) throw new Error('That passage is no longer in your plan.');
     const now = this.deps.now();
-    const score = RECALL_SCORES[req.grade];
+    const score = Object.prototype.hasOwnProperty.call(RECALL_SCORES, req.grade)
+      ? RECALL_SCORES[req.grade]
+      : undefined;
     if (score === undefined) throw new Error('Unknown grade.');
 
     const card = await store.ensureRecallCard(passage.id);
@@ -548,6 +595,7 @@ export class PushController {
 
     // Settle this passage's waiting/fired cards (and the tapped key).
     if (req.key) await store.setPushCardState(req.key, 'done', now);
+    this.clearIntent(req.key);
     for (const r of await store.listPushCards(['waiting', 'fired'])) {
       if (r.passageId === passage.id) await store.setPushCardState(r.key, 'done', now);
     }
@@ -555,7 +603,7 @@ export class PushController {
     await this.deps.refreshStatus();
     this.deps.post({ type: 'planChanged' });
     await this.postWaiting();
-    await this.recomputeNow();
+    await this.doRecompute();
     return { nextDueAt: result.dueAt, stack: await this.getStack() };
   }
 
@@ -576,12 +624,17 @@ export class PushController {
     if (hardest) await store.setCardDueAt(hardest.id, now);
   }
 
-  async snooze(req: { passageId: number; key?: string }): Promise<{ snoozedUntil: number }> {
+  snooze(req: { passageId: number; key?: string }): Promise<{ snoozedUntil: number }> {
+    return this.enqueue(() => this.snoozeNow(req));
+  }
+
+  private async snoozeNow(req: { passageId: number; key?: string }): Promise<{ snoozedUntil: number }> {
     const { store, calendar } = this.deps;
     const now = this.deps.now();
     const settings = await this.loadSettings();
     const at = nextAllowed(now + HOUR, settings.plan.quiet, calendar);
     if (req.key) await store.setPushCardState(req.key, 'done', now);
+    this.clearIntent(req.key);
     for (const r of await store.listPushCards(['waiting'])) {
       if (r.passageId === req.passageId) await store.setPushCardState(r.key, 'done', now);
     }
@@ -596,7 +649,7 @@ export class PushController {
       },
     ]);
     await this.postWaiting();
-    await this.recomputeNow();
+    await this.doRecompute();
     return { snoozedUntil: at };
   }
 

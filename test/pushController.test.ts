@@ -188,6 +188,35 @@ describe('host mode', () => {
     expect(await s.store.listPushCards(['scheduled'])).toEqual([]);
   });
 
+  it('a snooze made while cards are disabled survives', async () => {
+    const s = await setup({ enabled: false, passages: 1 });
+    await s.controller.start();
+    const res = await s.controller.snooze({ passageId: s.ids[0]!, key: 'x' });
+    await s.controller.recomputeNow();
+    const rows = await s.store.listPushCards(['scheduled']);
+    expect(rows.map((r) => [r.origin, r.fireAt])).toEqual([['snooze', res.snoozedUntil]]);
+  });
+
+  it('window slots keep their times across recomputes on the same day', async () => {
+    const s = await setup({
+      settings: {
+        plan: {
+          slots: [{ id: 'w', kind: 'window', start: '10:00', end: '18:00', count: 3, days: [0, 1, 2, 3, 4, 5, 6] }],
+          quiet: { start: '21:30', end: '07:00' },
+          maxPerDay: 3,
+        },
+      },
+      passages: 6,
+    });
+    await s.controller.start();
+    const first = (await s.store.listPushCards(['scheduled'])).map((r) => r.fireAt).sort();
+    s.clock.t += 30 * 60_000;
+    await s.controller.recomputeNow();
+    const second = (await s.store.listPushCards(['scheduled'])).map((r) => r.fireAt).sort();
+    expect(first.length).toBeGreaterThan(0);
+    expect(second.filter((t) => t > s.clock.t)).toEqual(first.filter((t) => t > s.clock.t));
+  });
+
   it('a settings change recomputes the plan', async () => {
     const s = await setup();
     await s.controller.start();
@@ -260,8 +289,42 @@ describe('host events', () => {
     expect(s.openPanel).toHaveBeenCalled();
     expect(s.posts).toContainEqual({ type: 'showCard', key: row.key });
     expect((await s.store.listPushCards(['waiting'])).map((r) => r.key)).toEqual([row.key]);
-    expect(s.controller.consumeLaunchIntent()).toEqual({ showCard: true });
+    expect(s.controller.consumeLaunchIntent()).toEqual({ showCard: true, key: row.key });
     expect(s.controller.consumeLaunchIntent()).toEqual({ showCard: false });
+  });
+
+  it('an unconsumed launch intent expires after 5 minutes; consuming keeps the stack order', async () => {
+    const s = await setup();
+    await s.store.insertPushCards([
+      waitingRow('a', s.ids[0]!, T0 - 3 * HOUR),
+      waitingRow('b', s.ids[1]!, T0 - 2 * HOUR),
+    ]);
+    await s.controller.handleActivated({ key: 'b', data: { v: 1, passageId: s.ids[1]! }, firedAt: T0 - 2 * HOUR });
+    expect(s.controller.consumeLaunchIntent().showCard).toBe(true);
+    expect((await s.controller.getStack()).cards.map((c) => c.key)).toEqual(['b', 'a']);
+    await s.controller.handleActivated({ key: 'a', data: { v: 1, passageId: s.ids[0]! }, firedAt: T0 - 3 * HOUR });
+    s.clock.t += 6 * 60_000;
+    expect(s.controller.consumeLaunchIntent()).toEqual({ showCard: false });
+  });
+
+  it('onActivated on a done row does not revive it or set an intent', async () => {
+    const s = await setup();
+    await s.store.insertPushCards([{ ...waitingRow('d', s.ids[0]!, T0 - HOUR), state: 'done' }]);
+    await s.controller.handleActivated({ key: 'd', data: { v: 1, passageId: s.ids[0]! }, firedAt: T0 - HOUR });
+    expect(s.openPanel).toHaveBeenCalled();
+    expect((await s.store.getPushCard('d'))?.state).toBe('done');
+    expect(s.controller.consumeLaunchIntent()).toEqual({ showCard: false });
+  });
+
+  it('onMissed drops rows older than 12 hours and waits for newer ones', async () => {
+    const s = await setup();
+    await s.store.insertPushCards([
+      { ...waitingRow('old', s.ids[0]!, T0 - 13 * HOUR), state: 'fired' },
+      { ...waitingRow('new', s.ids[1]!, T0 - HOUR), state: 'fired' },
+    ]);
+    await s.controller.handleMissed({ keys: ['old', 'new'] });
+    expect((await s.store.getPushCard('old'))?.state).toBe('dropped');
+    expect((await s.store.getPushCard('new'))?.state).toBe('waiting');
   });
 
   it('onActivated for an unknown key creates a waiting row only for a real passage', async () => {
