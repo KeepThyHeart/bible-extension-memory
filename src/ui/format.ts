@@ -15,7 +15,7 @@
  * by freezing time globally, which makes the test order-dependent.
  */
 
-import type { AnalyticsView, PlanView, Rung, RungView } from '../types';
+import type { AnalyticsView, PassageView, PlanView, Rung, RungView } from '../types';
 import { RUNG_ORDER } from '../types';
 
 /**
@@ -299,6 +299,51 @@ export function carriesDownFrom(rungs: RungView[], rung: Rung): boolean {
  */
 export function inLadderOrder(rungs: RungView[]): RungView[] {
   return [...rungs].sort((a, b) => RUNG_ORDER.indexOf(a.rung) - RUNG_ORDER.indexOf(b.rung));
+}
+
+/**
+ * Sorts passages by how much they need practice: due first by earliest
+ * `dueAt`, then never-attempted (`bestLevel === 0`), then ascending
+ * `bestLevel`, then descending `dueCount`, then ascending `addedAt` as the
+ * deterministic tiebreak.
+ *
+ * Pure - returns a new array, per the file's convention (`inLadderOrder`
+ * above does the same). Wiring this into an actual sort `<select>` is M4's
+ * job; this is only the ordering function.
+ */
+export function sortPassagesByNeed(passages: PassageView[], now: number): PassageView[] {
+  return [...passages].sort((a, b) => comparePassageNeed(a, b, now));
+}
+
+function comparePassageNeed(a: PassageView, b: PassageView, now: number): number {
+  const dueDelta = compareEarliestDueAt(earliestDueAt(a, now), earliestDueAt(b, now));
+  if (dueDelta !== 0) return dueDelta;
+
+  const aNeverAttempted = a.bestLevel === 0;
+  const bNeverAttempted = b.bestLevel === 0;
+  if (aNeverAttempted !== bNeverAttempted) return aNeverAttempted ? -1 : 1;
+
+  if (a.bestLevel !== b.bestLevel) return a.bestLevel - b.bestLevel;
+  if (a.dueCount !== b.dueCount) return b.dueCount - a.dueCount;
+  return a.passage.addedAt - b.passage.addedAt;
+}
+
+/** The soonest `dueAt` among a passage's due rungs, or `null` if none is due. */
+function earliestDueAt(pv: PassageView, now: number): number | null {
+  let best: number | null = null;
+  for (const rv of pv.rungs) {
+    if (!isDue(rv, now)) continue;
+    if (best === null || (rv.dueAt ?? 0) < best) best = rv.dueAt ?? 0;
+  }
+  return best;
+}
+
+/** `null` (not due) always sorts after any due timestamp; earlier timestamps sort first. */
+function compareEarliestDueAt(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a - b;
 }
 
 // ---------------------------------------------------------------------------

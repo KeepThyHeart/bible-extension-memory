@@ -23,7 +23,7 @@
  */
 
 import type { Rung, RungView } from '../types';
-import { button, el, focusQuietly } from './dom';
+import { append, button, el, focusQuietly } from './dom';
 import { MIN_VERSES_FOR_REFERENCE_ACTIVITIES } from '../ladder';
 import {
   MASTERED_LEVEL,
@@ -55,6 +55,327 @@ export function toolbar(opts: {
     el('div', { class: 'sm-toolbar-actions' }, opts.actions ?? []),
   ]);
 }
+
+// ---------------------------------------------------------------------------
+// Breadcrumb, menu, tabs
+// ---------------------------------------------------------------------------
+
+/** One entry in a `breadcrumb()` trail. */
+export interface Crumb {
+  label: string;
+  /** Omitted on the final crumb - it is the current screen, not a link. */
+  onClick?: () => void;
+}
+
+/**
+ * The breadcrumb band at the top of every screen, replacing the old
+ * `toolbar()`'s back arrow.
+ *
+ * Every non-final crumb is a real `<button>`; the final one is the screen's
+ * own `<h1>`, given `aria-current="page"` instead of a click handler - there
+ * is nowhere further to go from the current screen, and `panel.ts#render`
+ * keeps focusing `main.querySelector('h1')` after every navigation without
+ * needing to know that heading now lives inside a crumb trail.
+ *
+ * Crumb 1 is always Home - a house glyph (`icon('home')`) plus the word
+ * "Home" - whether or not it is also the final crumb (the home screen itself
+ * has a single, unclickable "Home" crumb).
+ *
+ * `menu` is a left-most slot for the hamburger (item 16, `menu()` below) -
+ * the home screen's own `breadcrumb()` call is the only one that fills it,
+ * with Manage Passages / Analytics / Settings folded into it instead of
+ * sitting in `actions` as separate buttons the way they used to. `actions`
+ * mirrors `toolbar()`'s own slot, e.g. the passage screen's "Show in Bible"
+ * and answer-mode gear.
+ */
+export function breadcrumb(opts: {
+  crumbs: Crumb[];
+  menu?: HTMLElement;
+  actions?: (HTMLElement | null)[];
+}): HTMLElement {
+  const list = el('ol', { class: 'sm-crumb-list' });
+
+  opts.crumbs.forEach((crumb, index) => {
+    const isFirst = index === 0;
+    const isLast = index === opts.crumbs.length - 1;
+    const content: (Node | string)[] = isFirst ? [icon('home'), crumb.label] : [crumb.label];
+
+    const crumbEl: HTMLElement = isLast
+      ? el('h1', { class: 'sm-crumb-current', attrs: { 'aria-current': 'page' } })
+      : button(crumb.label, crumb.onClick ?? (() => {}), { class: 'sm-crumb', text: '' });
+    append(crumbEl, content);
+
+    list.appendChild(el('li', { class: 'sm-crumb-item' }, [crumbEl]));
+
+    if (!isLast) {
+      list.appendChild(
+        el('li', { class: 'sm-crumb-sep' }, [
+          el('span', { attrs: { 'aria-hidden': 'true' } }, ['›']),
+        ]),
+      );
+    }
+  });
+
+  return el('nav', { class: 'sm-crumbs', attrs: { 'aria-label': 'Breadcrumb' } }, [
+    opts.menu ?? null,
+    list,
+    el('div', { class: 'sm-crumbs-actions' }, opts.actions ?? []),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Hamburger menu
+// ---------------------------------------------------------------------------
+
+/** One entry in a `menu()` panel. */
+export interface MenuItem {
+  label: string;
+  onClick: () => void;
+}
+
+/**
+ * The hamburger menu that fills `breadcrumb()`'s `menu` slot on the home
+ * screen (Decision 11 of the nav/chrome redesign, item 16): a trigger button
+ * plus a `role="menu"` popover of `role="menuitem"` buttons, replacing the
+ * separate "Analytics" / "Settings" buttons that used to sit in the
+ * breadcrumb's `actions` slot - Manage Passages joins them there now that
+ * there are three, not two, links off the home screen.
+ *
+ * The trigger is a bare hamburger glyph (`icon('menu')`) with `label` as its
+ * `aria-label` rather than visible text next to it, the same "icon speaks for
+ * itself" choice the passage screen's answer-mode gear already makes
+ * (`.sm-icon-btn`, `passageView.ts`) - three even bars is already this app's
+ * unambiguous "more" affordance (see `icon()`'s own note), and spelling it
+ * out in words would be the one string in the whole breadcrumb band that
+ * wraps.
+ *
+ * Not a native `<select>` or a `window.*` dialog (design doc, Decision 11):
+ * this panel runs inside a sandboxed iframe where the host can suppress
+ * modal dialogs outright, and a `<select>` cannot be given the roving
+ * Up/Down behaviour or the Escape/outside-close behaviour a `role="menu"`
+ * needs. `attachMenuKeys` below is the `role="menu"` analogue of
+ * `attachTabKeys` above: same roving-focus idea, different ARIA pattern
+ * (vertical arrows moving between `menuitem`s that are never in the page's
+ * own Tab order while the menu is open, rather than horizontal arrows moving
+ * a single roving tab stop).
+ */
+export function menu(opts: { label: string; items: MenuItem[] }): HTMLElement {
+  const wrapper = el('div', { class: 'sm-menu' });
+
+  const panel = el('div', {
+    class: 'sm-menu-panel',
+    hidden: true,
+    attrs: { role: 'menu', 'aria-label': opts.label },
+  });
+
+  const itemButtons = opts.items.map((item) =>
+    button(
+      item.label,
+      () => {
+        closeMenu();
+        item.onClick();
+      },
+      { class: 'sm-menu-item', attrs: { role: 'menuitem', tabindex: '-1' } },
+    ),
+  );
+  append(panel, itemButtons);
+
+  const trigger = button(opts.label, () => (panel.hidden ? openMenu() : closeMenu()), {
+    class: 'sm-btn sm-btn-quiet sm-icon-btn sm-menu-btn',
+    text: '',
+    attrs: { 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': opts.label },
+  });
+  append(trigger, [icon('menu')]);
+
+  // Registered only while the menu is open, and torn down the moment it
+  // closes by any route - Escape, an item press, or this handler firing
+  // itself - so an open panel never leaves a document-level listener behind
+  // once the interaction that needed it is over. A panel left open when the
+  // screen it lives on is replaced (a rare path: every item press already
+  // closes first) leaks the listener only until the next pointerdown
+  // anywhere in the document, which finds `wrapper` detached, does not match
+  // it, and calls `closeMenu()` anyway - a self-cleaning one-shot rather than
+  // a lasting leak.
+  let outsideListener: ((ev: PointerEvent) => void) | null = null;
+
+  function openMenu(): void {
+    panel.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    setRoving(0);
+    focusQuietly(itemButtons[0] ?? null);
+
+    outsideListener = (ev: PointerEvent) => {
+      if (ev.target instanceof Node && wrapper.contains(ev.target)) return;
+      closeMenu();
+    };
+    document.addEventListener('pointerdown', outsideListener, true);
+  }
+
+  function closeMenu(): void {
+    if (panel.hidden) return;
+    panel.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (outsideListener) {
+      document.removeEventListener('pointerdown', outsideListener, true);
+      outsideListener = null;
+    }
+  }
+
+  function setRoving(index: number): void {
+    itemButtons.forEach((b, i) => {
+      b.tabIndex = i === index ? 0 : -1;
+    });
+  }
+
+  attachMenuKeys(panel, itemButtons, setRoving, () => {
+    closeMenu();
+    focusQuietly(trigger);
+  });
+
+  append(wrapper, [trigger, panel]);
+  return wrapper;
+}
+
+/**
+ * Up/Down over an open `role="menu"`, wrapping at the ends, plus Escape - the
+ * `role="menu"` analogue of `attachTabKeys` above (see `menu()`'s own note
+ * for why it is not the same function). Left/Right, Home and End are a
+ * tablist's own pattern, not a menu's, so they are left out here rather than
+ * copied over.
+ */
+export function attachMenuKeys(
+  panel: HTMLElement,
+  itemButtons: HTMLButtonElement[],
+  setRoving: (index: number) => void,
+  onEscape: () => void,
+): void {
+  if (itemButtons.length === 0) return;
+
+  panel.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      onEscape();
+      return;
+    }
+
+    const current = itemButtons.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0) return;
+
+    let target = -1;
+    switch (ev.key) {
+      case 'ArrowDown':
+        target = (current + 1) % itemButtons.length;
+        break;
+      case 'ArrowUp':
+        target = (current - 1 + itemButtons.length) % itemButtons.length;
+        break;
+      default:
+        return;
+    }
+
+    ev.preventDefault();
+    setRoving(target);
+    focusQuietly(itemButtons[target] ?? null);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tab strip
+// ---------------------------------------------------------------------------
+
+/**
+ * The activity tab strip under the breadcrumb, on both the passage and
+ * practice screens (Decision 2 of the nav/chrome redesign): `role="tablist"`
+ * of `role="tab"` buttons, one per applicable activity, an underline rather
+ * than a filled pill marking the selected one - "not pills" is the decision's
+ * own wording, and a bottom border is the one treatment this file does not
+ * already use for something else (badges are pills, `.sm-choice` is a filled
+ * card).
+ *
+ * Generic over `T` rather than typed to `Rung` directly: both call sites pass
+ * `Rung` values today, but nothing here needs to know that, and a component
+ * this small gains nothing from repeating the union.
+ */
+export function tabs<T extends string>(opts: {
+  items: readonly { value: T; label: string }[];
+  selected: T;
+  onSelect: (value: T) => void;
+  ariaLabel?: string;
+}): HTMLElement {
+  const list = el('div', {
+    class: 'sm-tabs',
+    attrs: { role: 'tablist', ...(opts.ariaLabel !== undefined ? { 'aria-label': opts.ariaLabel } : {}) },
+  });
+
+  const tabButtons = opts.items.map((item) => {
+    const isSelected = item.value === opts.selected;
+    return button(item.label, () => opts.onSelect(item.value), {
+      class: `sm-tab${isSelected ? ' sm-tab-selected' : ''}`,
+      attrs: {
+        role: 'tab',
+        'aria-selected': String(isSelected),
+        // Roving tabindex: only the selected tab sits in the page's own Tab
+        // order, so tabbing into the strip lands on it directly rather than
+        // on whichever tab happens to be first - see `attachTabKeys` below
+        // for how the arrows keep this in sync as focus moves.
+        tabindex: isSelected ? '0' : '-1',
+      },
+    });
+  });
+
+  append(list, tabButtons);
+  attachTabKeys(list, tabButtons);
+
+  return list;
+}
+
+/**
+ * Left/Right/Home/End over a tab strip, wrapping at the ends - adapted from
+ * the picker's own `attachListKeys` in `practiceView.ts` (~lines 1170-1210):
+ * the same roving-focus idea, narrowed to the two horizontal arrows a
+ * tablist's own ARIA pattern calls for (no up/down, no digit shortcut) and
+ * extended to move `tabindex` itself, which the picker's plain buttons never
+ * needed because they were never taken out of the normal Tab order.
+ *
+ * The arrows move focus only; they do not select. Selecting a tab on the
+ * passage screen re-fetches and redraws the whole screen (`goPassage`), and
+ * firing that on every arrow press would tear out the very strip the
+ * keyboard focus is moving through. A `<button>` already turns Enter/Space
+ * into a click, so activating the focused tab needs no extra handling here.
+ */
+export function attachTabKeys(list: HTMLElement, tabButtons: HTMLButtonElement[]): void {
+  if (tabButtons.length === 0) return;
+
+  list.addEventListener('keydown', (ev) => {
+    const current = tabButtons.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0) return;
+
+    let target = -1;
+    switch (ev.key) {
+      case 'ArrowRight':
+        target = (current + 1) % tabButtons.length;
+        break;
+      case 'ArrowLeft':
+        target = (current - 1 + tabButtons.length) % tabButtons.length;
+        break;
+      case 'Home':
+        target = 0;
+        break;
+      case 'End':
+        target = tabButtons.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    ev.preventDefault();
+    tabButtons.forEach((t, i) => {
+      t.tabIndex = i === target ? 0 : -1;
+    });
+    focusQuietly(tabButtons[target] ?? null);
+  });
+}
+
 
 /**
  * The "there is nothing here yet" panel.
@@ -499,6 +820,103 @@ export function scheduleLine(rung: { dueAt: number | null; lastScore: number | n
   if (rung.lastScore !== null) parts.push(`Last score ${formatScore(rung.lastScore)}`);
   if (rung.streak > 0) parts.push(countLabel(rung.streak, 'pass', 'passes') + ' in a row');
   return el('p', { class: 'sm-schedule', text: parts.join(' · ') });
+}
+
+// ---------------------------------------------------------------------------
+// Icons
+// ---------------------------------------------------------------------------
+
+/**
+ * The names `icon()` knows how to draw.
+ *
+ * `home` and `menu` are chrome, not activities. The other six are activity
+ * icons: `ordering`, `refmatch`, `refprovide`, `blanks` and `firstletters`
+ * name the five rungs (see `Rung` in `types.ts`); `variety` is the one
+ * remaining name with no `Rung` of its own - it is a mix of activities, not
+ * one - which is why this stays its own union rather than `Rung` plus one,
+ * even now that every other tile has landed its own exercise.
+ */
+export type IconName =
+  | 'home'
+  | 'menu'
+  | 'variety'
+  | 'refmatch'
+  | 'ordering'
+  | 'blanks'
+  | 'firstletters'
+  | 'refprovide';
+
+/**
+ * The strokes each icon is built from, one `<path>` per entry.
+ *
+ * All eight share a 24x24 viewBox and a 2px round-capped stroke so that
+ * mixing them in one row (the nav, an activity tile grid) never reads as two
+ * icon sets. A couple of names could not be told apart by shape alone at this
+ * size, so the choices are deliberate: `variety`'s crossing diagonals read as
+ * "shuffle/mix" where `refmatch`'s two opposing horizontal arrows read as
+ * "match this to that"; `ordering`'s up/down arrow beside ranked lines reads
+ * as "put these in order" where plain `menu` is three even, unranked ones.
+ */
+const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
+  // A house: roof, walls, and a door - the one non-abstract icon here, since
+  // it names a screen ("Home") rather than an activity.
+  home: ['M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', 'M9 22V12h6v10'],
+  // Three even bars - the nav's own "more" affordance, unranked on purpose so
+  // it never doubles as a fourth activity icon.
+  menu: ['M3 6h18', 'M3 12h18', 'M3 18h18'],
+  // A shuffle glyph: two crossing diagonals, each with its own arrowhead.
+  variety: ['M16 3h5v5', 'M4 20L21 3', 'M21 16v5h-5', 'M15 15l6 6', 'M4 4l5 5'],
+  // Two arrows pointing at each other, top-right and bottom-left - matching
+  // one thing to another rather than a single directional move.
+  refmatch: ['M3 7h11', 'M10 3l4 4-4 4', 'M21 17H10', 'M14 13l-4 4 4 4'],
+  // A vertical up/down arrow beside three lines of increasing length - lines
+  // that have a rank, and an affordance for moving one up or down it.
+  ordering: ['M4 5v14', 'M2 8l2-3 2 3', 'M2 16l2 3 2-3', 'M10 6h8', 'M10 12h10', 'M10 18h6'],
+  // Two short word-strokes with a longer underline between them - the blank
+  // sitting where a word has been removed.
+  blanks: ['M3 9h4', 'M9 14h6', 'M17 9h4'],
+  // A capital "A", stroked rather than set as text so it is one more path
+  // among equals rather than a font dependency.
+  firstletters: ['M4 19L10 4L16 19', 'M6.5 13h7'],
+  // A bookmark - the passage's own place kept, which is what "provide the
+  // reference" is asking the user to recall.
+  refprovide: ['M6 3h12v18l-6-4-6 4z'],
+};
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * A small inline icon, built with `createElementNS` rather than a markup
+ * string - `dom.ts`'s header explains why there is no `innerHTML` path
+ * anywhere in this bundle, and an icon set is not worth being the exception.
+ *
+ * `stroke="currentColor"` so an icon always matches the text colour of
+ * whatever control it sits in without a per-caller override, and
+ * `aria-hidden="true"` because every call site pairs an icon with visible
+ * text (a toolbar title, an activity label) - the icon is decoration, and a
+ * screen reader announcing "home icon, Home" on top of that text would be
+ * noise, not help.
+ */
+export function icon(name: IconName): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '1em');
+  svg.setAttribute('height', '1em');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', `sm-icon sm-icon-${name}`);
+
+  for (const d of ICON_PATHS[name]) {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    svg.appendChild(path);
+  }
+
+  return svg;
 }
 
 /**

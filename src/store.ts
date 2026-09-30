@@ -22,6 +22,7 @@ import type {
   ListSummary,
   Milestone,
   Passage,
+  PassageSortOrder,
   Rung,
   Scope,
 } from './types';
@@ -156,6 +157,9 @@ function stateLabelFor(level: number): string {
 
 const DEFAULT_ANSWER_MODE: AnswerMode = 'firstLetter';
 const SETTING_DEFAULT_ANSWER_MODE = 'defaultAnswerMode';
+
+const DEFAULT_PASSAGE_SORT_ORDER: PassageSortOrder = 'bible';
+const SETTING_PASSAGE_SORT_ORDER = 'passageSortOrder';
 const SETTING_SCOPE = 'practiceScope';
 
 export class MemoryStore {
@@ -488,6 +492,15 @@ export class MemoryStore {
 
   async setDefaultAnswerMode(mode: AnswerMode): Promise<void> {
     await this.setSetting(SETTING_DEFAULT_ANSWER_MODE, mode);
+  }
+
+  async getPassageSortOrder(): Promise<PassageSortOrder> {
+    const value = await this.getSetting(SETTING_PASSAGE_SORT_ORDER);
+    return value === 'need' ? 'need' : DEFAULT_PASSAGE_SORT_ORDER;
+  }
+
+  async setPassageSortOrder(order: PassageSortOrder): Promise<void> {
+    await this.setSetting(SETTING_PASSAGE_SORT_ORDER, order);
   }
 
   /**

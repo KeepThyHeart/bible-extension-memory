@@ -385,6 +385,222 @@ ul, ol {
 }
 
 /* ==========================================================================
+   Breadcrumb
+
+   Replaces the old toolbar's plain back arrow (Decision 1 of the nav/chrome
+   redesign): a breadcrumb trail satisfies both "a back control that matches
+   the app's visual language" and "a breadcrumb" with one control, and needs
+   no icon shared from the host repo since Home is drawn locally with
+   `components.ts#icon('home')`. Still a local approximation of a look the
+   host serves no button/toolbar tokens for yet (see `components.ts`'s file
+   header) - a full-width band and small flat controls, the same reasoning
+   `.sm-toolbar` used to carry here - once the host does, this block is what
+   gets replaced.
+   ========================================================================== */
+
+.sm-crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+  margin: calc(-1 * var(--sm-s4)) calc(-1 * var(--sm-s4)) 0;
+  padding: var(--sm-s2) var(--sm-s4);
+  background: var(--sm-surface);
+  border-bottom: 1px solid var(--sm-border);
+}
+
+.sm-crumb-list {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--sm-s1);
+}
+
+.sm-crumb-item {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.sm-crumb-sep {
+  color: var(--sm-text-muted);
+}
+
+/* A crumb that still links back to an earlier screen - flat and quiet, the
+   same treatment every other secondary control in the panel gets
+   (`.sm-btn-quiet`), rather than a distinct back-arrow look of its own. */
+.sm-crumb {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: var(--sm-s1) var(--sm-s2);
+  margin: calc(-1 * var(--sm-s1)) calc(-1 * var(--sm-s2));
+  border: 0;
+  border-radius: var(--sm-radius);
+  background: transparent;
+  color: var(--sm-accent);
+  cursor: pointer;
+}
+
+.sm-crumb:hover {
+  background: var(--sm-accent-light);
+}
+
+/* The final crumb: the screen's own `<h1>` (see `components.ts#breadcrumb`),
+   not a link - there is nowhere further to go from here. Sizing carried over
+   from the old `.sm-toolbar-title` - bumped from 1.05em because a review
+   round found the reference on the passage and practice screens not
+   prominent enough next to the activity name beneath it, once shown smaller
+   and dimmer on its own line (now the `.sm-tab-selected` activity tab, on
+   both screens - see N5). */
+.sm-crumb-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  min-width: 0;
+  font-size: 1.2em;
+  font-weight: 600;
+  color: var(--sm-heading);
+  overflow-wrap: break-word;
+}
+
+.sm-crumb-current:focus-visible {
+  outline-offset: 4px;
+}
+
+.sm-crumbs-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s1);
+  flex: 0 0 auto;
+}
+
+.sm-crumbs-meta {
+  color: var(--sm-text-dim);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   Hamburger menu (M3, `components.ts#menu()`)
+
+   The one floating/popover surface in this file - `.sm-menu-panel` sits
+   `position: absolute`, so it needs a background, border and depth cue of
+   its own rather than sitting flush with the page the way `.sm-callout`
+   (an in-flow panel, not a popover) can get away with using only a border.
+   `--sm-surface-raised` and `--sm-border` are already this file's tokens for
+   "a card lifted off the page" and its edge (see `:root`'s own colour block);
+   the shadow itself has no host token to reach for - the file header already
+   says the host serves none - so it is a plain local value, same as every
+   other shadow in this file.
+   ========================================================================== */
+
+.sm-menu {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+}
+
+/* The trigger itself needs no rules of its own: `components.ts#menu()`
+   already gives it `.sm-btn .sm-btn-quiet .sm-icon-btn` - the same bare
+   icon-only toggle look as the passage screen's answer-mode gear - and
+   `.sm-menu-btn` exists only as the design doc's own named hook for a future
+   caller (a test, a later tweak) that wants the trigger without reaching for
+   those three classes together. */
+
+.sm-menu-panel {
+  position: absolute;
+  top: calc(100% + var(--sm-s1));
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 11rem;
+  padding: var(--sm-s1);
+  background: var(--sm-surface-raised);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.sm-menu-item {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  display: block;
+  width: 100%;
+  padding: var(--sm-s2) var(--sm-s3);
+  border: 0;
+  border-radius: var(--sm-radius);
+  background: transparent;
+  color: var(--sm-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sm-menu-item:hover,
+.sm-menu-item:focus-visible {
+  background: var(--sm-hover);
+}
+
+/* ==========================================================================
+   Icons
+
+   `components.ts#icon()` returns a bare `<svg>` sized to `1em` by `1em` via
+   its own attributes, so it already tracks the font size of whatever control
+   it is placed in with no CSS at all. This class only fixes the one thing the
+   attributes cannot: baseline alignment next to text, which without it sits
+   a few pixels too low.
+   ========================================================================== */
+
+.sm-icon {
+  flex: 0 0 auto;
+  vertical-align: -0.125em;
+}
+
+/* ==========================================================================
+   Activity tab strip - `components.ts#tabs()`. One tab per applicable
+   activity, under the breadcrumb on the passage screen (and, from N5, the
+   practice screen too). An underline on the selected tab, not a filled pill -
+   "not pills" is Decision 2's own wording, and every filled-background
+   treatment in this file already means something else (a badge, a chosen
+   picker card), so a tab needed a look of its own.
+   ========================================================================== */
+
+.sm-tabs {
+  display: flex;
+  gap: var(--sm-s4);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--sm-border);
+}
+
+.sm-tab {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  font-weight: 600;
+  flex: 0 0 auto;
+  padding: var(--sm-s2) var(--sm-s1);
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--sm-text-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sm-tab:hover {
+  color: var(--sm-text);
+}
+
+.sm-tab-selected {
+  color: var(--sm-heading);
+  border-bottom-color: var(--sm-accent);
+}
+
+/* ==========================================================================
    Buttons and inputs
    ========================================================================== */
 
@@ -1968,6 +2184,10 @@ button.sm-activity-row:hover {
     margin: calc(-1 * var(--sm-s3)) calc(-1 * var(--sm-s3)) 0;
   }
 
+  .sm-crumbs {
+    margin: calc(-1 * var(--sm-s3)) calc(-1 * var(--sm-s3)) 0;
+  }
+
   .sm-row {
     flex-direction: column;
     align-items: stretch;
@@ -2056,6 +2276,10 @@ button.sm-activity-row:hover {
   }
 
   .sm-toolbar {
+    margin: calc(-1 * var(--sm-s5)) calc(-1 * var(--sm-s5)) 0;
+  }
+
+  .sm-crumbs {
     margin: calc(-1 * var(--sm-s5)) calc(-1 * var(--sm-s5)) 0;
   }
 

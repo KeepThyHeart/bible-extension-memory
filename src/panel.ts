@@ -35,8 +35,9 @@ import { renderPassageScreen } from './ui/passageView';
 import { renderManagePassages } from './ui/managePassagesView';
 import { renderSettings } from './ui/settingsView';
 import { call } from './ui/rpc';
+import { pickFlowTarget } from './ui/suggest';
 import { INITIAL_NAV, navReduce, sameView } from './ui/state';
-import type { NavAction, NavState } from './ui/state';
+import type { Flow, NavAction, NavState } from './ui/state';
 
 const bible = BibleExtUI.init();
 
@@ -105,7 +106,13 @@ const host: PanelHost = {
     return activeReference;
   },
 
-  async startSession(passageId: number, rung?: Rung, restart?: boolean, tier?: number): Promise<void> {
+  async startSession(
+    passageId: number,
+    rung?: Rung,
+    restart?: boolean,
+    tier?: number,
+    flow?: Flow,
+  ): Promise<void> {
     // Optional keys are omitted entirely rather than sent as `undefined`.
     // `types.ts` requires structured-cloneable JSON, and an explicit
     // `undefined` is the one value that does not survive that trip intact -
@@ -125,7 +132,18 @@ const host: PanelHost = {
     }
     const session = reply.data as RequestMap['startSession'];
 
-    host.go({ type: 'sessionStarted', sessionId: session.sessionId });
+    // Every direct call site names one specific passage the user was already
+    // looking at, so an omitted flow means `passage`; only `startFlow` passes
+    // a real one. Defaulted here so `sessionStarted` stays a plain record.
+    const sessionFlow: Flow = flow ?? { kind: 'passage', passageId: session.passageId };
+
+    host.go({
+      type: 'sessionStarted',
+      sessionId: session.sessionId,
+      passageId: session.passageId,
+      rung: session.rung,
+      flow: sessionFlow,
+    });
 
     // `render()` deliberately leaves the practice screen alone - that view
     // owns its own DOM and its own lifetime - so the mount happens here.
@@ -134,6 +152,20 @@ const host: PanelHost = {
     practice = new PracticeView(host, session);
     practice.mount(main);
     announce('');
+  },
+
+  async startFlow(flow: Flow, exclude?: ReadonlySet<number>): Promise<void> {
+    const reply = await host.request({ type: 'getPlan' });
+    if (!reply.ok) {
+      showError(reply.error);
+      return;
+    }
+    const target = pickFlowTarget(reply.data, flow, host.now(), Math.random, exclude);
+    if (!target) {
+      announce('Nothing else to practice right now.');
+      return;
+    }
+    await host.startSession(target.passageId, target.rung, undefined, undefined, flow);
   },
 
   openInBible(verseId: number): void {

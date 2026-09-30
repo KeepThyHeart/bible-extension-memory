@@ -9,7 +9,15 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { listTargets, pickShuffledTarget, pickTargetForActivity } from '../src/ui/suggest';
+import {
+  flowUnavailable,
+  isReferenceRung,
+  listTargets,
+  pickActivityTarget,
+  pickFlowTarget,
+  pickShuffledTarget,
+  pickTargetForActivity,
+} from '../src/ui/suggest';
 import { mulberry32 } from '../src/exercises/rng';
 import type { Passage, PassageView, PlanView, RungView } from '../src/types';
 
@@ -74,6 +82,7 @@ function planFixture(passages: PassageView[]): PlanView {
     passages,
     totalDue: passages.reduce((n, pv) => n + pv.dueCount, 0),
     defaultAnswerMode: 'firstLetter',
+    sortOrder: 'bible',
   };
 }
 
@@ -302,5 +311,112 @@ describe('pickTargetForActivity', () => {
     ]);
     const t = pickTargetForActivity(plan, 'blanks', NOW);
     expect(t!.passageId).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickFlowTarget / pickActivityTarget / flowUnavailable
+// ---------------------------------------------------------------------------
+
+describe('pickFlowTarget', () => {
+  function two(): PlanView {
+    return planFixture([
+      passageViewFixture({ passage: passageFixture({ id: 10, reference: 'A 1:1' }) }),
+      passageViewFixture({ passage: passageFixture({ id: 11, reference: 'B 1:1' }) }),
+    ]);
+  }
+
+  it('returns null for the passage flow and for an empty plan', () => {
+    expect(pickFlowTarget(two(), { kind: 'passage', passageId: 10 }, NOW, () => 0)).toBeNull();
+    expect(pickFlowTarget(emptyPlan(), { kind: 'variety' }, NOW, () => 0)).toBeNull();
+    expect(pickFlowTarget(emptyPlan(), { kind: 'activity', rung: 'blanks' }, NOW, () => 0)).toBeNull();
+  });
+
+  it('variety uses the weighted shuffle: a low first draw restricts to the due pool', () => {
+    // rng() < 0.3 selects the due pool; only blanks is due in the fixture.
+    const target = pickFlowTarget(two(), { kind: 'variety' }, NOW, () => 0.1);
+    expect(target?.rung).toBe('blanks');
+    expect(target?.due).toBe(true);
+  });
+
+  it('variety with a high first draw picks from every applicable target', () => {
+    const rolls = [0.9, 0];
+    const target = pickFlowTarget(two(), { kind: 'variety' }, NOW, () => rolls.shift() ?? 0);
+    // First applicable target in list order: passage 10, ordering.
+    expect(target).toMatchObject({ passageId: 10, rung: 'ordering' });
+  });
+
+  it('variety matches pickShuffledTarget for the same seed', () => {
+    const plan = two();
+    for (let seed = 1; seed <= 10; seed++) {
+      const a = pickFlowTarget(plan, { kind: 'variety' }, NOW, mulberry32(seed));
+      const b = pickShuffledTarget(plan, NOW, mulberry32(seed));
+      expect(a).toEqual(b);
+    }
+  });
+
+  it('activity only returns targets on that rung', () => {
+    for (let seed = 1; seed <= 10; seed++) {
+      const t = pickFlowTarget(two(), { kind: 'activity', rung: 'firstletters' }, NOW, mulberry32(seed));
+      expect(t?.rung).toBe('firstletters');
+    }
+  });
+
+  it('activity returns null when the rung is inapplicable everywhere', () => {
+    // The fixture marks refmatch inapplicable on every passage.
+    expect(pickFlowTarget(two(), { kind: 'activity', rung: 'refmatch' }, NOW, () => 0)).toBeNull();
+  });
+
+  it('excludes the given passage ids strictly, for both rules', () => {
+    const exclude = new Set([10]);
+    for (let seed = 1; seed <= 20; seed++) {
+      const v = pickFlowTarget(two(), { kind: 'variety' }, NOW, mulberry32(seed), exclude);
+      expect(v?.passageId).toBe(11);
+      const a = pickFlowTarget(two(), { kind: 'activity', rung: 'blanks' }, NOW, mulberry32(seed), exclude);
+      expect(a?.passageId).toBe(11);
+    }
+  });
+
+  it('returns null when everything is excluded ("nothing else")', () => {
+    const exclude = new Set([10, 11]);
+    expect(pickFlowTarget(two(), { kind: 'variety' }, NOW, () => 0, exclude)).toBeNull();
+    expect(pickFlowTarget(two(), { kind: 'activity', rung: 'blanks' }, NOW, () => 0, exclude)).toBeNull();
+  });
+
+  it('pickActivityTarget covers the whole pool as rng sweeps [0, 1)', () => {
+    const seen = new Set<number>();
+    for (const r of [0, 0.49, 0.5, 0.999999]) {
+      seen.add(pickActivityTarget(two(), 'blanks', NOW, () => r)!.passageId);
+    }
+    expect([...seen].sort()).toEqual([10, 11]);
+  });
+});
+
+describe('flowUnavailable', () => {
+  it('is null when the flow can start', () => {
+    const plan = planFixture([passageViewFixture()]);
+    expect(flowUnavailable(plan, { kind: 'variety' }, NOW)).toBeNull();
+    expect(flowUnavailable(plan, { kind: 'activity', rung: 'blanks' }, NOW)).toBeNull();
+    expect(flowUnavailable(plan, { kind: 'passage', passageId: 10 }, NOW)).toBeNull();
+  });
+
+  it('is "locked" for a reference activity while the gate is closed, even with a pool', () => {
+    const plan = { ...planFixture([passageViewFixture()]), referenceActivitiesUnlocked: false };
+    expect(flowUnavailable(plan, { kind: 'activity', rung: 'refmatch' }, NOW)).toBe('locked');
+    expect(flowUnavailable(plan, { kind: 'activity', rung: 'refprovide' }, NOW)).toBe('locked');
+    // Non-reference activities and variety are not gated.
+    expect(flowUnavailable(plan, { kind: 'activity', rung: 'blanks' }, NOW)).toBeNull();
+  });
+
+  it('is "empty" with the gate open but nothing applicable', () => {
+    const plan = planFixture([passageViewFixture()]); // refmatch inapplicable
+    expect(flowUnavailable(plan, { kind: 'activity', rung: 'refmatch' }, NOW)).toBe('empty');
+    expect(flowUnavailable(emptyPlan(), { kind: 'variety' }, NOW)).toBe('empty');
+  });
+
+  it('isReferenceRung names exactly the two gated rungs', () => {
+    expect(isReferenceRung('refmatch')).toBe(true);
+    expect(isReferenceRung('refprovide')).toBe(true);
+    expect(isReferenceRung('blanks')).toBe(false);
   });
 });

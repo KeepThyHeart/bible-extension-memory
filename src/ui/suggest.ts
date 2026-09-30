@@ -20,6 +20,7 @@
  */
 
 import type { PlanView, Rung } from '../types';
+import type { Flow } from './state';
 import type { PracticeTarget as BasePracticeTarget } from './format';
 import { isDue } from './format';
 import { weightedPick } from '../exercises/rng';
@@ -146,4 +147,90 @@ export function pickTargetForActivity(plan: PlanView, rung: Rung, now: number): 
 
   pool.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) || a.passageId - b.passageId);
   return pool[0]!;
+}
+
+/** Passage ids no pick may return - e.g. the passage a Next press just left. */
+export type ExcludeSet = ReadonlySet<number>;
+
+/** `plan` with every passage in `exclude` removed (the same object when there is nothing to remove). */
+function withoutExcluded(plan: PlanView, exclude?: ExcludeSet): PlanView {
+  if (!exclude || exclude.size === 0) return plan;
+  return { ...plan, passages: plan.passages.filter((pv) => !exclude.has(pv.passage.id)) };
+}
+
+/**
+ * A random applicable target for one specific activity, for an activity tile
+ * press or the Next skip within an activity flow.
+ *
+ * Draws uniformly from every applicable target on `rung` whose passage is not
+ * in `exclude`; `null` when that pool is empty. (The planView picker this was
+ * moved from fell back to the excluded target itself when it was the only
+ * one; the Next button wants "nothing else" instead, so exclusion is strict.)
+ */
+export function pickActivityTarget(
+  plan: PlanView,
+  rung: Rung,
+  now: number,
+  rng: () => number,
+  exclude?: ExcludeSet,
+): PracticeTarget | null {
+  const pool = listTargets(withoutExcluded(plan, exclude), now).filter((t) => t.rung === rung);
+  if (pool.length === 0) return null;
+  return pool[uniformIndex(pool.length, rng)]!;
+}
+
+/**
+ * What a flow should start next, or `null` when there is nothing to offer.
+ *
+ * - `variety`: main's weighted shuffle (`pickShuffledTarget`: 30% due-only,
+ *   70% anything applicable) over the passages not in `exclude`.
+ * - `activity`: `pickActivityTarget` on the flow's rung.
+ * - `passage`: always `null` - that flow names one passage and has no rule to
+ *   re-run (the Next button is not shown for it).
+ *
+ * `exclude` is strict for both rules: a Next press never re-offers the
+ * passage just left, and an otherwise-empty pool means "nothing else".
+ * `rng` is an argument for the usual reason - callers pass `Math.random`,
+ * tests pass a fixed sequence.
+ */
+export function pickFlowTarget(
+  plan: PlanView,
+  flow: Flow,
+  now: number,
+  rng: () => number,
+  exclude?: ExcludeSet,
+): PracticeTarget | null {
+  switch (flow.kind) {
+    case 'variety':
+      return pickShuffledTarget(withoutExcluded(plan, exclude), now, rng);
+    case 'activity':
+      return pickActivityTarget(plan, flow.rung, now, rng, exclude);
+    case 'passage':
+      return null;
+  }
+}
+
+/** Why an activity tile cannot be pressed. */
+export type ActivityUnavailable = 'locked' | 'empty';
+
+/**
+ * Whether a flow can be started right now: `null` when it can, `'locked'`
+ * when it is a reference activity (`refmatch`/`refprovide`, or the
+ * `activity` flow for one) and `plan.referenceActivitiesUnlocked` is false,
+ * `'empty'` when the gate is open but no applicable target exists.
+ * The `passage` flow is always `null` (it is never a tile). Show the locked
+ * tile's hint with the existing reference-hint text.
+ */
+export function flowUnavailable(plan: PlanView, flow: Flow, now: number): ActivityUnavailable | null {
+  if (flow.kind === 'passage') return null;
+  if (flow.kind === 'activity' && isReferenceRung(flow.rung) && !plan.referenceActivitiesUnlocked) {
+    return 'locked';
+  }
+  // The rng only chooses among candidates; any rng answers "is there one".
+  return pickFlowTarget(plan, flow, now, () => 0) === null ? 'empty' : null;
+}
+
+/** The two rungs gated behind `PlanView.referenceActivitiesUnlocked`. */
+export function isReferenceRung(rung: Rung): boolean {
+  return rung === 'refmatch' || rung === 'refprovide';
 }

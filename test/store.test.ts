@@ -753,6 +753,27 @@ describe('removePassage', () => {
 // Answer mode
 // ---------------------------------------------------------------------------
 
+describe('passage sort order', () => {
+  it('defaults to bible order with no setting written', async () => {
+    const { store } = await freshStore();
+    expect(await store.getPassageSortOrder()).toBe('bible');
+  });
+
+  it('persists a changed sort order and round-trips back', async () => {
+    const { store } = await freshStore();
+    await store.setPassageSortOrder('need');
+    expect(await store.getPassageSortOrder()).toBe('need');
+    await store.setPassageSortOrder('bible');
+    expect(await store.getPassageSortOrder()).toBe('bible');
+  });
+
+  it('treats an unrecognised stored value as bible order', async () => {
+    const { store } = await freshStore();
+    await store.setSetting('passageSortOrder', 'nonsense');
+    expect(await store.getPassageSortOrder()).toBe('bible');
+  });
+});
+
 describe('answer mode', () => {
   it('defaults to firstLetter with no setting written', async () => {
     const { store } = await freshStore();

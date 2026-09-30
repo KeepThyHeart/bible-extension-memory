@@ -620,6 +620,20 @@ describe('multiple lists through the panel protocol', () => {
     expect((await deliver<PlanView>(channel, { type: 'getPlan' })).passages).toHaveLength(1);
   });
 
+  it('persists the passage sort order over the protocol, broadcasts planChanged, and reports it on the plan', async () => {
+    const { channel } = await activateWithStore();
+    expect((await deliver<PlanView>(channel, { type: 'getPlan' })).sortOrder).toBe('bible');
+
+    const before = channel.posted.length;
+    await deliver(channel, { type: 'setPassageSortOrder', order: 'need' });
+
+    expect(channel.posted.slice(before).map((p) => p.message)).toContainEqual({ type: 'planChanged' });
+    expect((await deliver<PlanView>(channel, { type: 'getPlan' })).sortOrder).toBe('need');
+
+    await deliver(channel, { type: 'setPassageSortOrder', order: 'bible' });
+    expect((await deliver<PlanView>(channel, { type: 'getPlan' })).sortOrder).toBe('bible');
+  });
+
   it('refuses to delete the only list, with a readable error rather than a thrown SQL failure', async () => {
     const { channel } = await activateWithStore();
     const plan = await deliver<PlanView>(channel, { type: 'getPlan' });
