@@ -1,0 +1,89 @@
+/**
+ * Hands-free recite ("car mode"): one large, high-contrast line saying what
+ * is happening, and five big controls. Nothing else competes for attention.
+ *
+ * Like `reciteView.ts` this is a handle with a persistent live region; the
+ * phase text doubles as the announcement so screen readers get it too.
+ */
+
+import type { LoopPhase, ReciteAction, ReciteStateView } from '../types';
+import { button, el, replace } from './dom';
+import { errorBanner } from './components';
+import { formatScore } from './format';
+
+export interface HandsFreeCallbacks {
+  onControl(action: ReciteAction): void;
+  onExit(): void;
+}
+
+export interface HandsFreeScreen {
+  element: HTMLElement;
+  update(state: ReciteStateView): void;
+}
+
+/** The big line of text for a phase. */
+export function handsFreePhaseText(state: ReciteStateView): string {
+  const base: Record<LoopPhase, string> = {
+    announcing: 'Get ready',
+    ready: 'Say it when ready',
+    listening: 'Listening',
+    hinting: 'Hint',
+    scoring: 'Scoring',
+    feedback: state.result ? `Scored ${formatScore(state.result.score)}` : 'Scored',
+    paused: 'Paused',
+    summary: 'All done',
+    done: 'All done',
+    error: state.error?.message ?? 'Something went wrong',
+  };
+  return base[state.phase];
+}
+
+export function createHandsFreeView(initial: ReciteStateView, cb: HandsFreeCallbacks): HandsFreeScreen {
+  const live = el('div', { class: 'sm-sr-only', attrs: { 'aria-live': 'assertive', role: 'status' } });
+  const body = el('div', { class: 'sm-handsfree-body' });
+  const root = el('section', { class: 'sm-screen sm-handsfree', attrs: { 'data-phase': initial.phase } }, [body, live]);
+  let last = '';
+
+  function draw(state: ReciteStateView): void {
+    root.setAttribute('data-phase', state.phase);
+    const finished = state.phase === 'summary' || state.phase === 'done';
+    const paused = state.phase === 'paused';
+    const big = (label: string, action: ReciteAction, extra = ''): HTMLButtonElement =>
+      button(label, () => cb.onControl(action), {
+        class: `sm-btn sm-btn-large sm-handsfree-btn ${extra}`.trim(),
+        disabled: finished,
+      });
+
+    const text = handsFreePhaseText(state);
+    replace(body, [
+      el('p', { class: 'sm-handsfree-ref', text: state.reference }),
+      el('p', { class: 'sm-handsfree-phase', text }),
+      state.source === 'due' && state.done + state.remaining > 0
+        ? el('p', { class: 'sm-handsfree-progress', text: `${state.done} done, ${state.remaining} to go` })
+        : null,
+      state.phase === 'error' && state.error ? errorBanner(state.error.message) : null,
+      el('div', { class: 'sm-handsfree-controls' }, [
+        paused ? big('Resume', 'resume', 'sm-btn-primary') : big('Pause', 'pause', 'sm-btn-primary'),
+        big('Hint', 'hint'),
+        big('Repeat', 'repeat'),
+        big('Skip', 'skip'),
+        button('Stop', () => (finished ? cb.onExit() : cb.onControl('stop')), {
+          class: 'sm-btn sm-btn-large sm-handsfree-btn sm-btn-danger',
+        }),
+      ]),
+    ]);
+
+    const say = state.message || text;
+    if (say !== last) {
+      live.textContent = say;
+      last = say;
+    }
+  }
+
+  draw(initial);
+  return { element: root, update: draw };
+}
+
+export function renderHandsFree(state: ReciteStateView, cb: HandsFreeCallbacks): HTMLElement {
+  return createHandsFreeView(state, cb).element;
+}

@@ -26,7 +26,7 @@
  * in one `components.ts#modal` rather than an inline reveal.
  */
 
-import type { AnswerMode, PassageView, Rung, RungView } from '../types';
+import type { AnswerMode, PassageView, Rung, RungView, SpeechAvailability } from '../types';
 import { button, el, replace } from './dom';
 import {
   breadcrumb,
@@ -38,8 +38,15 @@ import {
   tabs,
   tierPips,
 } from './components';
-import { RUNG_LABEL, countLabel, formatDue, formatScore, inLadderOrder, isDue, suggestedRungFor } from './format';
+import { RUNG_BLURB, RUNG_LABEL, countLabel, formatDue, formatScore, inLadderOrder, isDue, suggestedRungFor } from './format';
 import type { PanelHost } from './host';
+import { startReciteRun } from './activities';
+import { availabilityMessage } from './settingsView';
+
+/** Tab/row label: recite is marked optional so nobody thinks it is required. */
+export function rungTabLabel(rv: RungView): string {
+  return rv.optional === true || rv.rung === 'recite' ? `${RUNG_LABEL[rv.rung]} (optional)` : RUNG_LABEL[rv.rung];
+}
 
 /**
  * Named `renderPassageScreen` rather than `renderPassage`, deliberately: that
@@ -58,6 +65,8 @@ export function renderPassageScreen(
    * view state.
    */
   viewRung: Rung | null = null,
+  /** Speech availability (`SettingsView.speech`); omitted means unknown, which disables Recite. */
+  speech: SpeechAvailability | null = null,
 ): HTMLElement {
   const now = host.now();
   const root = el('section', { class: 'sm-screen sm-screen-passage' });
@@ -101,17 +110,27 @@ export function renderPassageScreen(
 
     root.appendChild(
       tabs({
-        items: applicable.map((rv) => ({ value: rv.rung, label: RUNG_LABEL[rv.rung] })),
+        items: applicable.map((rv) => ({ value: rv.rung, label: rungTabLabel(rv) })),
         selected: active.rung,
         onSelect: (rung) => host.go({ type: 'goPassage', passageId: pv.passage.id, rung }),
         ariaLabel: 'Activity',
       }),
     );
 
-    root.appendChild(el('div', { class: 'sm-activities' }, [renderActivityDetail(host, pv, active, suggested === active.rung, now)]));
+    root.appendChild(el('div', { class: 'sm-activities' }, [renderActivityDetail(host, pv, active, suggested === active.rung, now, speech)]));
   }
 
   for (const rv of inLadderOrder(pv.rungs).filter((r) => !r.applicable)) {
+    if (rv.rung === 'recite') {
+      // Optional and hidden when unavailable; say why only when speech itself is the reason.
+      const why = speech ? availabilityMessage(speech) : null;
+      if (why) {
+        root.appendChild(
+          el('p', { class: 'sm-activity-blurb' }, [el('strong', { text: rungTabLabel(rv) }), `: ${why}`]),
+        );
+      }
+      continue;
+    }
     root.appendChild(
       el('p', { class: 'sm-activity-blurb' }, [
         el('strong', { text: RUNG_LABEL[rv.rung] }),
@@ -176,7 +195,9 @@ function renderActivityDetail(
   rv: RungView,
   isSuggested: boolean,
   now: number,
+  speech: SpeechAvailability | null = null,
 ): HTMLElement {
+  if (rv.rung === 'recite') return renderReciteDetail(host, pv, rv, now, speech);
   const due = isDue(rv, now);
   const classes = ['sm-activity-card'];
   if (due) classes.push('sm-activity-due');
@@ -212,6 +233,66 @@ function renderActivityDetail(
     level,
     el('p', { class: 'sm-activity-row-progress', text: progress }),
     actions,
+  ]);
+}
+
+/**
+ * The recite tab: same header/level/progress as any activity, but the action
+ * is a Recite button (tap mode; needs speech `ready`, else disabled with the
+ * reason) and a toggle to include the passage in "Recite what's due".
+ */
+function renderReciteDetail(
+  host: PanelHost,
+  pv: PassageView,
+  rv: RungView,
+  now: number,
+  speech: SpeechAvailability | null,
+): HTMLElement {
+  const ready = speech !== null && speech.state === 'ready';
+  const why = ready ? null : speech ? availabilityMessage(speech) : 'Checking whether speech is available.';
+
+  const checkbox = el('input', {
+    id: 'sm-recite-on',
+    attrs: { type: 'checkbox', 'aria-describedby': 'sm-recite-on-hint' },
+  }) as HTMLInputElement;
+  checkbox.checked = pv.passage.reciteOn;
+  checkbox.addEventListener('change', () => {
+    checkbox.disabled = true;
+    void host.request({ type: 'setPassageRecite', passageId: pv.passage.id, on: checkbox.checked }).then((reply) => {
+      checkbox.disabled = false;
+      if (!reply.ok) {
+        checkbox.checked = !checkbox.checked;
+        host.announce(reply.error);
+        return;
+      }
+      host.reload();
+    });
+  });
+
+  const progress = progressText(rv, now);
+  return el('div', { class: 'sm-activity-card sm-activity-recite' }, [
+    el('div', { class: 'sm-activity-level-row' }, [
+      levelBoxes(rv.level, { due: isDue(rv, now) }),
+      rv.level === 0 ? null : el('span', { class: 'sm-activity-level-text', text: `${rv.level}/5` }),
+    ]),
+    el('p', { class: 'sm-activity-blurb', text: RUNG_BLURB.recite }),
+    el('p', { class: 'sm-activity-row-progress', text: progress }),
+    el('div', { class: 'sm-setting-row' }, [
+      checkbox,
+      el('label', { text: "Include in Recite what's due", attrs: { for: 'sm-recite-on' } }),
+    ]),
+    el('p', {
+      class: 'sm-hint',
+      id: 'sm-recite-on-hint',
+      text: 'Off by default: reciting is optional and never blocks a passage from being well learned.',
+    }),
+    why === null ? null : el('p', { class: 'sm-banner sm-banner-warn', text: why, attrs: { role: 'status' } }),
+    el('div', { class: 'sm-activity-actions' }, [
+      button('Recite', () => void startReciteRun(host, { kind: 'passage', passageId: pv.passage.id }, 'tap'), {
+        class: 'sm-btn sm-btn-small sm-btn-primary',
+        disabled: !ready,
+      }),
+    ]),
   ]);
 }
 

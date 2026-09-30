@@ -19,7 +19,9 @@
     "ui:context-menu",
     "ui:status-bar",
     "ui:notification",
-    "commands:register"
+    "commands:register",
+    "speech:listen",
+    "speech:speak"
   ],
   "activationEvents": ["onStartup"],
   "contributes": {
@@ -35,6 +37,12 @@
         "title": "Scripture Memory: Add this verse to my plan",
         "category": "Scripture Memory",
         "handlerEndpoint": "addActiveVerse"
+      },
+      {
+        "id": "ext.bible-app.scripture-memory.practiceDueAloud",
+        "title": "Scripture Memory: Recite what's due aloud",
+        "category": "Scripture Memory",
+        "handlerEndpoint": "practiceDueAloud"
       }
     ],
     "panelTypes": [

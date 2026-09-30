@@ -78,7 +78,7 @@ function passageInput(
   startVerseId: number,
   verseCount: number,
   reference: string,
-): Omit<Passage, 'id' | 'answerMode'> {
+): Omit<Passage, 'id' | 'answerMode' | 'reciteOn'> {
   return {
     collectionId,
     moduleId: KJV,
@@ -432,6 +432,7 @@ describe('upgrading a database that pre-dates tiers', () => {
     expect(rungsOf(await store.listCards(1))).toEqual([
       'blanks',
       'firstletters',
+      'recite',
       'refmatch',
       'refprovide',
     ]);
@@ -473,10 +474,11 @@ describe('addPassage', () => {
       'blanks',
       'firstletters',
       'ordering',
+      'recite',
       'refmatch',
       'refprovide',
     ]);
-    expect(cards).toHaveLength(5);
+    expect(cards).toHaveLength(6);
   });
 
   it('withholds only the card the material itself rules out', async () => {
@@ -489,7 +491,7 @@ describe('addPassage', () => {
       passageInput(collectionId, 43003016, 1, 'John 3:16'),
     );
     const cards = await store.listCards(passage.id);
-    expect(rungsOf(cards)).toEqual(['blanks', 'firstletters', 'refmatch', 'refprovide']);
+    expect(rungsOf(cards)).toEqual(['blanks', 'firstletters', 'recite', 'refmatch', 'refprovide']);
     expect(rungsOf(cards)).not.toContain('ordering');
   });
 
@@ -531,7 +533,7 @@ describe('addPassage', () => {
     expect(second.passage.addedAt).toBe(NOW);
     expect(await store.listPassages(collectionId)).toHaveLength(1);
     // And no second ladder was built on top of the first.
-    expect(await store.listCards(first.passage.id)).toHaveLength(5);
+    expect(await store.listCards(first.passage.id)).toHaveLength(6);
   });
 
   it('treats the same range in a different module as a different passage', async () => {
@@ -586,6 +588,7 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
     expect(rungsOf(await store.listCards(first.id))).toEqual([
       'blanks',
       'firstletters',
+      'recite',
       'refmatch',
       'refprovide',
     ]);
@@ -678,7 +681,7 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
     );
     await store.syncLadders(collectionId);
     await store.syncLadders(collectionId);
-    expect(await store.listCards(passage.id)).toHaveLength(5);
+    expect(await store.listCards(passage.id)).toHaveLength(6);
   });
 });
 
@@ -1120,7 +1123,7 @@ describe('dueCount and nextDueCard', () => {
     await store.addPassage(passageInput(collectionId, 19023001, 3, 'Psalm 23:1-3'));
 
     const all = await harness.query<{ n: number }>(`SELECT COUNT(*) AS n FROM card`);
-    expect(all[0]!.n).toBe(5);
+    expect(all[0]!.n).toBe(6);
     expect(await store.dueCount({ kind: 'all' }, NOW)).toBe(0);
   });
 
@@ -1682,7 +1685,12 @@ describe('soft delete', () => {
     await harness.exec(`ALTER TABLE passage DROP COLUMN deleted_at`);
     await harness.run(`UPDATE meta SET value = '4' WHERE key = 'schema_version'`);
 
-    expect(await migrate(harness)).toBe(5);
+    // Rewinding also has to undo v6, or its ADD COLUMN would run twice.
+    await harness.exec(`DROP INDEX recite_detail_card_at`);
+    await harness.exec(`DROP TABLE recite_detail`);
+    await harness.exec(`ALTER TABLE passage DROP COLUMN recite_on`);
+
+    expect(await migrate(harness)).toBe(SCHEMA_VERSION);
     const cols = await harness.query<{ name: string }>(`PRAGMA table_info(passage)`);
     expect(cols.map((c) => c.name)).toContain('deleted_at');
     expect(await store.listPassages(collectionId)).toHaveLength(1);

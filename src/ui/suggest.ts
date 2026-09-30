@@ -26,6 +26,7 @@
  */
 
 import type { PlanView, Rung } from '../types';
+import { isOptionalRung } from '../ladder';
 import type { Flow } from './state';
 import type { PracticeTarget as BasePracticeTarget } from './format';
 import { isDue } from './format';
@@ -81,7 +82,7 @@ export function listTargets(plan: PlanView, now: number): PracticeTarget[] {
   const out: PracticeTarget[] = [];
   for (const pv of plan.passages) {
     for (const rv of pv.rungs) {
-      if (!rv.applicable) continue;
+      if (!rv.applicable || isOptionalRung(rv.rung)) continue; // optional rungs (recite) are never suggested
       out.push({
         passageId: pv.passage.id,
         rung: rv.rung,

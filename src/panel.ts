@@ -23,7 +23,7 @@
 import { BibleExtUI } from '@bible/extension-ui';
 import type { ThemeInfo } from '@bible/extension-ui';
 
-import type { PanelReply, PanelRequest, RequestMap, Rung } from './types';
+import type { PanelReply, PanelRequest, ReciteAction, ReciteStateView, RequestMap, Rung } from './types';
 import { clear, el } from './ui/dom';
 import { errorBanner } from './ui/components';
 import type { PanelHost } from './ui/host';
@@ -34,6 +34,8 @@ import { renderAnalytics } from './ui/analyticsView';
 import { renderPassageScreen } from './ui/passageView';
 import { renderManagePassages } from './ui/managePassagesView';
 import { renderSettings } from './ui/settingsView';
+import { createReciteView } from './ui/reciteView';
+import { createHandsFreeView } from './ui/handsFreeView';
 import { call } from './ui/rpc';
 import { pickFlowTarget } from './ui/suggest';
 import { INITIAL_NAV, navReduce, sameView } from './ui/state';
@@ -65,6 +67,10 @@ const status = requireElement('sm-status');
 let nav: NavState = INITIAL_NAV;
 let practice: PracticeView | null = null;
 let activeReference: string | null = null;
+
+/** The mounted recite / hands-free screen (at most one), and the last state it was given. */
+let reciteScreen: { element: HTMLElement; update(state: ReciteStateView): void } | null = null;
+let reciteState: ReciteStateView | null = null;
 
 /**
  * Guards against an out-of-order paint.
@@ -189,6 +195,28 @@ async function render(): Promise<void> {
     practice = null;
   }
 
+  if (reciteScreen !== null && nav.view.name !== 'recite') {
+    reciteScreen = null;
+    reciteState = null;
+  }
+
+  // Recite builds its screen from the worker's state and then lives on pushes;
+  // a planChanged push must not rebuild it mid-recitation.
+  if (nav.view.name === 'recite') {
+    if (reciteScreen !== null && reciteState?.reciteId === nav.view.reciteId) return;
+    const reply = await host.request({ type: 'getReciteState' });
+    if (token !== renderToken) return;
+    if (!reply.ok || reply.data === null) {
+      // Nothing to resume (finished or never started): go home.
+      nav = navReduce(nav, { type: 'reciteEnded' });
+      if (!reply.ok) showError(reply.error);
+      void render();
+      return;
+    }
+    mountRecite(reply.data);
+    return;
+  }
+
   // Practice mounts itself in `startSession`. Re-rendering it from here would
   // destroy a half-answered step every time a `planChanged` push arrived.
   if (nav.view.name === 'practice') return;
@@ -206,6 +234,45 @@ async function render(): Promise<void> {
   if (heading) {
     heading.tabIndex = -1;
     heading.focus({ preventScroll: true });
+  }
+}
+
+function sendRecite(action: ReciteAction): void {
+  const current = reciteState;
+  if (current === null) return;
+  void host.request({ type: 'reciteControl', reciteId: current.reciteId, action }).then((reply) => {
+    if (!reply.ok) {
+      showError(reply.error);
+      return;
+    }
+    applyReciteState(reply.data);
+  });
+}
+
+function leaveRecite(): void {
+  const current = reciteState;
+  // Leaving mid-run ends it, so a hands-free loop does not keep listening to nobody.
+  if (current !== null && current.phase !== 'summary' && current.phase !== 'done') {
+    void host.request({ type: 'reciteControl', reciteId: current.reciteId, action: 'stop' });
+  }
+  host.go({ type: 'reciteEnded' });
+}
+
+function mountRecite(state: ReciteStateView): void {
+  reciteState = state;
+  const screen =
+    state.mode === 'handsfree'
+      ? createHandsFreeView(state, { onControl: sendRecite, onExit: leaveRecite })
+      : createReciteView(state, { onControl: sendRecite, onExit: leaveRecite, now: () => host.now() });
+  reciteScreen = screen;
+  clear(main);
+  main.appendChild(screen.element);
+}
+
+function applyReciteState(state: ReciteStateView): void {
+  if (reciteScreen !== null && nav.view.name === 'recite' && nav.view.reciteId === state.reciteId) {
+    reciteState = state;
+    reciteScreen.update(state);
   }
 }
 
@@ -239,7 +306,13 @@ async function buildScreen(): Promise<HTMLElement> {
         return planReply.ok ? renderPlan(host, planReply.data) : failure(planReply.error);
       }
       if (!settingsReply.ok) return failure(settingsReply.error);
-      return renderPassageScreen(host, passageReply.data, settingsReply.data.defaultAnswerMode, nav.view.rung);
+      return renderPassageScreen(
+        host,
+        passageReply.data,
+        settingsReply.data.defaultAnswerMode,
+        nav.view.rung,
+        settingsReply.data.speech,
+      );
     }
 
     case 'analytics': {
@@ -382,6 +455,18 @@ bible.onWorkerMessage((message) => {
       if (typeof push.count === 'number' && nav.view.name === 'plan') void render();
       return;
 
+    case 'reciteState': {
+      const state = (message as { state?: ReciteStateView }).state;
+      if (!state || typeof state.reciteId !== 'string') return;
+      if (nav.view.name === 'recite') {
+        applyReciteState(state);
+      } else if (nav.view.name !== 'practice' && state.phase !== 'summary' && state.phase !== 'done' && state.phase !== 'error') {
+        // A run started outside the panel (the "Recite what's due aloud" command): show it.
+        host.go({ type: 'reciteStarted', reciteId: state.reciteId, mode: state.mode });
+      }
+      return;
+    }
+
     case 'activeVerse':
       if (typeof push.reference !== 'string') return;
       activeReference = push.reference;
@@ -424,4 +509,14 @@ void bible
   // the fallbacks in `styles.css` - so a failure here is logged and no more.
   .catch((err: unknown) => console.warn('Scripture Memory: could not read the host theme', err));
 
-void render();
+// On open, resume a run that is already going (hands-free started by the
+// command, or a panel reload mid-recitation), else show the plan.
+void host
+  .request({ type: 'getReciteState' })
+  .then((reply) => {
+    if (reply.ok && reply.data !== null && reply.data.phase !== 'summary' && reply.data.phase !== 'done') {
+      nav = navReduce(nav, { type: 'reciteStarted', reciteId: reply.data.reciteId, mode: reply.data.mode });
+    }
+  })
+  .catch(() => undefined)
+  .then(() => render());

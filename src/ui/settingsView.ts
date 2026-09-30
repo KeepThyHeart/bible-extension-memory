@@ -8,9 +8,9 @@
  * page could not show "3 passages have their own setting" at all.
  */
 
-import type { AnswerMode, PlanView, SettingsView } from '../types';
+import type { AnswerMode, PlanView, ReciteSettings, SettingsView, SpeechAvailability } from '../types';
 import { button, el } from './dom';
-import { breadcrumb } from './components';
+import { breadcrumb, modal } from './components';
 import type { PanelHost } from './host';
 
 export function renderSettings(host: PanelHost, settings: SettingsView, plan: PlanView): HTMLElement {
@@ -25,6 +25,9 @@ export function renderSettings(host: PanelHost, settings: SettingsView, plan: Pl
       el('p', { class: 'sm-hint', text: 'Capitals and punctuation never count.' }),
     ]),
   );
+
+  // `recite`/`speech` are absent on a host that predates Recite aloud.
+  if (settings.recite && settings.speech) root.appendChild(renderReciteSettings(host, settings.recite, settings.speech));
 
   root.appendChild(renderOverrides(host, plan));
 
@@ -90,5 +93,153 @@ function renderOverrides(host: PanelHost, plan: PlanView): HTMLElement {
       class: 'sm-block-caption',
       text: '(Change it on each passage\'s screen.)',
     }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Recite aloud
+// ---------------------------------------------------------------------------
+
+export const PERMISSION_MISSING_TEXT =
+  'Scripture Memory needs the speech:listen permission. Grant it in Preferences > Extensions.';
+
+/** The banner text for each availability state, or null when all is well. */
+export function availabilityMessage(speech: SpeechAvailability): string | null {
+  switch (speech.state) {
+    case 'ready':
+      return null;
+    case 'permission-missing':
+      return speech.missingPermissions.length > 0 && !speech.missingPermissions.includes('speech:listen')
+        ? `Scripture Memory needs the ${speech.missingPermissions.join(', ')} permission for hands-free mode. Grant it in Preferences > Extensions.`
+        : PERMISSION_MISSING_TEXT;
+    case 'needs-download':
+      return 'The speech model needs to be downloaded before you can recite aloud. Download it in the main app\'s speech settings.';
+    case 'unavailable':
+      return 'Speech recognition is not available on this device right now.';
+    case 'unsupported-language':
+      return 'Reciting aloud is not available for this Bible translation\'s language yet.';
+    case 'host-too-old':
+      return 'This version of the app does not support reciting aloud. Update the app to use it.';
+  }
+}
+
+export function availabilityBanner(speech: SpeechAvailability): HTMLElement {
+  const msg = availabilityMessage(speech);
+  if (msg === null) {
+    const where = speech.onDevice ? 'on this device' : 'online';
+    const label = speech.engineLabel ? `${speech.engineLabel}, ${where}` : where;
+    return el('p', {
+      class: 'sm-banner sm-banner-ok',
+      text: `Ready to listen (${label}).${speech.handsFree ? ' Hands-free mode is available.' : ''}`,
+      attrs: { role: 'status', 'data-speech-state': speech.state },
+    });
+  }
+  return el('p', {
+    class: 'sm-banner sm-banner-warn',
+    text: msg,
+    attrs: { role: 'status', 'data-speech-state': speech.state },
+  });
+}
+
+const HINT_DELAYS_MS = [3000, 5000, 8000, 12000];
+
+export function renderReciteSettings(host: PanelHost, recite: ReciteSettings, speech: SpeechAvailability): HTMLElement {
+  function save(patch: Partial<ReciteSettings>): void {
+    void host.request({ type: 'setReciteSettings', patch }).then((reply) => {
+      if (!reply.ok) host.announce(reply.error);
+    });
+  }
+
+  function field(id: string, label: string, control: HTMLElement): HTMLElement {
+    return el('div', { class: 'sm-setting-row' }, [
+      el('label', { class: 'sm-label-inline', attrs: { for: id }, text: label }),
+      control,
+    ]);
+  }
+
+  function select<K extends keyof ReciteSettings>(
+    key: K,
+    id: string,
+    options: { value: string; label: string }[],
+    current: string,
+    parse: (v: string) => ReciteSettings[K],
+  ): HTMLSelectElement {
+    const sel = el('select', { class: 'sm-select', id }) as HTMLSelectElement;
+    for (const o of options) {
+      const opt = el('option', { value: o.value, text: o.label }) as HTMLOptionElement;
+      if (o.value === current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener('change', () => save({ [key]: parse(sel.value) } as Partial<ReciteSettings>));
+    return sel;
+  }
+
+  function checkbox(key: 'readBack' | 'autoAdvance' | 'voiceCommands', id: string, label: string, hint: string): HTMLElement {
+    const input = el('input', { id, type: 'checkbox' }) as HTMLInputElement;
+    input.checked = recite[key];
+    input.addEventListener('change', () => save({ [key]: input.checked } as Partial<ReciteSettings>));
+    return el('div', { class: 'sm-radio-row' }, [
+      input,
+      el('label', { attrs: { for: id } }, [
+        el('span', { class: 'sm-radio-label', text: label }),
+        el('span', { class: 'sm-hint', text: ` ${hint}` }),
+      ]),
+    ]);
+  }
+
+  const delayOptions = HINT_DELAYS_MS.includes(recite.hintDelayMs) ? HINT_DELAYS_MS : [...HINT_DELAYS_MS, recite.hintDelayMs].sort((a, b) => a - b);
+
+  return el('section', { class: 'sm-block sm-block-recite' }, [
+    el('h2', { class: 'sm-block-title', text: 'Recite aloud' }),
+    availabilityBanner(speech),
+    field('sm-recite-strictness', 'Strictness', select('strictness', 'sm-recite-strictness', [
+      { value: 'lenient', label: 'Lenient (small slips are fine)' },
+      { value: 'normal', label: 'Normal' },
+      { value: 'strict', label: 'Strict (word for word)' },
+    ], recite.strictness, (v) => v as ReciteSettings['strictness'])),
+    field('sm-recite-prompt', 'Prompt', select('promptStyle', 'sm-recite-prompt', [
+      { value: 'reference', label: 'Reference only' },
+      { value: 'reference+opening', label: 'Reference and opening words' },
+    ], recite.promptStyle, (v) => v as ReciteSettings['promptStyle'])),
+    field('sm-recite-feedback', 'Feedback', select('feedback', 'sm-recite-feedback', [
+      { value: 'brief', label: 'Brief' },
+      { value: 'full', label: 'Full (quote what was missed)' },
+    ], recite.feedback, (v) => v as ReciteSettings['feedback'])),
+    checkbox('readBack', 'sm-recite-readback', 'Read back', 'Speak the passage after scoring.'),
+    checkbox('autoAdvance', 'sm-recite-auto', 'Auto-advance', 'Move to the next passage by itself in hands-free mode.'),
+    checkbox('voiceCommands', 'sm-recite-voice', 'Voice commands', 'Say "hint", "repeat", "skip" or "stop".'),
+    field('sm-recite-hintdelay', 'Hint after silence', select('hintDelayMs', 'sm-recite-hintdelay',
+      delayOptions.map((ms) => ({ value: String(ms), label: `${ms / 1000} seconds` })),
+      String(recite.hintDelayMs), (v) => Number(v))),
+    renderDeleteHistory(host),
+  ]);
+}
+
+function renderDeleteHistory(host: PanelHost): HTMLElement {
+  const status = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+
+  const confirmButton = button('Delete', () => {
+    void host.request({ type: 'deleteReciteHistory' }).then((reply) => {
+      dialog.close();
+      status.textContent = reply.ok ? 'Recitation history deleted.' : reply.error;
+      if (!reply.ok) host.announce(reply.error);
+    });
+  }, { class: 'sm-btn sm-btn-danger' });
+
+  const dialog = modal({
+    title: 'Delete recitation history?',
+    body: [
+      el('p', {
+        text: 'This removes the word-by-word detail saved from your recitations. Your scores and review schedule are kept.',
+      }),
+    ],
+    actions: [button('Cancel', () => dialog.close(), { class: 'sm-btn sm-btn-quiet' }), confirmButton],
+  });
+
+  return el('div', { class: 'sm-setting-row' }, [
+    button('Delete recitation history', () => dialog.open(), { class: 'sm-btn sm-btn-danger-quiet sm-btn-small' }),
+    el('span', { class: 'sm-hint', text: 'Scores and your schedule are kept.' }),
+    status,
+    dialog.element,
   ]);
 }

@@ -32,7 +32,9 @@ import type {
   PlanView,
   Rung,
   RungView,
+  ReciteStateView,
   SessionSummary,
+  SpeechAvailability,
   StepAnswer,
   VerseText,
 } from './types';
@@ -42,6 +44,7 @@ import type { ScopeFacts, TierProgressRow } from './store';
 import {
   applicableRungs,
   inRungOrder,
+  isOptionalRung,
   levelForActivity,
   MIN_VERSES_FOR_REFERENCE_ACTIVITIES,
   passageWellLearned,
@@ -54,6 +57,14 @@ import { Session, nextSessionId, MAX_REFERENCE_STEPS } from './session';
 import type { ReferenceCatalog } from './session';
 import { toVerseText, CONTEXT_VERSES } from './verses';
 import { resolveReference, ReferenceError, MAX_PASSAGE_VERSES } from './reference';
+import { ReciteService } from './recite/service';
+import type { RecordAndScheduleArgs, RecordAndScheduleResult } from './recite/service';
+import {
+  moduleKit,
+  moduleLanguage,
+  resetModuleCache,
+  unavailableMessage,
+} from './recite/speechAvailability';
 import { BOOK_GENRE, buildReferenceDistractors, type ReferencePoint } from './exercises/references';
 
 const DB_NAME = 'memory';
@@ -155,6 +166,8 @@ let activeModule: string | null = null;
 let statusBarHandle: DisposableHandle | null = null;
 let lastStatusText: string | null = null;
 const sessions = new Map<string, Session>();
+/** Recite-aloud service: built lazily, once per activation (see `getRecite`). */
+let recite: ReciteService | null = null;
 /** When each in-flight session started, for the (currently unshown) duration column. */
 const sessionStartedAt = new Map<string, number>();
 
@@ -308,6 +321,11 @@ let ready = false;
 
 export async function activate(host: BibleExtensionAPI): Promise<void> {
   api = host;
+  // A re-activation starts clean: a service from the last activation would hold
+  // the old store and speech handle (and possibly a listening loop).
+  if (recite) void recite.dispose().catch(() => undefined);
+  recite = null;
+  resetModuleCache();
 
   // Storage first, and fatally: everything else in this extension is a view
   // over the database, so there is nothing worth registering without it. A
@@ -440,6 +458,9 @@ export function deactivate(): void {
   // the verse in progress.
   sessions.clear();
   sessionStartedAt.clear();
+  // Stops listening, if a recitation is in progress.
+  if (recite) void recite.dispose().catch(() => undefined);
+  recite = null;
   console.log('Scripture Memory deactivated');
 }
 
@@ -513,6 +534,7 @@ async function loadBookNames(): Promise<void> {
 const COMMANDS: { endpoint: string; title: string }[] = [
   { endpoint: 'practiceDue', title: "Scripture Memory: Practice what's due" },
   { endpoint: 'addActiveVerse', title: 'Scripture Memory: Add this verse to my plan' },
+  { endpoint: 'practiceDueAloud', title: "Scripture Memory: Recite what's due aloud" },
 ];
 
 async function registerCommands(): Promise<void> {
@@ -536,6 +558,25 @@ async function registerCommands(): Promise<void> {
       return;
     }
     await api.workspace.openPanel('panel');
+    void api.panels.postMessage({ type: 'planChanged' });
+  });
+
+  await api.runtime.expose('practiceDueAloud', async () => {
+    const svc = getRecite();
+    const availability = await svc.probe(true);
+    if (availability.state !== 'ready') {
+      await api.ui.showNotification(unavailableMessage(availability));
+      return;
+    }
+    if ((await store.reciteDueCount(await store.getScope(), Date.now())) === 0) {
+      await api.ui.showNotification('Nothing is due to recite right now.');
+      return;
+    }
+    // Hands-free needs `speech:speak`; without it fall back to tap (Talk button).
+    await svc.start({ source: { kind: 'due' }, mode: availability.handsFree ? 'handsfree' : 'tap' });
+    await api.workspace.openPanel('panel');
+    const state = svc.get();
+    if (state) pushReciteState(state);
     void api.panels.postMessage({ type: 'planChanged' });
   });
 
@@ -638,7 +679,11 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       return store.analytics(await store.getScope(), Date.now());
 
     case 'getSettings':
-      return { defaultAnswerMode: await store.getDefaultAnswerMode() };
+      return {
+        defaultAnswerMode: await store.getDefaultAnswerMode(),
+        recite: await getRecite().getSettings(),
+        speech: await getRecite().probe(true),
+      };
 
     case 'setPassageSortOrder':
       await store.setPassageSortOrder(req.order);
@@ -736,10 +781,82 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       void api.panels.postMessage({ type: 'planChanged' });
       return buildPlanView();
 
+    case 'startRecite':
+      return getRecite().start({ source: req.source, mode: req.mode });
+
+    case 'reciteControl':
+      return getRecite().control({ reciteId: req.reciteId, action: req.action });
+
+    case 'getReciteState':
+      return getRecite().get();
+
+    case 'setReciteSettings':
+      await getRecite().setSettings(req.patch);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return {};
+
+    case 'setPassageRecite':
+      await store.setPassageReciteOn(req.passageId, req.on);
+      void api.panels.postMessage({ type: 'planChanged' });
+      return buildPassageView(req.passageId);
+
+    case 'deleteReciteHistory':
+      await getRecite().deleteHistory();
+      return {};
+
     default: {
       const exhaustive: never = req;
       throw new Error(`Unknown request: ${JSON.stringify(exhaustive)}`);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Recite aloud
+// ---------------------------------------------------------------------------
+
+function pushReciteState(state: ReciteStateView): void {
+  void Promise.resolve(api.panels.postMessage({ type: 'reciteState', state })).catch(() => undefined);
+}
+
+/** The recite service, built on first use. `api.speech` may be missing on an old host. */
+function getRecite(): ReciteService {
+  if (recite) return recite;
+  recite = new ReciteService({
+    store,
+    speech: (api as { speech?: BibleExtensionAPI['speech'] }).speech,
+    now: () => Date.now(),
+    rng: Math.random,
+    bibleModuleLanguage: (id) => moduleLanguageSafe(id),
+    loadVerses: (passage) =>
+      fetchVerses(
+        passage.startVerseId,
+        passage.endVerseId,
+        passage.moduleId,
+        makeLabeller(passage.startVerseId, passage.endVerseId),
+      ),
+    bookNames: () => Array.from(bookNames.values()),
+    recordAndSchedule,
+    push: pushReciteState,
+  });
+  return recite;
+}
+
+async function moduleLanguageSafe(moduleId: string): Promise<string | undefined> {
+  try {
+    return await moduleLanguage({ bible: api.bible }, moduleId);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether the recite rung applies to a passage: listening is usable and a kit exists for its language. */
+async function speechOnFor(availability: SpeechAvailability, moduleId: string): Promise<boolean> {
+  if (availability.state !== 'ready' && availability.state !== 'needs-download') return false;
+  try {
+    return (await moduleKit({ bible: api.bible }, moduleId)) !== null;
+  } catch {
+    return false;
   }
 }
 
@@ -761,9 +878,12 @@ async function assemblePassageView(
   tierRows: Map<number, TierProgressRow[]>,
   scope: ScopeFacts,
   now: number,
+  availability: SpeechAvailability,
 ): Promise<PassageView> {
   const applicable = new Set(
-    applicableRungs(passage.verseCount, scope.siblingCount, scope.scopeVerseCount),
+    applicableRungs(passage.verseCount, scope.siblingCount, scope.scopeVerseCount, {
+      speech: await speechOnFor(availability, passage.moduleId),
+    }),
   );
   const rungs: RungView[] = [];
   let bestLevel = 0;
@@ -776,10 +896,14 @@ async function assemblePassageView(
     // session below still moves `dueAt` closer without moving this number.
     const progress = summarizeActivity(c.rung, tierRows.get(c.id) ?? []);
     const level = levelForActivity(progress);
-    if (isApplicable) {
+    const optional = isOptionalRung(c.rung);
+    // Optional rungs (recite) never count toward the plan's due count; a real
+    // recitation still raises `bestLevel`, even when the rung is not applicable
+    // right now (no microphone today), as it carries down to the text rungs.
+    if (isApplicable || (optional && progress.attempts > 0)) {
       bestLevel = Math.max(bestLevel, level);
-      if (isDue(c.dueAt, now)) dueCount += 1;
     }
+    if (isApplicable && !optional && isDue(c.dueAt, now)) dueCount += 1;
 
     // `totalStepsFor` needs the resume row's OWN tier, not the tier a fresh
     // session would auto-select: `blanks` has a different step count per
@@ -806,6 +930,7 @@ async function assemblePassageView(
       bestScore: progress.bestScore,
       attempts: progress.attempts,
       nextTier: progress.nextTier,
+      ...(optional ? { optional: true as const } : {}),
     });
   }
 
@@ -832,10 +957,11 @@ async function buildPlanView(): Promise<PlanView> {
   const tierRows = byCard(await store.listTierProgress(passages.map((p) => p.id)));
   const views: PassageView[] = [];
   let totalDue = 0;
+  const speech = await getRecite().probe();
 
   for (const passage of passages) {
     const cards = await store.listCards(passage.id);
-    const view = await assemblePassageView(passage, cards, tierRows, scopeFacts, now);
+    const view = await assemblePassageView(passage, cards, tierRows, scopeFacts, now, speech);
     totalDue += view.dueCount;
     views.push(view);
   }
@@ -857,6 +983,8 @@ async function buildPlanView(): Promise<PlanView> {
     totalDue,
     defaultAnswerMode: await store.getDefaultAnswerMode(),
     sortOrder: await store.getPassageSortOrder(),
+    speech,
+    reciteDueCount: await store.reciteDueCount(scope, now),
   };
 }
 
@@ -879,7 +1007,14 @@ async function buildPassageView(passageId: number): Promise<PassageView> {
   const cards = await store.listCards(passage.id);
   const tierRows = byCard(await store.listTierProgress([passage.id]));
 
-  return assemblePassageView(passage, cards, tierRows, scopeFacts, Date.now());
+  return assemblePassageView(
+    passage,
+    cards,
+    tierRows,
+    scopeFacts,
+    Date.now(),
+    await getRecite().probe(),
+  );
 }
 
 /**
@@ -1115,6 +1250,9 @@ async function startSession(
     scope.siblingCount,
     scope.scopeVerseCount,
   );
+  if (rung === 'recite') {
+    throw new Error('Recite aloud is not a practice session; use startRecite.');
+  }
 
   const now = Date.now();
   const chosen = rung ?? (await suggestedRungForPassage(passage, applicable, now));
@@ -1255,6 +1393,7 @@ async function suggestedRungForPassage(
   const tierRows = byCard(await store.listTierProgress([passage.id]));
 
   for (const rung of applicable) {
+    if (isOptionalRung(rung)) continue; // recite is never suggested
     const card = await store.getCard(passage.id, rung);
     if (!card) continue;
     // The same derived level the plan screen shows. Reading `lastScore` here
@@ -1267,10 +1406,11 @@ async function suggestedRungForPassage(
   }
   if (dueBest) return dueBest.rung;
 
-  for (const rung of applicable) {
+  const suggestible = applicable.filter((r) => !isOptionalRung(r));
+  for (const rung of suggestible) {
     if ((levels.get(rung) ?? 0) < WELL_LEARNED_LEVEL) return rung;
   }
-  return applicable[applicable.length - 1] as Rung;
+  return suggestible[suggestible.length - 1] as Rung;
 }
 
 async function submitStep(sessionId: string, answer: StepAnswer) {
@@ -1316,56 +1456,77 @@ async function submitStep(sessionId: string, answer: StepAnswer) {
  * is no "ahead of schedule" attempt left to treat specially.
  */
 async function finishSession(session: Session): Promise<SessionSummary> {
-  const now = Date.now();
-  const score = session.score;
-  const startedAt = sessionStartedAt.get(session.sessionId) ?? now;
-
-  await store.recordAttempt({
+  const startedAt = sessionStartedAt.get(session.sessionId) ?? Date.now();
+  const rec = await recordAndSchedule({
     cardId: session.cardId,
-    at: now,
-    score,
+    passageId: session.passageId,
+    rung: session.rung,
+    tier: session.tier,
+    score: session.score,
     correctFirst: session.correctFirst,
     totalSteps: session.gradedTotal,
-    durationMs: Math.max(0, now - startedAt),
-    tier: session.tier,
+    startedAt,
   });
-  await store.clearResume(session.cardId);
-
-  const card = await store.getCard(session.passageId, session.rung);
-  if (!card) throw new Error('That exercise disappeared mid-session.');
-
-  const result = schedule({
-    intervalStep: card.intervalStep,
-    streak: card.streak,
-    score,
-    now,
-    rng: makeRng(now ^ card.id),
-  });
-  await store.applySchedule(card.id, result, score);
-
-  await refreshStatusBar();
-  void api.panels.postMessage({ type: 'planChanged' });
-
-  // Read back AFTER the attempt row was written, so the level reported here
-  // is the same one the plan view will show a moment later. Reporting
-  // `levelFromScore(score)` - what v1 did - would now contradict the screen
-  // the user lands on: this attempt's score is only one input to the level.
-  const tierRows = byCard(await store.listTierProgress([session.passageId]));
-  const level = levelForActivity(
-    summarizeActivity(session.rung, tierRows.get(card.id) ?? []),
-  );
 
   return {
     passageId: session.passageId,
     rung: session.rung,
     tier: session.tier,
     tiers: TIERS[session.rung],
-    score,
+    score: session.score,
     correctFirst: session.correctFirst,
     totalSteps: session.gradedTotal,
-    nextDueAt: result.dueAt,
+    nextDueAt: rec.nextDueAt,
+    level: rec.level,
+    passageWellLearned: rec.passageWellLearned,
+  };
+}
+
+/**
+ * The one path every finished attempt takes, Session or recitation: record the
+ * attempt, clear the resume point, reschedule the card, refresh the status bar
+ * and tell the panel. Returns the attempt's id so a recitation can hang its
+ * per-word detail on it.
+ */
+async function recordAndSchedule(a: RecordAndScheduleArgs): Promise<RecordAndScheduleResult> {
+  const now = Date.now();
+
+  const attemptId = await store.recordAttempt({
+    cardId: a.cardId,
+    at: now,
+    score: a.score,
+    correctFirst: a.correctFirst,
+    totalSteps: a.totalSteps,
+    durationMs: Math.max(0, now - a.startedAt),
+    tier: a.tier,
+  });
+  await store.clearResume(a.cardId);
+
+  const card = await store.getCard(a.passageId, a.rung);
+  if (!card) throw new Error('That exercise disappeared mid-session.');
+
+  const result = schedule({
+    intervalStep: card.intervalStep,
+    streak: card.streak,
+    score: a.score,
+    now,
+    rng: makeRng(now ^ card.id),
+  });
+  await store.applySchedule(card.id, result, a.score);
+
+  await refreshStatusBar();
+  void api.panels.postMessage({ type: 'planChanged' });
+
+  // Read back AFTER the attempt row was written, so the level reported here
+  // is the same one the plan view will show a moment later.
+  const tierRows = byCard(await store.listTierProgress([a.passageId]));
+  const level = levelForActivity(summarizeActivity(a.rung, tierRows.get(card.id) ?? []));
+
+  return {
+    attemptId,
     level,
-    passageWellLearned: await isPassageWellLearned(session.passageId),
+    nextDueAt: result.dueAt,
+    passageWellLearned: await isPassageWellLearned(a.passageId),
   };
 }
 

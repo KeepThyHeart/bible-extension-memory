@@ -2171,3 +2171,49 @@ button.sm-activity-row:hover {
   align-items: center;
   gap: var(--sm-s2);
 }
+
+/* ==========================================================================
+   Recite aloud (append to ui/styles.css)
+   ========================================================================== */
+
+.sm-recite-ref { font-size: 1.3em; font-weight: 600; color: var(--sm-heading); }
+.sm-recite-talk-row { display: flex; justify-content: center; padding: var(--sm-s3, 12px) 0; }
+.sm-recite-talk { min-width: 10em; min-height: 3.2em; font-size: 1.3em; border-radius: 999px; }
+.sm-recite-talk-on { background: var(--sm-danger); border-color: var(--sm-danger); color: #fff; }
+.sm-recite-heard { min-height: 2em; color: var(--sm-text-dim); font-style: italic; }
+.sm-recite-hint-text { padding: var(--sm-s2); background: var(--sm-info-soft); color: var(--sm-info-text); border-radius: var(--sm-radius); }
+.sm-recite-score-num { font-size: 2em; font-weight: 700; color: var(--sm-heading); }
+.sm-recite-level { color: var(--sm-text-dim); }
+.sm-recite-learned { color: var(--sm-success-text); font-weight: 600; }
+.sm-recite-diff { line-height: 1.9; font-size: 1.05em; }
+.sm-recite-word { padding: 0 2px; border-radius: 3px; }
+.sm-recite-tag { font-size: 0.8em; font-weight: 600; }
+.sm-recite-near { background: var(--sm-warning-soft); color: var(--sm-warning-text); }
+.sm-recite-swapped { background: var(--sm-warning-soft); color: var(--sm-warning-text); border-bottom: 2px dotted var(--sm-warning); }
+.sm-recite-wrong { background: var(--sm-danger-soft); color: var(--sm-danger-text); }
+.sm-recite-hinted { background: var(--sm-info-soft); color: var(--sm-info-text); }
+.sm-recite-extra { background: var(--sm-danger-soft); color: var(--sm-danger-text); font-style: italic; }
+/* Missed words: dotted underline plus the visible "(missed)" label (strike-through is forbidden in this sheet). */
+.sm-recite-missed { background: var(--sm-danger-soft); color: var(--sm-danger-text); text-decoration: underline dotted; text-underline-offset: 3px; }
+.sm-recite-missed .sm-recite-tag { text-decoration: none; display: inline-block; }
+
+.sm-banner { padding: var(--sm-s2) var(--sm-s3, 12px); border-radius: var(--sm-radius); border: 1px solid; }
+.sm-banner-ok { background: var(--sm-success-soft); color: var(--sm-success-text); border-color: var(--sm-success-border); }
+.sm-banner-warn { background: var(--sm-warning-soft); color: var(--sm-warning-text); border-color: var(--sm-warning-border); }
+.sm-setting-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sm-s2); }
+
+/* Hands-free (car mode): large, high contrast, big targets. */
+.sm-handsfree { background: #000; color: #fff; padding: var(--sm-s4, 16px); text-align: center; border-radius: var(--sm-radius); }
+.sm-handsfree-ref { font-size: 1.4em; color: #ddd; }
+.sm-handsfree-phase { font-size: 3em; font-weight: 800; line-height: 1.1; margin: var(--sm-s3, 12px) 0; }
+.sm-handsfree-progress { color: #ccc; }
+.sm-handsfree-controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sm-s2); margin-top: var(--sm-s3, 12px); }
+.sm-handsfree-btn { min-height: 4em; font-size: 1.4em; font-weight: 700; }
+
+/* Buttons inside the black hands-free panel: explicit colours so they read on dark. */
+.sm-handsfree .sm-btn { background: #222; color: #fff; border: 2px solid #888; }
+.sm-handsfree .sm-btn:hover:not(:disabled) { background: #333; }
+.sm-handsfree .sm-btn:disabled { color: #aaa; border-color: #555; }
+.sm-handsfree .sm-btn-primary { background: #1d5fd1; border-color: #8ab4ff; }
+.sm-handsfree .sm-btn-danger { background: #a11; border-color: #f99; }
+.sm-handsfree .sm-btn:focus-visible { outline: 3px solid #ff0; outline-offset: 2px; }

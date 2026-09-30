@@ -28,6 +28,7 @@ If you untick anything, the extension cannot open its database and comes up **in
 - `ui:context-menu` — "Add to memorization plan" on a verse
 - `ui:status-bar` — the due count
 - `ui:notification` — confirmations
+- `speech:listen` and `speech:speak` — optional, for **Recite aloud** (below). Without `speech:listen` everything else works and the Recite tile says what to grant; without `speech:speak` recitation still works with a Talk button, but has no spoken prompts or feedback (no hands-free mode).
 
 Then **reload the extension**. It does not pick up a new grant on its own.
 
@@ -61,7 +62,7 @@ npm install --no-save --force ../bible/build/sdk/bible-core-0.1.0.tgz
 
 **Removing a passage.** "Remove…" on a passage's row in Manage Passages asks for a second confirming click only if the passage has actually been practiced. Removal is a *soft delete*: the passage disappears from every screen, but its row, schedule and attempt history are kept for seven days. Adding the same passage again within that window restores it with its progress; after seven days the next activation of the extension purges it for good.
 
-**Practice it. Mostly nothing is locked.** Each passage has up to five activities:
+**Practice it. Mostly nothing is locked.** Each passage has up to five activities, plus the optional spoken one described under *Recite aloud* below:
 
 | Activity | What you do | Applies to |
 |---|---|---|
@@ -72,6 +73,12 @@ npm install --no-save --force ../bible/build/sdk/bible-core-0.1.0.tgz
 | `refprovide` | Given the words, type the reference from memory | any passage, once the list has 25 verses or more |
 
 They are a *suggested* order, not a promotion gate — v1 dropped the four-state ladder (`locked → learning → review → mastered`) that v0 had, and every activity a passage's material allows is practisable at any time; every attempt counts and reschedules, and the passage screen just badges whichever one is due, or otherwise most worth doing next, as "Suggested". *Which* activities a passage's material allows is a separate question, and two things genuinely gate an activity rather than merely suggesting an order: `ordering` needs more than one verse, and `refmatch`/`refprovide` - "the reference activities" - need the current list (or, viewing "All Lists," the whole plan) to hold **25 verses or more**, so a picker or a recall prompt always has enough real references to be a meaningful question rather than the only guess available. Below that threshold, the plan screen's activity picker shows the reference activities as unavailable with a running count of verses still needed, and the passage screen's own row explains the same thing. A lone verse in an empty plan cannot be ordered and has no sibling to be confused with, so it starts on `blanks` - that is the state of every plan on the day it is created.
+
+**Recite aloud.** An optional sixth activity, `recite`: say the passage from memory and it is graded word by word. Tap mode (press Talk, say it, read the result) works with a microphone alone; hands-free mode (command "Scripture Memory: Recite what's due aloud", or the Recite tile) announces the reference, listens, speaks brief feedback and moves to the next due passage, so it suits driving or washing up. Recite never blocks a passage being "Well learned" and is never suggested by "Practice" or counted in the status-bar due count; its own due count is shown on the Recite tile. A recitation carries down to the text activities the same way `firstletters` does, since reciting from memory demonstrates the ordering and the words. A passage is offered for recite only when speech is usable and the translation's language is supported (English for now); a passage you have never recited is included in "Recite what's due" once you switch it on in that passage's settings.
+
+*How speech is provided.* The extension does no audio itself: it calls `api.speech` (listen, speak, status), which the host implements with its own recogniser and voices, and which asks for the `speech:listen` / `speech:speak` permissions above. The host does not ship `api.speech` yet, so on any host that lacks it - and on this build until that lands - availability reads "unavailable" (or "this version of the app does not support speech"), the Recite tile explains why, and the extension otherwise works as before.
+
+**Data and privacy for Recite aloud.** What is stored per recitation is the attempt (score, correct count, time, as for any activity) and one `recite_detail` row: a verdict code per expected word (correct, variant, near, swapped, wrong, missed, hinted), a score per word and per verse, a count of extra words, the strictness used, and the engine and model ids. **What you said is never stored: no transcripts, no heard words, no audio, in the database, logs or notifications.** Heard words exist only in the worker's memory while the recitation is on screen. Only the latest 20 detail rows are kept per passage; older ones are pruned. This data stays on the device and is never synced or sent anywhere. **Settings > Delete recitation history** removes all per-word detail; your attempts, scores, levels and schedule are kept.
 
 **Difficulty tiers, and completeness-based levels.** Every activity now has one or more difficulty tiers - harder renderings of the same exercise, not a different one: `refmatch` goes any-book → same-genre → same-book, and `ordering`/`blanks`/`firstletters` each go an easier and a harder round; `refprovide` has just the one. An activity's level (the five boxes below) is **not** just "how did the last attempt go" - it is completeness (how many of its tiers have ever been passed) multiplied by accuracy (the best score on any attempt), so acing the easy tier alone reads as "half done well," not "mastered." Passing every tier, well, is what fills all five boxes. Crucially, **a level cannot fall on its own**: every number that feeds it is a best-ever or a count since the passage's history began (or since it was last reset), so a bad session shortens the review interval but never erases progress already shown. The only way a level goes down is an explicit **"Reset progress for this passage"**, behind a confirmation, in the settings modal on the passage screen.
 
@@ -111,6 +118,7 @@ src/
   ladder.ts      which activities apply, tiers, and the 0-5 completeness-based level
   scheduler.ts   the interval ladder and jitter
   session.ts     the in-flight exercise; lives in the worker, not the panel
+  recite/        Recite aloud: grading, the hands-free loop, speech availability, the service main.ts calls
   verses.ts      host verse DTOs -> renderable text, tokenised once
   reference.ts   "John 3" -> a verse-id range
   suggestedLists.ts  the built-in verse lists offered on Manage Passages
@@ -132,4 +140,4 @@ The worker and the panel are bundled separately and have different rules: the wo
 ## Technical Details
   * Written using Claude Code
   * Built against the Bible SDK from `next/0.2`. The active verse arrives through `api.events.subscribe('verse.activeChanged', ...)` (the old `api.bible.onDidChangeActiveVerse` no longer exists there).
-  * The database is at schema version 5: v5 adds `passage.deleted_at` for soft delete. Every passage read filters `deleted_at IS NULL`; a purge of rows deleted over seven days ago runs on activation.
+  * The database is at schema version 6: v5 added `passage.deleted_at` for soft delete (every passage read filters `deleted_at IS NULL`; a purge of rows deleted over seven days ago runs on activation); v6 adds `passage.recite_on` and the `recite_detail` table for Recite aloud, and every passage gets a `recite` card.

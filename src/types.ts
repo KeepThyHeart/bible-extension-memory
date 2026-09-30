@@ -55,7 +55,7 @@
  * how many verses are in scope, how many sibling passages exist - that change
  * under a card without the card itself changing.
  */
-export type Rung = 'ordering' | 'refmatch' | 'blanks' | 'firstletters' | 'refprovide';
+export type Rung = 'ordering' | 'refmatch' | 'blanks' | 'firstletters' | 'refprovide' | 'recite';
 
 /**
  * Every rung in ladder order, easiest first.
@@ -71,6 +71,8 @@ export const RUNG_ORDER: readonly Rung[] = [
   'blanks',
   'firstletters',
   'refprovide',
+  /** Optional and spoken; last, but never required for mastery (`ladder.ts#OPTIONAL_RUNGS`). */
+  'recite',
 ];
 
 /**
@@ -142,6 +144,8 @@ export interface Passage {
   addedAt: number;
   /** This passage's own answer-mode override, or `null` to use the default. */
   answerMode: AnswerMode | null;
+  /** Include this passage in "Recite what's due" before its first recitation. */
+  reciteOn: boolean;
 }
 
 /** A schedulable unit: one passage at one rung. Never locked; always practisable. */
@@ -234,6 +238,8 @@ export interface RungView {
    * or the hardest tier once every tier has been passed. 0-based.
    */
   nextTier: number;
+  /** True for an optional rung (recite): it never blocks mastery and is hidden when unavailable. */
+  optional?: true;
 }
 
 /** A passage plus its ladder, as the plan list and passage screen need it. */
@@ -307,12 +313,109 @@ export interface PlanView {
   defaultAnswerMode: AnswerMode;
   /** The passage list's persisted sort choice, so the list needs no second fetch. */
   sortOrder: PassageSortOrder;
+  /** Whether reciting aloud is available right now. */
+  speech: SpeechAvailability;
+  /** Recite cards due (or untried and switched on); kept apart from `totalDue`. */
+  reciteDueCount: number;
 }
 
 /** The user's answer-mode preference, and how it applies. */
 export interface SettingsView {
   defaultAnswerMode: AnswerMode;
+  recite: ReciteSettings;
+  speech: SpeechAvailability;
 }
+
+// ---------------------------------------------------------------------------
+// Recite aloud
+// ---------------------------------------------------------------------------
+
+export type SpeechPermission = 'speech:listen' | 'speech:speak';
+
+/** Whether reciting aloud can run, and why not. */
+export interface SpeechAvailability {
+  state:
+    | 'ready'
+    | 'needs-download'
+    | 'unavailable'
+    | 'permission-missing'
+    | 'unsupported-language'
+    | 'host-too-old';
+  missingPermissions: SpeechPermission[];
+  engineLabel: string;
+  onDevice: boolean;
+  /** Spoken prompts and feedback are possible (speech:speak granted and a speaker exists). */
+  handsFree: boolean;
+}
+
+export type ReciteStrictness = 'lenient' | 'normal' | 'strict';
+
+export interface ReciteSettings {
+  strictness: ReciteStrictness;
+  promptStyle: 'reference' | 'reference+opening';
+  feedback: 'brief' | 'full';
+  readBack: boolean;
+  autoAdvance: boolean;
+  voiceCommands: boolean;
+  hintDelayMs: number;
+}
+
+export type LoopPhase =
+  | 'announcing'
+  | 'ready'
+  | 'listening'
+  | 'hinting'
+  | 'scoring'
+  | 'feedback'
+  | 'paused'
+  | 'summary'
+  | 'done'
+  | 'error';
+
+export type ReciteVerdict = 'correct' | 'variant' | 'near' | 'swapped' | 'wrong' | 'missed' | 'hinted';
+
+export interface ReciteResultView {
+  score: number;
+  level: number;
+  nextDueAt: number | null;
+  words: { index: number; verdict: ReciteVerdict; heard?: string }[];
+  extras: { afterIndex: number; heard: string }[];
+  missedQuote: string[];
+  passageWellLearned: boolean;
+}
+
+export interface ReciteStateView {
+  reciteId: string;
+  mode: 'tap' | 'handsfree';
+  source: 'passage' | 'due';
+  phase: LoopPhase;
+  passageId: number | null;
+  reference: string;
+  /** Shown only after scoring or on a hint; otherwise null. */
+  verses: VerseText[] | null;
+  /** Heard words, in memory only. */
+  heard: string[];
+  /** Last matched expected word index, -1 at the start. */
+  position: number;
+  hinted: number[];
+  result: ReciteResultView | null;
+  done: number;
+  remaining: number;
+  /** Live-region text. */
+  message: string;
+  error: { code: string; message: string } | null;
+}
+
+export type ReciteAction =
+  | 'listen'
+  | 'hint'
+  | 'repeat'
+  | 'skip'
+  | 'again'
+  | 'next'
+  | 'pause'
+  | 'resume'
+  | 'stop';
 
 /** One calendar day on the Analytics practice calendar. */
 export interface CalendarDay {
@@ -678,7 +781,18 @@ export type PanelRequest =
   | { type: 'deleteList'; id: number; movePassagesTo: number }
   | { type: 'getListPracticeStats'; id: number }
   | { type: 'movePassage'; passageId: number; collectionId: number }
-  | { type: 'setScope'; scope: Scope };
+  | { type: 'setScope'; scope: Scope }
+  | {
+      type: 'startRecite';
+      source: { kind: 'passage'; passageId: number } | { kind: 'due' };
+      mode: 'tap' | 'handsfree';
+    }
+  | { type: 'reciteControl'; reciteId: string; action: ReciteAction }
+  | { type: 'getReciteState' }
+  | { type: 'setReciteSettings'; patch: Partial<ReciteSettings> }
+  | { type: 'setPassageRecite'; passageId: number; on: boolean }
+  /** Deletes stored per-word recitation detail only; attempts, scores and schedule stay. */
+  | { type: 'deleteReciteHistory' };
 
 /**
  * What the user did, keyed to the step kind that asked.
@@ -745,6 +859,12 @@ export interface RequestMap {
   getListPracticeStats: { total: number; practiced: number };
   movePassage: PlanView;
   setScope: PlanView;
+  startRecite: ReciteStateView;
+  reciteControl: ReciteStateView;
+  getReciteState: ReciteStateView | null;
+  setReciteSettings: Record<string, never>;
+  setPassageRecite: PassageView;
+  deleteReciteHistory: Record<string, never>;
 }
 
 // ---------------------------------------------------------------------------
@@ -760,4 +880,5 @@ export type WorkerPush =
   | { type: 'planChanged' }
   | { type: 'dueCountChanged'; count: number }
   /** The host's active verse moved. Used to prefill the add-passage field. */
-  | { type: 'activeVerse'; verseId: number; reference: string };
+  | { type: 'activeVerse'; verseId: number; reference: string }
+  | { type: 'reciteState'; state: ReciteStateView };

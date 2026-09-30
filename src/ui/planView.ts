@@ -24,7 +24,7 @@ import { activitySquares, breadcrumb, dueBadge, emptyState, icon, listSelector, 
 import type { ListSelectorOption } from './components';
 import { sortPassagesByNeed } from './format';
 import { flowUnavailable } from './suggest';
-import { ACTIVITY_TILES } from './activities';
+import { ACTIVITY_TILES, RECITE_TILE, reciteDueEntry, reciteTileVisible, startReciteRun } from './activities';
 import type { ActivityTile } from './activities';
 import type { Flow } from './state';
 import { MIN_VERSES_FOR_REFERENCE_ACTIVITIES } from '../ladder';
@@ -95,13 +95,34 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
  * fresh random pick each press, so there is no pending suggestion to show.
  */
 function renderActivityTiles(host: PanelHost, plan: PlanView, now: number): HTMLElement {
+  const grid = ACTIVITY_TILES.map((tile) => renderActivityTile(host, plan, tile, now));
+  if (reciteTileVisible(plan)) {
+    // Recite starts a recite run (tap mode) on the most due-ish passage, not a session flow.
+    const due = reciteDueEntry(plan);
+    const recite = button(RECITE_TILE.title, () => void startReciteRun(host, { kind: 'due' }, 'tap'), {
+      class: 'sm-tile sm-tile-recite',
+      text: '',
+      disabled: due === null || !due.enabled,
+    });
+    append(recite, [
+      el('span', { class: 'sm-tile-title', text: RECITE_TILE.title }),
+      el('span', { class: 'sm-tile-sub', text: RECITE_TILE.subtext }),
+      due !== null && !due.enabled
+        ? el('span', { class: 'sm-tile-warning', text: 'Nothing due to recite yet. Switch it on for a passage first.' })
+        : null,
+    ]);
+    grid.push(recite);
+  }
+  const dueEntry = reciteDueEntry(plan);
   return el('section', { class: 'sm-tile-section' }, [
     el('h2', { class: 'sm-block-title', text: 'Practice by Activity' }),
-    el(
-      'div',
-      { class: 'sm-tile-grid' },
-      ACTIVITY_TILES.map((tile) => renderActivityTile(host, plan, tile, now)),
-    ),
+    el('div', { class: 'sm-tile-grid' }, grid),
+    dueEntry === null
+      ? null
+      : button(dueEntry.label, () => void startReciteRun(host, { kind: 'due' }, 'handsfree'), {
+          class: 'sm-btn sm-btn-quiet sm-recite-due',
+          disabled: !dueEntry.enabled,
+        }),
   ]);
 }
 

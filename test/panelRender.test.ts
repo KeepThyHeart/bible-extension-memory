@@ -89,6 +89,24 @@ import { RUNG_LABEL } from '../src/ui/format';
 import { tierLabel } from '../src/ladder';
 import { SUGGESTED_LISTS } from '../src/suggestedLists';
 
+const SPEECH_OFF = {
+  state: 'unavailable',
+  missingPermissions: [],
+  engineLabel: '',
+  onDevice: false,
+  handsFree: false,
+} as const satisfies import('../src/types').SpeechAvailability;
+const RECITE_DEFAULTS: import('../src/types').ReciteSettings = {
+  strictness: 'normal',
+  promptStyle: 'reference',
+  feedback: 'brief',
+  readBack: false,
+  autoAdvance: false,
+  voiceCommands: false,
+  hintDelayMs: 5000,
+};
+
+
 // ---------------------------------------------------------------------------
 // The panel's own stylesheet
 // ---------------------------------------------------------------------------
@@ -467,6 +485,8 @@ function emptyPlan(): PlanView {
     sortOrder: 'bible',
     passages: [],
     totalDue: 0,
+    speech: SPEECH_OFF,
+    reciteDueCount: 0,
     defaultAnswerMode: 'firstLetter',
   };
 }
@@ -499,6 +519,7 @@ function passageFixture(over: Partial<Passage> = {}): Passage {
     verseCount: 6,
     addedAt: NOW - 30 * 86_400_000,
     answerMode: null,
+    reciteOn: false,
     ...over,
   };
 }
@@ -1434,6 +1455,8 @@ describe('the plan row', () => {
       referenceActivitiesUnlocked: false,
       sortOrder: 'bible',
       totalDue: 0,
+      speech: SPEECH_OFF,
+      reciteDueCount: 0,
       defaultAnswerMode: 'firstLetter',
       passages: [pv],
     };
@@ -1747,7 +1770,7 @@ describe('the passage screen', () => {
 
 describe('the settings screen', () => {
   function settings(mode: AnswerMode = 'firstLetter'): SettingsView {
-    return { defaultAnswerMode: mode };
+    return { defaultAnswerMode: mode, recite: RECITE_DEFAULTS, speech: SPEECH_OFF };
   }
 
   it('checks the radio matching the current default', () => {
@@ -1776,6 +1799,8 @@ describe('the settings screen', () => {
       collectionId: 1,
       collectionName: 'My plan',
       totalDue: 0,
+      speech: SPEECH_OFF,
+      reciteDueCount: 0,
       defaultAnswerMode: 'firstLetter',
       passages: [
         passageViewFixture({ passage: passageFixture({ id: 1, reference: 'Psalm 23:1-6', answerMode: 'fullWord' }) }),
@@ -1794,6 +1819,8 @@ describe('the settings screen', () => {
       collectionId: 1,
       collectionName: 'My plan',
       totalDue: 0,
+      speech: SPEECH_OFF,
+      reciteDueCount: 0,
       defaultAnswerMode: 'firstLetter',
       passages: [
         passageViewFixture({ passage: passageFixture({ id: 7, reference: 'Psalm 23:1-6', answerMode: 'fullWord' }) }),
@@ -4305,7 +4332,7 @@ describe('breadcrumbs replace the toolbar on every screen', () => {
 
   it('settings, analytics and Manage Passages show Home > their name', () => {
     const screens: [HTMLElement, string][] = [
-      [renderSettings(host, { defaultAnswerMode: 'firstLetter' }, emptyPlan()), 'Settings'],
+      [renderSettings(host, { defaultAnswerMode: 'firstLetter', recite: RECITE_DEFAULTS, speech: SPEECH_OFF }, emptyPlan()), 'Settings'],
       [renderAnalytics(host, emptyAnalytics()), 'Analytics'],
       [renderManagePassages(host, emptyPlan()), 'Manage Passages'],
     ];
