@@ -18,7 +18,7 @@
     "bible",
     "extension"
   ],
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "devDependencies": {
     "@bible/core": "file:../bible/build/sdk/bible-core-0.1.0.tgz",
     "@bible/extension-testing": "file:../bible/build/sdk/bible-extension-testing-0.1.0.tgz",

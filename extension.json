@@ -7,7 +7,7 @@
   "description": "Memorize passages with spaced repetition: order the verses, fill the blanks, then recite from first letters.",
   "categories": ["Study"],
   "keywords": ["memorization", "spaced repetition", "recall"],
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "engines": {
     "bibleApp": ">=1.0.0"
   },
