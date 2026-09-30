@@ -676,6 +676,7 @@ export type PanelRequest =
    * asking the user which list to move to is T11's job.
    */
   | { type: 'deleteList'; id: number; movePassagesTo: number }
+  | { type: 'getListPracticeStats'; id: number }
   | { type: 'movePassage'; passageId: number; collectionId: number }
   | { type: 'setScope'; scope: Scope };
 
@@ -740,6 +741,8 @@ export interface RequestMap {
   createList: PlanView;
   renameList: PlanView;
   deleteList: PlanView;
+  /** `total` non-deleted passages in the list; `practiced` have at least one attempt. */
+  getListPracticeStats: { total: number; practiced: number };
   movePassage: PlanView;
   setScope: PlanView;
 }

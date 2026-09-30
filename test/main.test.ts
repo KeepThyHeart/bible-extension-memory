@@ -687,6 +687,20 @@ describe('multiple lists through the panel protocol', () => {
     expect(afterDelete.lists.find((l) => l.id === tempList.id)).toBeUndefined();
   });
 
+  it('getListPracticeStats reports total and practiced passages of a list', async () => {
+    const { db, channel } = await activateWithStore();
+    const plan = await deliver<PlanView>(channel, { type: 'getPlan' });
+    const first = await seedPassage(db, plan.collectionId, { verseCount: 1, reference: 'John 3:16', startVerseId: 43003016 });
+    await seedPassage(db, plan.collectionId, { verseCount: 1, reference: 'Romans 8:28', startVerseId: 45008028 });
+    const card = await db.queryOne<{ id: number }>(`SELECT id FROM card WHERE passage_id = ? AND rung = 'blanks'`, [first]);
+    await db.run(
+      `INSERT INTO attempt (card_id, at, score, correct_first, total_steps, replay, duration_ms, tier)
+       VALUES (?, ?, 1, 1, 1, 0, 1000, 0)`,
+      [card!.id, 1_700_000_000_000],
+    );
+    expect(await deliver(channel, { type: 'getListPracticeStats', id: plan.collectionId })).toEqual({ total: 2, practiced: 1 });
+  });
+
   it('falls back to scope "all" once the scoped list is deleted out from under the panel', async () => {
     const { channel } = await activateWithStore();
     const plan = await deliver<PlanView>(channel, { type: 'getPlan' });

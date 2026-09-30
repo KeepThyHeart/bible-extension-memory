@@ -51,30 +51,12 @@ export function renderManagePassages(host: PanelHost, plan: PlanView): HTMLEleme
 function renderListManagement(host: PanelHost, plan: PlanView): HTMLElement {
   const wrap = el('div', { class: 'sm-manage-lists' });
 
-  // "Viewing" - the same all-lists/one-list scope the home screen's picker
-  // drives, shown here unconditionally (unlike the home screen, which hides
-  // it for a single-list plan) because choosing a list is this screen's job.
-  const options: ListSelectorOption[] = [
-    { id: 'all', name: 'All Lists' },
-    ...plan.lists.map((list) => ({ id: list.id, name: list.name })),
-  ];
-  const viewingSelect = listSelector(options, plan.scope, (id) => {
-    void host
-      .request({ type: 'setScope', scope: id === 'all' ? { kind: 'all' } : { kind: 'list', id } })
-      .then((reply) => {
-        if (reply.ok) host.reload();
-        else host.announce(reply.error);
-      });
-  });
-  viewingSelect.id = 'sm-manage-viewing';
-  wrap.appendChild(
-    el('div', { class: 'sm-manage-lists-row' }, [
-      el('label', { class: 'sm-label', text: 'Viewing', attrs: { for: 'sm-manage-viewing' } }),
-      viewingSelect,
-    ]),
-  );
-
   wrap.appendChild(renderCreateList(host));
+
+  // The lists table: each row says whether it is the current scope or offers
+  // "Switch to this list" (setScope). "All lists" is the row that keeps the
+  // 'all' scope reachable from here.
+  wrap.appendChild(renderAllListsRow(host, plan));
 
   wrap.appendChild(
     el(
@@ -85,6 +67,38 @@ function renderListManagement(host: PanelHost, plan: PlanView): HTMLElement {
   );
 
   return wrap;
+}
+
+function switchScope(host: PanelHost, scope: { kind: 'all' } | { kind: 'list'; id: number }, label: string): void {
+  void host.request({ type: 'setScope', scope }).then((reply) => {
+    if (!reply.ok) {
+      host.announce(reply.error);
+      return;
+    }
+    host.announce(`Now practising ${label}.`);
+    host.reload();
+  });
+}
+
+function currentBadge(): HTMLElement {
+  return el('span', { class: 'sm-badge sm-manage-list-current', text: 'Current' });
+}
+
+function renderAllListsRow(host: PanelHost, plan: PlanView): HTMLElement {
+  const total = plan.lists.reduce((n, l) => n + l.passageCount, 0);
+  const verses = plan.lists.reduce((n, l) => n + l.verseCount, 0);
+  const isCurrent = plan.scope === 'all';
+  return el('div', { class: 'sm-row sm-manage-all-lists-row' }, [
+    el('span', { class: 'sm-row-ref', text: 'All lists' }),
+    el('span', { class: 'sm-row-meta', text: `${countLabel(total, 'passage')}, ${countLabel(verses, 'verse')}` }),
+    el('span', { class: 'sm-manage-list-actions' }, [
+      isCurrent
+        ? currentBadge()
+        : button('Switch to all lists', () => switchScope(host, { kind: 'all' }, 'all lists'), {
+            class: 'sm-btn sm-btn-quiet sm-btn-small',
+          }),
+    ]),
+  ]);
 }
 
 function renderCreateList(host: PanelHost): HTMLElement {
@@ -145,12 +159,28 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
     // extension can describe, so deleting the only list left is refused
     // before the request is even sent (the worker would refuse it too - see
     // `store.ts#deleteCollection` - this just saves the round trip).
-    if (plan.lists.length <= 1) deleteBtn.disabled = true;
+    const onlyList = plan.lists.length <= 1;
+    if (onlyList) {
+      deleteBtn.disabled = true;
+      deleteBtn.title = 'You cannot delete your only list.';
+    }
 
     replace(row, [
       el('span', { class: 'sm-row-ref', text: list.name }),
-      el('span', { class: 'sm-row-meta', text: countLabel(list.passageCount, 'passage') }),
-      el('span', { class: 'sm-manage-list-actions' }, [renameBtn, deleteBtn]),
+      el('span', { class: 'sm-row-meta', text: `${countLabel(list.passageCount, 'passage')}, ${countLabel(list.verseCount, 'verse')}` }),
+      ...(onlyList ? [el('span', { class: 'sm-hint sm-manage-list-hint', text: 'Your only list cannot be deleted.' })] : []),
+      el('span', { class: 'sm-manage-list-actions' }, [
+        ...(plan.scope === list.id
+          ? [currentBadge()]
+          : [
+              button('Switch to this list', () => switchScope(host, { kind: 'list', id: list.id }, list.name), {
+                class: 'sm-btn sm-btn-quiet sm-btn-small',
+                attrs: { 'aria-label': `Switch to ${list.name}` },
+              }),
+            ]),
+        renameBtn,
+        deleteBtn,
+      ]),
     ]);
   };
 
@@ -209,10 +239,18 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
       doDelete(fallback.id);
       return;
     }
-    showDeleteConfirm(others);
+    // Lists with practice history need the stronger, typed-name gate; ask the
+    // worker how many of this list's passages have any.
+    void host.request({ type: 'getListPracticeStats', id: list.id }).then((reply) => {
+      if (!reply.ok) {
+        host.announce(reply.error);
+        return;
+      }
+      showDeleteConfirm(others, reply.data);
+    });
   }
 
-  function showDeleteConfirm(others: ListSummary[]): void {
+  function showDeleteConfirm(others: ListSummary[], stats: { total: number; practiced: number }): void {
     const defaultTarget = others.find((l) => l.name === 'Default') ?? others[0]!;
     let chosen = defaultTarget.id;
 
@@ -224,14 +262,29 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
       },
     );
 
+    const needsName = stats.practiced > 0;
     const confirmButton = button(
       `Delete and move ${countLabel(list.passageCount, 'passage')}`,
       () => {
         doDelete(chosen);
         handle.close();
       },
-      { class: 'sm-btn sm-btn-danger sm-btn-small' },
+      { class: 'sm-btn sm-btn-danger sm-btn-small', disabled: needsName },
     );
+    const nameInput = el('input', {
+      class: 'sm-input sm-manage-delete-confirm',
+      attrs: { 'aria-label': `Type "${list.name}" to confirm deleting it`, autocomplete: 'off', spellcheck: 'false' },
+    }) as HTMLInputElement;
+    // Exact, case-sensitive, untrimmed: a deliberate speed bump.
+    nameInput.addEventListener('input', () => {
+      confirmButton.disabled = nameInput.value !== list.name;
+    });
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !confirmButton.disabled) {
+        event.preventDefault();
+        confirmButton.click();
+      }
+    });
 
     const handle = modal({
       title: `Delete "${list.name}"?`,
@@ -243,6 +296,16 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
           } to first.`,
         }),
         select,
+        ...(needsName
+          ? [
+              el('p', {
+                class: 'sm-hint',
+                attrs: { role: 'alert' },
+                text: `This list has practice history on ${stats.practiced} of ${stats.total} passages. The history moves with the passages, but type the list name to confirm.`,
+              }),
+              nameInput,
+            ]
+          : []),
       ],
       actions: [confirmButton],
       onClose: () => handle.element.remove(),

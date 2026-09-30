@@ -1794,6 +1794,20 @@ describe('soft delete', () => {
     ).toHaveLength(1);
   });
 
+  it('listPracticeStats counts live passages and those with attempts, ignoring soft-deleted ones', async () => {
+    const { store, collectionId } = await freshStore();
+    const { passage: a } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    await store.addPassage(passageInput(collectionId, 45008028, 1, 'Romans 8:28'));
+    const { passage: gone } = await store.addPassage(passageInput(collectionId, 19023001, 1, 'Psalm 23:1'));
+    await practise(store, a.id, 'blanks', NOW);
+    await practise(store, gone.id, 'blanks', NOW);
+    await store.removePassage(gone.id, NOW);
+
+    expect(await store.listPracticeStats(collectionId)).toEqual({ total: 2, practiced: 1 });
+    const other = await store.createCollection('Empty', NOW);
+    expect(await store.listPracticeStats(other.id)).toEqual({ total: 0, practiced: 0 });
+  });
+
   it('deleteCollection still refuses an active-vs-active collision', async () => {
     const { store, collectionId } = await freshStore();
     const other = await store.createCollection('List B', NOW);

@@ -1808,6 +1808,19 @@ button.sm-activity-row:hover {
   margin-left: auto;
 }
 
+.sm-manage-all-lists-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.sm-manage-list-hint {
+  flex-basis: 100%;
+}
+
+.sm-manage-delete-confirm {
+  width: 100%;
+}
+
 .sm-manage-list-rename {
   display: flex;
   align-items: center;

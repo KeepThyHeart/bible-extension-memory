@@ -2791,6 +2791,7 @@ describe('the Manage Passages screen', () => {
   });
 
   it('asks where to move passages before deleting a list that has them, defaulting to Default', async () => {
+    host.handlers.getListPracticeStats = () => ({ ok: true, data: { total: 3, practiced: 0 } });
     host.handlers.deleteList = () => ({ ok: true, data: emptyPlan() });
     const lists = [
       { id: 1, name: 'Default', passageCount: 0, verseCount: 0 },
@@ -2803,6 +2804,7 @@ describe('the Manage Passages screen', () => {
       spokenText(row).includes('Romans Road'),
     )!;
     romansRow.querySelector<HTMLButtonElement>('button:last-of-type')!.click();
+    await settle();
 
     const backdrop = document.querySelector('.sm-modal-backdrop');
     expect(backdrop).not.toBeNull();
@@ -4383,5 +4385,122 @@ describe('the practice screen: Next skips within a tile flow', () => {
     expect(host.flowsStarted).toHaveLength(1);
     expect(host.flowsStarted[0]!.flow).toEqual({ kind: 'activity', rung: 'blanks' });
     expect([...host.flowsStarted[0]!.exclude!]).toEqual([7]);
+  });
+});
+
+describe('Manage Passages lists table', () => {
+  let host: TestHost;
+  let container: HTMLElement;
+  beforeEach(() => {
+    host = new TestHost();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+  afterEach(() => {
+    container.remove();
+    document.querySelectorAll('.sm-modal-backdrop').forEach((n) => n.remove());
+  });
+
+  const managePlan = (passages: PassageView[], over: Partial<PlanView> = {}): PlanView => ({
+    ...emptyPlan(),
+    passages,
+    ...over,
+  });
+  const LISTS = [
+    { id: 1, name: 'Default', passageCount: 2, verseCount: 5 },
+    { id: 2, name: 'Romans Road', passageCount: 3, verseCount: 6 },
+  ];
+  const rowFor = (root: HTMLElement, name: string): Element =>
+    Array.from(root.querySelectorAll('li.sm-manage-list-row')).find((r) => spokenText(r).includes(name))!;
+  const btn = (scope: Element, label: string): HTMLButtonElement | undefined =>
+    Array.from(scope.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === label);
+
+  it('shows passage and verse counts per row', () => {
+    const root = renderManagePassages(host, managePlan([], { lists: LISTS, scope: 1 }));
+    container.appendChild(root);
+    expect(spokenText(rowFor(root, 'Romans Road'))).toContain('3 passages, 6 verses');
+  });
+
+  it('marks the scoped list Current with no Switch button, and offers Switch on the others', () => {
+    const root = renderManagePassages(host, managePlan([], { lists: LISTS, scope: 1 }));
+    container.appendChild(root);
+    const current = rowFor(root, 'Default');
+    expect(spokenText(current)).toContain('Current');
+    expect(btn(current, 'Switch to this list')).toBeUndefined();
+    expect(btn(rowFor(root, 'Romans Road'), 'Switch to this list')).toBeDefined();
+  });
+
+  it('Switch to this list sends setScope for that list and reloads', async () => {
+    host.handlers.setScope = () => ({ ok: true, data: emptyPlan() });
+    const root = renderManagePassages(host, managePlan([], { lists: LISTS, scope: 1 }));
+    container.appendChild(root);
+    btn(rowFor(root, 'Romans Road'), 'Switch to this list')!.click();
+    await settle();
+    expect(host.requests).toContainEqual({ type: 'setScope', scope: { kind: 'list', id: 2 } });
+    expect(host.reloads).toBeGreaterThan(0);
+  });
+
+  it('keeps an All lists way to select the all scope', async () => {
+    host.handlers.setScope = () => ({ ok: true, data: emptyPlan() });
+    const root = renderManagePassages(host, managePlan([], { lists: LISTS, scope: 1 }));
+    container.appendChild(root);
+    const all = root.querySelector('.sm-manage-all-lists-row')!;
+    expect(spokenText(all)).toContain('5 passages');
+    btn(all, 'Switch to all lists')!.click();
+    await settle();
+    expect(host.requests).toContainEqual({ type: 'setScope', scope: { kind: 'all' } });
+
+    const current = renderManagePassages(host, managePlan([], { lists: LISTS, scope: 'all' }));
+    expect(spokenText(current.querySelector('.sm-manage-all-lists-row')!)).toContain('Current');
+  });
+
+  it('explains why the only list cannot be deleted', () => {
+    const root = renderManagePassages(host, managePlan([], { lists: [LISTS[0]!] }));
+    container.appendChild(root);
+    const row = rowFor(root, 'Default');
+    expect(btn(row, 'Delete')!.disabled).toBe(true);
+    expect(spokenText(row)).toContain('only list cannot be deleted');
+  });
+
+  it('with practice history, warns N of M and gates Delete on the exact list name', async () => {
+    host.handlers.getListPracticeStats = () => ({ ok: true, data: { total: 3, practiced: 2 } });
+    host.handlers.deleteList = () => ({ ok: true, data: emptyPlan() });
+    const root = renderManagePassages(host, managePlan([], { lists: LISTS }));
+    container.appendChild(root);
+    btn(rowFor(root, 'Romans Road'), 'Delete')!.click();
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'getListPracticeStats', id: 2 });
+    const backdrop = document.querySelector('.sm-modal-backdrop')!;
+    expect(spokenText(backdrop)).toContain('practice history on 2 of 3 passages');
+    const confirm = Array.from(backdrop.querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+      (b.textContent ?? '').startsWith('Delete and move'),
+    )!;
+    expect(confirm.disabled).toBe(true);
+
+    const input = backdrop.querySelector<HTMLInputElement>('.sm-manage-delete-confirm')!;
+    input.value = 'romans road';
+    input.dispatchEvent(new Event('input'));
+    expect(confirm.disabled).toBe(true);
+    input.value = 'Romans Road';
+    input.dispatchEvent(new Event('input'));
+    expect(confirm.disabled).toBe(false);
+    confirm.click();
+    await settle();
+    expect(host.requests).toContainEqual({ type: 'deleteList', id: 2, movePassagesTo: 1 });
+  });
+
+  it('without practice history there is no name gate', async () => {
+    host.handlers.getListPracticeStats = () => ({ ok: true, data: { total: 3, practiced: 0 } });
+    const root = renderManagePassages(host, managePlan([], { lists: LISTS }));
+    container.appendChild(root);
+    btn(rowFor(root, 'Romans Road'), 'Delete')!.click();
+    await settle();
+    const backdrop = document.querySelector('.sm-modal-backdrop')!;
+    expect(backdrop.querySelector('.sm-manage-delete-confirm')).toBeNull();
+    const confirm = Array.from(backdrop.querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+      (b.textContent ?? '').startsWith('Delete and move'),
+    )!;
+    expect(confirm.disabled).toBe(false);
   });
 });

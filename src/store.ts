@@ -364,6 +364,19 @@ export class MemoryStore {
     await this.db.run(`UPDATE collection SET name = ? WHERE id = ?`, [name, id]);
   }
 
+  /** Non-deleted passages of a list, and how many of them have at least one attempt. */
+  async listPracticeStats(id: number): Promise<{ total: number; practiced: number }> {
+    const row = await this.db.queryOne<{ total: number; practiced: number }>(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM attempt a JOIN card c ON c.id = a.card_id WHERE c.passage_id = p.id
+              ) THEN 1 ELSE 0 END), 0) AS practiced
+         FROM passage p WHERE p.collection_id = ? AND p.deleted_at IS NULL`,
+      [id],
+    );
+    return { total: row?.total ?? 0, practiced: row?.practiced ?? 0 };
+  }
+
   /**
    * Delete a list, moving everything it holds to `movePassagesTo` first.
    *

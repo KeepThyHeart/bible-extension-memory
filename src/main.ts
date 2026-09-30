@@ -722,6 +722,9 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       void api.panels.postMessage({ type: 'planChanged' });
       return buildPlanView();
 
+    case 'getListPracticeStats':
+      return store.listPracticeStats(req.id);
+
     case 'movePassage':
       await store.movePassage(req.passageId, req.collectionId);
       await refreshStatusBar();
