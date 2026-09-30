@@ -37,8 +37,8 @@ export type View =
  * A panel-side flow: what the user pressed to get into practice.
  *
  * `variety` and `activity` name a *rule* for picking the next passage
- * (`format.ts#pickFlowTarget`), not one specific passage - they are what a
- * tile press (M2) starts. `passage` is the opposite: a session reached from
+ * (`suggest.ts#pickFlowTarget`), not one specific passage - they are what a
+ * tile press starts. `passage` is the opposite: a session reached from
  * one specific passage's own screen or tab strip, or from a bare "Practice"/
  * "Resume"/"Restart" button, where there is no rule to fall back to, only the
  * one passage the user was already looking at.

@@ -319,7 +319,10 @@ export class PracticeView {
         ],
       }),
       el('div', { class: 'sm-practice-sub' }, [
-        el('span', { class: 'sm-practice-rung', text: RUNG_LABEL[this.session.rung] }),
+        // The heading already shows the label for refmatch/refprovide.
+        this.session.rung === 'refprovide' || this.session.rung === 'refmatch'
+          ? null
+          : el('span', { class: 'sm-practice-rung', text: RUNG_LABEL[this.session.rung] }),
         this.session.tiers > 1
           ? el('span', {
               class: 'sm-practice-tier',
@@ -368,7 +371,8 @@ export class PracticeView {
    * ever say "you are here, there is nowhere else to go" in a more
    * complicated way than showing nothing.
    *
-   * (Now drawn by `components.ts#tabs`, `aria-selected`.) The current tab was once marked `aria-current="true"` rather than the more
+   * The strip is drawn by `components.ts#tabs`, which marks the current tab
+   * with `aria-selected`. It once used `aria-current="true"` rather than the more
    * usual `"step"` value the plan text names - `aria-current="step"` is
    * already this file's own vocabulary for the verse being worked on inside
    * the passage (`scripture.ts`'s `current` word renderer option), and a
@@ -1670,7 +1674,8 @@ export class PracticeView {
     this.actionsEl.appendChild(
       button(
         'Practice again',
-        () => void this.host.startSession(this.session.passageId, this.session.rung),
+        () =>
+          void this.host.startSession(this.session.passageId, this.session.rung, undefined, undefined, this.flow),
         { class: 'sm-btn' },
       ),
     );
@@ -1696,7 +1701,7 @@ export class PracticeView {
       void this.endSession();
       return;
     }
-    void this.host.startSession(target.passageId, target.rung);
+    void this.host.startSession(target.passageId, target.rung, undefined, undefined, this.flow);
   }
 
   /**

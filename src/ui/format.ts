@@ -308,8 +308,8 @@ export function inLadderOrder(rungs: RungView[]): RungView[] {
  * deterministic tiebreak.
  *
  * Pure - returns a new array, per the file's convention (`inLadderOrder`
- * above does the same). Wiring this into an actual sort `<select>` is M4's
- * job; this is only the ordering function.
+ * above does the same). Wiring this into an actual sort `<select>` is left to the caller; this is only the
+ * ordering function.
  */
 export function sortPassagesByNeed(passages: PassageView[], now: number): PassageView[] {
   return [...passages].sort((a, b) => comparePassageNeed(a, b, now));

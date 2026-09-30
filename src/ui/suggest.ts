@@ -6,7 +6,7 @@
  * arguments, so a fixed seed and a fixed clock make every draw reproducible
  * in a test.
  *
- * This module answers three different questions that look similar but are
+ * This module answers several different questions that look similar but are
  * not the same button:
  *
  *   - `listTargets`         - every (passage, activity) pair currently on
@@ -17,6 +17,12 @@
  *                              that keeps serving fresh cards.
  *   - `pickTargetForActivity` - "start *this* activity specifically", for a
  *                              dropdown that names the rung up front.
+ *   - `pickActivityTarget`  - a random target for one activity, excluding
+ *                              given passages (tile press, Next skip).
+ *   - `pickFlowTarget`      - the same for any `Flow` rule (variety or one
+ *                              activity); `null` means nothing qualifies.
+ *   - `flowUnavailable`     - whether a tile is 'locked', 'empty' or usable.
+ *   - `isReferenceRung`     - the two rungs gated on reference unlocking.
  */
 
 import type { PlanView, Rung } from '../types';

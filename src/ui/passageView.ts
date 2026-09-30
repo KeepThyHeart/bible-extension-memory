@@ -188,17 +188,10 @@ function renderActivityDetail(
 
   const level = el('div', { class: 'sm-activity-level-row' }, [
     levelBoxes(rv.level, { due }),
-    el('span', { class: 'sm-activity-level-text', text: rv.level === 0 ? 'Not tried yet' : `${rv.level}/5` }),
+    rv.level === 0 ? null : el('span', { class: 'sm-activity-level-text', text: `${rv.level}/5` }),
   ]);
 
   const progress = progressText(rv, now);
-  const status = rv.resume
-    ? el('p', {
-        class: 'sm-activity-paused',
-        text: `Paused at verse ${rv.resume.stepsDone} of ${rv.resume.totalSteps}`,
-      })
-    : null;
-
   const actions = rv.resume
     ? el('div', { class: 'sm-activity-actions' }, [
         button('Restart', () => void host.startSession(pv.passage.id, rv.rung, true), {
@@ -218,7 +211,6 @@ function renderActivityDetail(
     header,
     level,
     el('p', { class: 'sm-activity-row-progress', text: progress }),
-    status,
     actions,
   ]);
 }

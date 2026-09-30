@@ -12,7 +12,7 @@
  * Memory" rather than the current list's name (`PlanView.collectionName` no
  * longer drives it - see that field's own doc comment in `types.ts`), the
  * bordered "Start practicing" button is gone in favour of a chrome-free
- * `six-tile activity grid, and the full
+ * six-tile activity grid, and the full
  * add-passage form (paste-batch flow included) has moved to the Manage
  * Passages screen (T11) - this file keeps only `renderAddAndStart`, the
  * one-press shortcut for a plan with nothing in it yet.

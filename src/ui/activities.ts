@@ -2,7 +2,7 @@
  * The six activity tiles, as one declarative table.
  *
  * DOM-free, per the note at the top of `format.ts`: this is the copy the
- * home screen's tile grid (M2) will render, and keeping it as data rather
+ * home screen's tile grid renders, and keeping it as data rather
  * than markup means a test can assert the catalogue's shape and wording
  * directly, without a browser.
  *
@@ -11,8 +11,8 @@
  * these six, so a tile and its icon are always looked up the same way.
  *
  * `rung` is `null` for exactly one tile now: `variety` is not one activity
- * but a mix of them, so no single `Rung` names it. Every other tile - M7
- * landed `refprovide` as a real `Rung` (`types.ts`) - names its own.
+ * but a mix of them, so no single `Rung` names it. Every other tile names its own
+ * `Rung` (`types.ts`).
  * `suggest.ts#pickFlowTarget` (an empty result) plus
  * `PlanView.referenceActivitiesUnlocked` decide whether a tile can be pressed
  * right now - this table only says what the tile is called and what it does.
@@ -34,7 +34,7 @@ export interface ActivityTile {
 
 /**
  * The tile catalogue, in the order the design doc's table lists them and the
- * grid (M2) is expected to draw them.
+ * grid draws them.
  *
  * Copy is verbatim from the design doc - do not paraphrase it here even for
  * a small consistency fix; change the doc first.

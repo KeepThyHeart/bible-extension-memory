@@ -1563,7 +1563,7 @@ describe('the passage screen', () => {
     expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: pv.passage.id, rung: 'firstletters' });
   });
 
-  it('shows an untried activity with empty level boxes and "Not tried yet"', () => {
+  it('shows an untried activity with empty level boxes and no status text', () => {
     const pv = passageViewFixture({
       rungs: [
         rungView({ rung: 'ordering', level: 0, attempts: 0 }),
@@ -1576,7 +1576,7 @@ describe('the passage screen', () => {
     container.appendChild(root);
 
     const panel = root.querySelector('.sm-activity-card')!;
-    expect(spokenText(panel)).toContain('Not tried yet');
+    expect(spokenText(panel)).not.toContain('Not tried yet');
     expect(panel.querySelectorAll('.sm-level-box-yellow, .sm-level-box-green').length).toBe(0);
   });
 
@@ -2679,7 +2679,7 @@ describe('the Manage Passages screen', () => {
 
     root.querySelector<HTMLButtonElement>('.sm-remove button')!.click();
 
-    expect(spokenText(root)).toContain('Remove this passage and its history?');
+    expect(spokenText(root)).toContain('Its history is kept for 7 days, and adding it again restores it.');
     expect(host.requests.filter((r) => r.type === 'removePassage')).toEqual([]);
   });
 

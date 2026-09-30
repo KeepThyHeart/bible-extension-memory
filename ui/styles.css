@@ -698,7 +698,7 @@ ul, ol {
 }
 
 .sm-batch-list-item {
-  font-family: var(--sm-bible-font);
+  font-family: var(--sm-ui-font);
 }
 
 .sm-list {
@@ -1825,6 +1825,18 @@ button.sm-activity-row:hover {
 
 .sm-manage-delete-confirm {
   width: 100%;
+  margin-bottom: var(--sm-s3);
+}
+
+.sm-manage-list-current {
+  align-self: center;
+  display: inline-block;
+  padding: 0.1em 0.6em;
+  font-size: 0.75em;
+  line-height: 1.4;
+  background: var(--sm-accent-light);
+  color: var(--sm-accent);
+  vertical-align: baseline;
 }
 
 .sm-manage-list-rename {

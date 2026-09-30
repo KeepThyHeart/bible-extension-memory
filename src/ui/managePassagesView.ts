@@ -273,6 +273,7 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
     );
     const nameInput = el('input', {
       class: 'sm-input sm-manage-delete-confirm',
+      placeholder: 'Type the list name to confirm',
       attrs: { 'aria-label': `Type "${list.name}" to confirm deleting it`, autocomplete: 'off', spellcheck: 'false' },
     }) as HTMLInputElement;
     // Exact, case-sensitive, untrimmed: a deliberate speed bump.
@@ -391,7 +392,7 @@ function renderRemoveControl(host: PanelHost, pv: PassageView): HTMLElement {
   function showConfirm(): void {
     replace(slot, [
       el('span', { class: 'sm-remove-confirm', attrs: { role: 'alert' } }, [
-        el('span', { class: 'sm-hint', text: 'Remove this passage and its history?' }),
+        el('span', { class: 'sm-hint', text: 'Remove this passage? Its history is kept for 7 days, and adding it again restores it.' }),
         button('Yes, remove', doRemove, { class: 'sm-btn sm-btn-small sm-btn-danger' }),
         button('Cancel', showIdle, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
       ]),
@@ -693,8 +694,13 @@ function renderAddPassage(host: PanelHost): { element: HTMLElement; offerBatch: 
     handle.open();
 
     if (lines && lines.length > 0) showConfirm(lines);
-    else if (prefill.trim().length > 0) showConfirm(extractReferenceCandidates(prefill));
-    else showEntry();
+    else if (prefill.trim().length > 0) {
+      // Text with no recognisable references falls back to the entry view
+      // (keeping the text) rather than an empty "Add 0 passages" confirm.
+      const found = extractReferenceCandidates(prefill);
+      if (found.length > 0) showConfirm(found);
+      else showEntry();
+    } else showEntry();
   }
 
   input.addEventListener('paste', (event: ClipboardEvent) => {
