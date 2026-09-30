@@ -228,14 +228,14 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
       `Delete and move ${countLabel(list.passageCount, 'passage')}`,
       () => {
         doDelete(chosen);
-        closeModal();
+        handle.close();
       },
       { class: 'sm-btn sm-btn-danger sm-btn-small' },
     );
 
-    const backdrop = modal({
+    const handle = modal({
       title: `Delete "${list.name}"?`,
-      content: [
+      body: [
         el('p', {
           class: 'sm-hint',
           text: `This list has ${countLabel(list.passageCount, 'passage')}. Choose another list to move ${
@@ -243,15 +243,12 @@ function renderListRow(host: PanelHost, plan: PlanView, list: ListSummary): HTML
           } to first.`,
         }),
         select,
-        el('div', { class: 'sm-batch-actions' }, [confirmButton]),
       ],
-      onClose: () => backdrop.remove(),
+      actions: [confirmButton],
+      onClose: () => handle.element.remove(),
     });
-    document.body.appendChild(backdrop);
-
-    function closeModal(): void {
-      backdrop.remove();
-    }
+    document.body.appendChild(handle.element);
+    handle.open();
   }
 
   showIdle();
@@ -400,6 +397,36 @@ async function addBatch(
 }
 
 /**
+ * Announces the outcome of an `addBatch` and reloads on any success - shared
+ * by the single-line field and the "add several" popup so the wording and the
+ * "reload only on success" rule are the same from either.
+ */
+function announceBatch(
+  host: PanelHost,
+  outcome: { added: Passage[]; failed: unknown[]; dropped: Passage[] },
+): void {
+  const { added, failed, dropped } = outcome;
+  if (added.length === 0) return;
+  const mergedNote =
+    dropped.length > 0
+      ? ` ${countLabel(dropped.length, 'reference')} already covered by another passage in this batch.`
+      : '';
+  host.announce(
+    added.length === 1 && failed.length === 0 && dropped.length === 0
+      ? `Added ${added[0]!.reference}.`
+      : failed.length === 0
+        ? `Added ${countLabel(added.length, 'passage')}.${mergedNote}`
+        : `Added ${countLabel(added.length, 'passage')}; ${failed.length} failed.${mergedNote}`,
+  );
+  host.reload();
+}
+
+/** One failed reference as shown to the user: bare for a lone reference, prefixed when among several. */
+function addFailureMessage(references: string[], failure: { reference: string; error: string }): string {
+  return references.length === 1 ? failure.error : `${failure.reference}: ${failure.error}`;
+}
+
+/**
  * Collapses a batch of `addPassage` replies to one entry per underlying
  * passage row, first occurrence wins. See `addBatch`'s own comment for why -
  * carried over verbatim from `planView.ts`'s history.
@@ -465,10 +492,9 @@ function renderAddPassage(host: PanelHost): { element: HTMLElement; offerBatch: 
   const submit = el('button', { class: 'sm-btn', text: 'Add' }) as HTMLButtonElement;
   submit.type = 'submit';
 
-  // Populated only while a pasted batch is awaiting "Add all" / "Cancel".
-  // Kept outside the `<form>` so it survives independently of a submit or
-  // reset the form might otherwise trigger.
-  const batchConfirmSlot = el('div', { class: 'sm-batch-confirm-slot' });
+  const addSeveralLink = button('Add several passages at once…', () => openBatchModal(''), {
+    class: 'sm-btn sm-btn-quiet sm-btn-small sm-link-btn',
+  });
 
   const form = el('form', { class: 'sm-add' }, [
     el('label', { class: 'sm-label', text: 'Add passage', attrs: { for: 'sm-add-reference' } }),
@@ -478,6 +504,7 @@ function renderAddPassage(host: PanelHost): { element: HTMLElement; offerBatch: 
       class: 'sm-hint',
       text: 'Paste a list to add several at once - one reference per line.',
     }),
+    addSeveralLink,
   ]) as HTMLFormElement;
 
   async function addReferences(references: string[]): Promise<void> {
@@ -490,71 +517,121 @@ function renderAddPassage(host: PanelHost): { element: HTMLElement; offerBatch: 
     submit.disabled = false;
     input.disabled = false;
 
-    const addedRefs = added.map((p) => p.reference);
-
-    if (addedRefs.length > 0) {
-      input.value = '';
-      const mergedNote =
-        dropped.length > 0
-          ? ` ${countLabel(dropped.length, 'reference')} already covered by another passage in this batch.`
-          : '';
-      host.announce(
-        addedRefs.length === 1 && failed.length === 0 && dropped.length === 0
-          ? `Added ${addedRefs[0]}.`
-          : failed.length === 0
-            ? `Added ${countLabel(addedRefs.length, 'passage')}.${mergedNote}`
-            : `Added ${countLabel(addedRefs.length, 'passage')}; ${failed.length} failed.${mergedNote}`,
-      );
-      host.reload();
-    }
+    if (added.length > 0) input.value = '';
+    announceBatch(host, { added, failed, dropped });
 
     if (failed.length > 0) {
       replace(
         errorSlot,
-        failed.map((f) => errorBanner(references.length === 1 ? f.error : `${f.reference}: ${f.error}`)),
+        failed.map((f) => errorBanner(addFailureMessage(references, f))),
       );
       focusQuietly(input);
     }
   }
 
   /**
-   * Shows the parsed batch and waits for the user to confirm or cancel it,
-   * rather than adding it the instant the paste lands.
+   * Opens the "add several at once" modal: a textarea plus "Find references",
+   * which swaps (inside the same modal) to a confirm list with Back / Add N
+   * passages. A non-empty `prefill` (a multi-reference paste, typed text, or a
+   * suggested list) is parsed immediately and lands on the confirm view; the
+   * link opens it blank. The modal is mounted on `document.body` (a reload
+   * only replaces the panel's content) and removes itself when closed. A fresh
+   * modal is built per open. `lines`, when given, are used as the parsed list
+   * instead of re-extracting from `prefill`.
    */
-  function showBatchConfirm(lines: string[]): void {
-    input.disabled = true;
-    submit.disabled = true;
+  function openBatchModal(prefill: string, lines?: string[]): void {
+    const textarea = el('textarea', {
+      class: 'sm-textarea',
+      id: 'sm-batch-textarea',
+      attrs: { rows: '8' },
+    }) as HTMLTextAreaElement;
+    textarea.value = prefill;
 
-    const cancel = (): void => {
-      replace(batchConfirmSlot, []);
-      input.disabled = false;
-      submit.disabled = false;
-      focusQuietly(input);
-    };
+    const body = el('div', { class: 'sm-modal-batch-body' });
+    const handle = modal({
+      title: 'Add several passages at once',
+      body: [body],
+      onClose: () => handle.element.remove(),
+    });
 
-    replace(batchConfirmSlot, [
-      el('div', { class: 'sm-batch-confirm', attrs: { role: 'alert' } }, [
-        el('p', { class: 'sm-hint', text: `Add ${countLabel(lines.length, 'passage')}?` }),
+    function showEntry(): void {
+      const entryErrorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+      const cancelBtn = button('Cancel', () => handle.close(), { class: 'sm-btn sm-btn-quiet' });
+      const findBtn = button(
+        'Find references',
+        () => {
+          const candidates = extractReferenceCandidates(textarea.value);
+          if (candidates.length === 0) {
+            replace(entryErrorSlot, [errorBanner('Type or paste at least one reference first.')]);
+            focusQuietly(textarea);
+            return;
+          }
+          showConfirm(candidates);
+        },
+        { class: 'sm-btn sm-btn-primary' },
+      );
+
+      replace(body, [
+        el('label', { class: 'sm-label', text: 'References', attrs: { for: 'sm-batch-textarea' } }),
+        textarea,
+        el('p', {
+          class: 'sm-hint',
+          text: 'Paste a list of references, or any text that has references in it, and they will be auto-detected.',
+        }),
+        entryErrorSlot,
+        el('div', { class: 'sm-modal-actions' }, [cancelBtn, findBtn]),
+      ]);
+      focusQuietly(textarea);
+    }
+
+    function showConfirm(confirmLines: string[]): void {
+      const confirmErrorSlot = el('div', { class: 'sm-error-slot', attrs: { 'aria-live': 'polite' } });
+      const backBtn = button('Back', () => showEntry(), { class: 'sm-btn sm-btn-quiet' });
+      const addBtn = button(
+        `Add ${countLabel(confirmLines.length, 'passage')}`,
+        () => {
+          addBtn.disabled = true;
+          backBtn.disabled = true;
+          replace(confirmErrorSlot, []);
+          void addBatch(host, confirmLines).then((outcome) => {
+            if (outcome.failed.length === 0) {
+              // Close before announceBatch reloads the screen.
+              handle.close();
+              announceBatch(host, outcome);
+              return;
+            }
+            // Partial failure: stay open showing which lines failed and why.
+            announceBatch(host, outcome);
+            addBtn.disabled = false;
+            backBtn.disabled = false;
+            replace(
+              confirmErrorSlot,
+              outcome.failed.map((f) => errorBanner(addFailureMessage(confirmLines, f))),
+            );
+          });
+        },
+        { class: 'sm-btn sm-btn-primary' },
+      );
+
+      replace(body, [
+        el('p', { class: 'sm-hint', text: `Add ${countLabel(confirmLines.length, 'passage')}?` }),
         el(
           'ul',
           { class: 'sm-batch-list' },
-          lines.map((line) => el('li', { class: 'sm-batch-list-item', text: line })),
+          confirmLines.map((line) => el('li', { class: 'sm-batch-list-item', text: line })),
         ),
-        el('div', { class: 'sm-batch-actions' }, [
-          button(
-            `Add ${countLabel(lines.length, 'passage')}`,
-            () => {
-              replace(batchConfirmSlot, []);
-              input.disabled = false;
-              submit.disabled = false;
-              void addReferences(lines);
-            },
-            { class: 'sm-btn sm-btn-primary sm-btn-small' },
-          ),
-          button('Cancel', cancel, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
-        ]),
-      ]),
-    ]);
+        confirmErrorSlot,
+        el('div', { class: 'sm-modal-actions' }, [backBtn, addBtn]),
+      ]);
+      focusQuietly(addBtn);
+    }
+
+    document.body.appendChild(handle.element);
+    handle.open();
+
+    if (lines && lines.length > 0) showConfirm(lines);
+    else if (prefill.trim().length > 0) showConfirm(extractReferenceCandidates(prefill));
+    else showEntry();
   }
 
   input.addEventListener('paste', (event: ClipboardEvent) => {
@@ -566,10 +643,10 @@ function renderAddPassage(host: PanelHost): { element: HTMLElement; offerBatch: 
       // entirely rather than let the browser drop it into a single-line
       // field, which - depending on the browser - can silently strip
       // newlines and concatenate references into unparseable garbage. The
-      // batch itself waits for confirmation (above) rather than going
+      // batch itself opens the modal, pre-filled and parsed, rather than going
       // straight to the worker.
       event.preventDefault();
-      showBatchConfirm(candidates);
+      openBatchModal(text, candidates);
     }
   });
 
@@ -591,16 +668,16 @@ function renderAddPassage(host: PanelHost): { element: HTMLElement; offerBatch: 
     // Romans 8:28"); it gets the same confirm-first treatment as a pasted
     // batch rather than adding several passages on one Enter press unseen.
     if (references.length > 1) {
-      showBatchConfirm(references);
+      openBatchModal(input.value, references);
       return;
     }
 
     void addReferences(references);
   });
 
-  const element = el('div', { class: 'sm-add-wrapper' }, [form, batchConfirmSlot]);
+  const element = el('div', { class: 'sm-add-wrapper' }, [form]);
 
-  return { element, offerBatch: showBatchConfirm };
+  return { element, offerBatch: (lines) => openBatchModal(lines.join('\n'), lines) };
 }
 
 // ---------------------------------------------------------------------------

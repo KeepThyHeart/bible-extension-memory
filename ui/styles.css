@@ -557,19 +557,7 @@ ul, ol {
   flex-direction: column;
 }
 
-/* The "Add N passages?" preview a pasted batch waits in until it is
-   confirmed or cancelled (task 0004 review: bulk-add "after confirmation"). */
-.sm-batch-confirm {
-  margin-top: var(--sm-s2);
-  padding: var(--sm-s3);
-  border: 1px solid var(--sm-accent);
-  border-radius: var(--sm-radius-lg);
-  background: var(--sm-accent-light);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sm-s2);
-}
-
+/* The parsed-lines list in the "add several at once" modal's confirm view. */
 .sm-batch-list {
   display: flex;
   flex-direction: column;
@@ -580,12 +568,6 @@ ul, ol {
 
 .sm-batch-list-item {
   font-family: var(--sm-bible-font);
-}
-
-.sm-batch-actions {
-  display: flex;
-  gap: var(--sm-s2);
-  flex-wrap: wrap;
 }
 
 .sm-list {
@@ -1822,6 +1804,10 @@ button.sm-activity-row:hover {
    never `window.confirm`; see that function's own doc comment for why.
    ========================================================================== */
 
+.sm-modal-backdrop[hidden] {
+  display: none;
+}
+
 .sm-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1834,6 +1820,7 @@ button.sm-activity-row:hover {
 }
 
 .sm-modal {
+  width: 100%;
   background: var(--sm-surface-raised);
   border: 1px solid var(--sm-border);
   border-radius: var(--sm-radius-lg);
@@ -1867,6 +1854,47 @@ button.sm-activity-row:hover {
   display: flex;
   flex-direction: column;
   gap: var(--sm-s3);
+}
+
+/* Right-aligned button row: a footer passed as `actions`, or placed inside a
+   swapped-in modal view (the batch popup). */
+.sm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--sm-s2);
+  flex-wrap: wrap;
+}
+
+/* The batch popup's body wrapper: the entry and confirm views are swapped
+   inside this one element rather than closing and reopening the dialog. */
+.sm-modal-batch-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-textarea {
+  font: inherit;
+  font-size: var(--sm-control-size);
+  width: 100%;
+  padding: var(--sm-s2);
+  border: 1px solid var(--sm-input-border);
+  border-radius: var(--sm-radius);
+  background: var(--sm-input-bg);
+  color: var(--sm-input-text);
+  resize: vertical;
+}
+
+.sm-textarea::placeholder {
+  color: var(--sm-input-placeholder);
+}
+
+/* A quiet button underlined so it reads as a link ("Add several passages at once..."). */
+.sm-link-btn {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  align-self: flex-start;
 }
 
 /* ==========================================================================

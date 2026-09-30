@@ -2046,137 +2046,150 @@ describe('the modal', () => {
     return trigger;
   }
 
-  // The modal's own header contributes one focusable control - the built-in
-  // `✕` close button - which is always the first element in document order,
-  // ahead of anything `content` supplies. These tests key off that rather
-  // than re-deriving it, so a reader can see the actual order asserted on.
+  // The header's built-in `✕` close button is always the first focusable
+  // element in document order, ahead of anything `body` supplies.
   function closeButtonOf(backdrop: Element): HTMLElement {
     return backdrop.querySelector<HTMLElement>('[aria-label="Close"]')!;
   }
 
-  it('moves focus into the modal on open, to its first focusable element', async () => {
-    const trigger = makeTrigger();
-    trigger.focus();
-
-    const backdrop = modal({ title: 'Example', content: [document.createElement('p')], onClose: () => {} });
-    container.appendChild(backdrop);
-    await settle();
-
-    expect(document.activeElement).toBe(closeButtonOf(backdrop));
+  it('starts hidden and detached, and shows on open()', () => {
+    const handle = modal({ title: 'Example', body: [document.createElement('p')] });
+    expect(handle.element.hidden).toBe(true);
+    expect(handle.element.isConnected).toBe(false);
+    container.appendChild(handle.element);
+    handle.open();
+    expect(handle.element.hidden).toBe(false);
   });
 
-  it('focuses the modal container itself when there is nothing focusable inside and no close button either', async () => {
-    // A degenerate case - `content` alone would never be the only focusable
-    // candidate in practice, since the close button is always there - but the
-    // fallback exists for exactly this: nothing focusable at all.
+  it('moves focus into the modal on open, to its first focusable element', () => {
     const trigger = makeTrigger();
     trigger.focus();
 
-    const backdrop = modal({ title: 'Nothing to focus', content: ['Just text.'], onClose: () => {} });
-    const dialog = backdrop.querySelector('[role="dialog"]')!;
-    closeButtonOf(backdrop).remove();
-    container.appendChild(backdrop);
-    await settle();
+    const handle = modal({ title: 'Example', body: [document.createElement('p')] });
+    container.appendChild(handle.element);
+    handle.open();
+
+    expect(document.activeElement).toBe(closeButtonOf(handle.element));
+  });
+
+  it('focuses the dialog itself when there is nothing focusable inside', () => {
+    const trigger = makeTrigger();
+    trigger.focus();
+
+    const handle = modal({ title: 'Nothing to focus', body: ['Just text.'] });
+    const dialog = handle.element.querySelector('[role="dialog"]')!;
+    closeButtonOf(handle.element).remove();
+    container.appendChild(handle.element);
+    handle.open();
 
     expect(document.activeElement).toBe(dialog);
   });
 
-  it('traps Tab within the modal, wrapping from the last focusable element to the first', async () => {
-    const trigger = makeTrigger();
-    trigger.focus();
-
-    const only = document.createElement('button');
-    only.textContent = 'Only content control';
-    const backdrop = modal({ title: 'Example', content: [only], onClose: () => {} });
-    container.appendChild(backdrop);
-    await settle();
-
-    // `only` is the last focusable element (after the close button); Tab from
-    // it must wrap back to the first, the close button.
-    only.focus();
-    fireKey(backdrop.querySelector('[role="dialog"]')!, 'Tab');
-
-    expect(document.activeElement).toBe(closeButtonOf(backdrop));
+  it('renders actions in a footer row', () => {
+    const save = document.createElement('button');
+    save.textContent = 'Save';
+    const handle = modal({ title: 'Example', body: ['x'], actions: [save] });
+    expect(handle.element.querySelector('.sm-modal-actions')?.contains(save)).toBe(true);
   });
 
-  it('traps Shift+Tab within the modal, wrapping from the first focusable element to the last', async () => {
-    const trigger = makeTrigger();
-    trigger.focus();
+  it('traps Tab within the modal, wrapping from the last focusable element to the first', () => {
+    makeTrigger().focus();
 
     const only = document.createElement('button');
     only.textContent = 'Only content control';
-    const backdrop = modal({ title: 'Example', content: [only], onClose: () => {} });
-    container.appendChild(backdrop);
-    await settle();
+    const handle = modal({ title: 'Example', body: [only] });
+    container.appendChild(handle.element);
+    handle.open();
 
-    // The close button is the first focusable element; Shift+Tab from it must
-    // wrap forward to the last, `only`.
-    closeButtonOf(backdrop).focus();
-    fireKey(backdrop.querySelector('[role="dialog"]')!, 'Tab', { shiftKey: true });
+    only.focus();
+    fireKey(handle.element.querySelector('[role="dialog"]')!, 'Tab');
+
+    expect(document.activeElement).toBe(closeButtonOf(handle.element));
+  });
+
+  it('traps Shift+Tab within the modal, wrapping from the first focusable element to the last', () => {
+    makeTrigger().focus();
+
+    const only = document.createElement('button');
+    only.textContent = 'Only content control';
+    const handle = modal({ title: 'Example', body: [only] });
+    container.appendChild(handle.element);
+    handle.open();
+
+    closeButtonOf(handle.element).focus();
+    fireKey(handle.element.querySelector('[role="dialog"]')!, 'Tab', { shiftKey: true });
 
     expect(document.activeElement).toBe(only);
   });
 
-  it('closes when the built-in close button is clicked', async () => {
+  it('closes when the built-in close button is clicked', () => {
     const trigger = makeTrigger();
     trigger.focus();
 
-    let closed = 0;
-    const backdrop = modal({ title: 'Example', content: [document.createElement('p')], onClose: () => (closed += 1) });
-    container.appendChild(backdrop);
-    await settle();
+    const onClose = vi.fn();
+    const handle = modal({ title: 'Example', body: [document.createElement('p')], onClose });
+    container.appendChild(handle.element);
+    handle.open();
 
-    closeButtonOf(backdrop).click();
+    closeButtonOf(handle.element).click();
 
-    expect(backdrop.isConnected).toBe(false);
+    expect(handle.element.hidden).toBe(true);
     expect(document.activeElement).toBe(trigger);
-    expect(closed).toBe(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('closes on Escape, removes itself, restores focus to the trigger, and calls onClose', async () => {
+  it('closes on Escape, restores focus to the opener, and calls onClose once', () => {
     const trigger = makeTrigger();
     trigger.focus();
 
-    let closed = 0;
+    const onClose = vi.fn();
     const first = document.createElement('button');
-    first.textContent = 'First';
-    const backdrop = modal({ title: 'Example', content: [first], onClose: () => (closed += 1) });
-    container.appendChild(backdrop);
-    await settle();
+    const handle = modal({ title: 'Example', body: [first], onClose });
+    container.appendChild(handle.element);
+    handle.open();
 
-    fireKey(backdrop.querySelector('[role="dialog"]')!, 'Escape');
+    fireKey(handle.element.querySelector('[role="dialog"]')!, 'Escape');
+    fireKey(handle.element.querySelector('[role="dialog"]')!, 'Escape');
 
-    expect(backdrop.isConnected).toBe(false);
+    expect(handle.element.hidden).toBe(true);
     expect(document.activeElement).toBe(trigger);
-    expect(closed).toBe(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('closes on a backdrop click but not on a click inside the modal content', async () => {
-    const trigger = makeTrigger();
-    trigger.focus();
+  it('closes on a backdrop click but not on a click inside the dialog', () => {
+    makeTrigger().focus();
 
-    let closed = 0;
     const first = document.createElement('button');
-    first.textContent = 'First';
-    const backdrop = modal({ title: 'Example', content: [first], onClose: () => (closed += 1) });
-    container.appendChild(backdrop);
-    await settle();
+    const handle = modal({ title: 'Example', body: [first] });
+    container.appendChild(handle.element);
+    handle.open();
 
-    // A click that starts and ends inside the dialog must not close it.
     first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    expect(backdrop.isConnected).toBe(true);
-    expect(closed).toBe(0);
+    handle.element.querySelector('[role="dialog"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(handle.element.hidden).toBe(false);
 
-    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    expect(backdrop.isConnected).toBe(false);
-    expect(closed).toBe(1);
+    handle.element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(handle.element.hidden).toBe(true);
+  });
+
+  it('can be reopened after closing, and close() is a no-op when already closed', () => {
+    const onClose = vi.fn();
+    const handle = modal({ title: 'Example', body: ['x'], onClose });
+    container.appendChild(handle.element);
+    handle.close();
+    expect(onClose).not.toHaveBeenCalled();
+    handle.open();
+    handle.close();
+    handle.open();
+    expect(handle.element.hidden).toBe(false);
   });
 
   it('is a real dialog, not a native <dialog> and not window.confirm', () => {
-    const backdrop = modal({ title: 'Example', content: [document.createElement('p')], onClose: () => {} });
-    const dialog = backdrop.querySelector('[role="dialog"]');
+    const handle = modal({ title: 'Example', body: [document.createElement('p')] });
+    const dialog = handle.element.querySelector('[role="dialog"]');
     expect(dialog?.tagName).not.toBe('DIALOG');
     expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(dialog?.getAttribute('aria-labelledby')).toBe(handle.element.querySelector('h2')?.id);
   });
 });
 
@@ -2569,13 +2582,15 @@ describe('the Manage Passages screen', () => {
     });
     input.dispatchEvent(pasteEvent);
 
-    expect(root.querySelector('.sm-batch-confirm')).not.toBeNull();
+    const popup = document.querySelector('.sm-modal-backdrop')!;
+    expect(popup).not.toBeNull();
 
-    const addAll = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-batch-actions button')).find((b) =>
+    const addAll = Array.from(popup.querySelectorAll<HTMLButtonElement>('.sm-modal-actions button')).find((b) =>
       (b.textContent ?? '').startsWith('Add'),
     )!;
     addAll.click();
     await settle();
+    expect(document.querySelector('.sm-modal-backdrop')).toBeNull();
 
     // Sequential, not concurrent - the order the references were typed in.
     expect(order).toEqual(['John 3:16', 'Romans 8:28']);
@@ -2786,10 +2801,11 @@ describe('the Manage Passages screen', () => {
     )!;
     copyButton.click();
 
-    const batch = root.querySelector('.sm-batch-confirm')!;
+    const batch = document.querySelector('.sm-modal-backdrop')!;
     expect(batch).not.toBeNull();
     const items = Array.from(batch.querySelectorAll('.sm-batch-list-item')).map((li) => li.textContent);
     expect(items).toEqual(SUGGESTED_LISTS[0]!.references);
+    batch.remove();
   });
 
   it('"Create this list" creates a collection named after the list and adds every reference', async () => {
@@ -4111,5 +4127,147 @@ describe('blanks width stability (T17)', () => {
       expect(m.usedEstimate).toBe(false);
       m.dispose();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 2: the "Add several passages at once..." popup
+// ---------------------------------------------------------------------------
+
+describe('the batch-add popup', () => {
+  function renderManage(): HTMLElement {
+    const root = renderManagePassages(host, { ...emptyPlan() });
+    container.appendChild(root);
+    return root;
+  }
+
+  function popup(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('.sm-modal-backdrop');
+  }
+
+  function popupButton(label: string): HTMLButtonElement {
+    return Array.from(popup()!.querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+      (b.textContent ?? '').startsWith(label),
+    )!;
+  }
+
+  function openFromLink(root: HTMLElement): void {
+    Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent === 'Add several passages at once…')!
+      .click();
+  }
+
+  function stubAdd(order: string[] = []): string[] {
+    host.handlers.addPassage = (req) => {
+      order.push(req.reference);
+      return { ok: true, data: { passage: passageFixture({ id: order.length, reference: req.reference }) } };
+    };
+    return order;
+  }
+
+  it('shows the link and no inline batch-confirm slot', () => {
+    const root = renderManage();
+    expect(spokenText(root)).toContain('Add several passages at once…');
+    expect(root.querySelector('.sm-batch-confirm')).toBeNull();
+    expect(popup()).toBeNull();
+  });
+
+  it('opens a blank popup from the link, focusing the textarea', async () => {
+    const root = renderManage();
+    openFromLink(root);
+
+    const textarea = popup()!.querySelector<HTMLTextAreaElement>('textarea')!;
+    expect(textarea.value).toBe('');
+    expect(document.activeElement).toBe(textarea);
+    expect(popup()!.querySelector('[role="dialog"]')?.getAttribute('aria-modal')).toBe('true');
+    popup()!.remove();
+  });
+
+  it('asks for at least one reference when Find references finds none', () => {
+    const root = renderManage();
+    openFromLink(root);
+    popupButton('Find references').click();
+
+    expect(popup()!.querySelector('.sm-error')).not.toBeNull();
+    expect(popup()!.querySelector('.sm-batch-list')).toBeNull();
+    popup()!.remove();
+  });
+
+  it('Find references shows the confirm list; Back returns with the text intact', () => {
+    const root = renderManage();
+    openFromLink(root);
+    const textarea = popup()!.querySelector<HTMLTextAreaElement>('textarea')!;
+    textarea.value = 'John 3:16\nRomans 8:28';
+    popupButton('Find references').click();
+
+    const items = Array.from(popup()!.querySelectorAll('.sm-batch-list-item')).map((li) => li.textContent);
+    expect(items).toEqual(['John 3:16', 'Romans 8:28']);
+    expect(popupButton('Add 2 passages')).toBeTruthy();
+
+    popupButton('Back').click();
+    expect(popup()!.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('John 3:16\nRomans 8:28');
+    popup()!.remove();
+  });
+
+  it('Add N passages adds sequentially, announces, reloads and closes the popup', async () => {
+    const order = stubAdd();
+    const root = renderManage();
+    openFromLink(root);
+    popup()!.querySelector<HTMLTextAreaElement>('textarea')!.value = 'John 3:16\nRomans 8:28';
+    popupButton('Find references').click();
+    popupButton('Add 2 passages').click();
+    await settle();
+
+    expect(order).toEqual(['John 3:16', 'Romans 8:28']);
+    expect(host.announcements.some((a) => a.includes('Added 2 passages'))).toBe(true);
+    expect(host.reloads).toBeGreaterThan(0);
+    expect(popup()).toBeNull();
+  });
+
+  it('a partial failure keeps the popup open and names the failed line', async () => {
+    host.handlers.addPassage = (req) =>
+      req.reference === 'Romans 8:28'
+        ? { ok: false, error: 'No such book' }
+        : { ok: true, data: { passage: passageFixture({ id: 1, reference: req.reference }) } };
+    const root = renderManage();
+    openFromLink(root);
+    popup()!.querySelector<HTMLTextAreaElement>('textarea')!.value = 'John 3:16\nRomans 8:28';
+    popupButton('Find references').click();
+    popupButton('Add 2 passages').click();
+    await settle();
+
+    expect(popup()).not.toBeNull();
+    expect(spokenText(popup()!)).toContain('Romans 8:28: No such book');
+    expect(popupButton('Add 2 passages').disabled).toBe(false);
+    popup()!.remove();
+  });
+
+  it('a multi-reference Enter opens the popup pre-filled and on the confirm list', () => {
+    const root = renderManage();
+    const input = root.querySelector<HTMLInputElement>('#sm-add-reference')!;
+    input.value = 'John 3:16 and Romans 8:28';
+    input.closest('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+
+    expect(Array.from(popup()!.querySelectorAll('.sm-batch-list-item')).map((li) => li.textContent)).toEqual([
+      'John 3:16',
+      'Romans 8:28',
+    ]);
+    popup()!.remove();
+  });
+
+  it('Escape closes the popup, removes it and restores focus to the link', () => {
+    const root = renderManage();
+    const link = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.textContent === 'Add several passages at once…',
+    )!;
+    link.focus();
+    link.click();
+
+    popup()!
+      .querySelector('[role="dialog"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+    expect(popup()).toBeNull();
+    expect(document.activeElement).toBe(link);
   });
 });

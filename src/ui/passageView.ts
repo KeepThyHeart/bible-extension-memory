@@ -218,19 +218,18 @@ function renderActivityRow(
  * content; an open modal left unclosed would survive that swap as an orphan.
  */
 function openSettingsModal(host: PanelHost, pv: PassageView, defaultAnswerMode: AnswerMode): void {
-  function closeModal(): void {
-    backdrop.remove();
-  }
+  const closeModal = (): void => handle.close();
 
   const answerRow = renderAnswerModeControl(host, pv, defaultAnswerMode, closeModal);
   const resetProgress = renderResetProgress(host, pv, closeModal);
 
-  const backdrop = modal({
+  const handle = modal({
     title: 'Passage settings',
-    content: [answerRow, resetProgress],
-    onClose: () => backdrop.remove(),
+    body: [answerRow, resetProgress],
+    onClose: () => handle.element.remove(),
   });
-  document.body.appendChild(backdrop);
+  document.body.appendChild(handle.element);
+  handle.open();
 }
 
 /**
