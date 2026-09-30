@@ -2179,7 +2179,11 @@ button.sm-activity-row:hover {
 .sm-recite-ref { font-size: 1.3em; font-weight: 600; color: var(--sm-heading); }
 .sm-recite-talk-row { display: flex; justify-content: center; padding: var(--sm-s3, 12px) 0; }
 .sm-recite-talk { min-width: 10em; min-height: 3.2em; font-size: 1.3em; border-radius: 999px; }
-.sm-recite-talk-on { background: var(--sm-danger); border-color: var(--sm-danger); color: #fff; }
+.sm-recite-talk-on { background: var(--sm-danger); border-color: var(--sm-danger); color: #fff; box-shadow: 0 0 0 4px var(--sm-danger-soft); }
+.sm-recite-talk-on::before { content: "\25A0\00a0"; }
+.sm-recite-talk-row { align-items: center; gap: var(--sm-s3, 12px); }
+.sm-recite-listening { font-weight: 700; color: var(--sm-danger-text); }
+.sm-recite-listening::before { content: "\25CF\00a0"; color: var(--sm-danger); }
 .sm-recite-heard { min-height: 2em; color: var(--sm-text-dim); font-style: italic; }
 .sm-recite-hint-text { padding: var(--sm-s2); background: var(--sm-info-soft); color: var(--sm-info-text); border-radius: var(--sm-radius); }
 .sm-recite-score-num { font-size: 2em; font-weight: 700; color: var(--sm-heading); }
@@ -2206,7 +2210,7 @@ button.sm-activity-row:hover {
 .sm-handsfree { background: #000; color: #fff; padding: var(--sm-s4, 16px); text-align: center; border-radius: var(--sm-radius); }
 .sm-handsfree-ref { font-size: 1.4em; color: #ddd; }
 .sm-handsfree-phase { font-size: 3em; font-weight: 800; line-height: 1.1; margin: var(--sm-s3, 12px) 0; }
-.sm-handsfree-progress { color: #ccc; }
+.sm-handsfree-progress { font-size: 1.25rem; font-weight: 600; color: #fff; }
 .sm-handsfree-controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sm-s2); margin-top: var(--sm-s3, 12px); }
 .sm-handsfree-btn { min-height: 4em; font-size: 1.4em; font-weight: 700; }
 

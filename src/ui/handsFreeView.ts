@@ -10,6 +10,7 @@ import type { LoopPhase, ReciteAction, ReciteStateView } from '../types';
 import { button, el, replace } from './dom';
 import { errorBanner } from './components';
 import { formatScore } from './format';
+import { progressText } from './reciteView';
 
 export interface HandsFreeCallbacks {
   onControl(action: ReciteAction): void;
@@ -46,7 +47,7 @@ export function createHandsFreeView(initial: ReciteStateView, cb: HandsFreeCallb
 
   function draw(state: ReciteStateView): void {
     root.setAttribute('data-phase', state.phase);
-    const finished = state.phase === 'summary' || state.phase === 'done';
+    const finished = state.phase === 'summary' || state.phase === 'done' || state.phase === 'error';
     const paused = state.phase === 'paused';
     const big = (label: string, action: ReciteAction, extra = ''): HTMLButtonElement =>
       button(label, () => cb.onControl(action), {
@@ -58,8 +59,8 @@ export function createHandsFreeView(initial: ReciteStateView, cb: HandsFreeCallb
     replace(body, [
       el('p', { class: 'sm-handsfree-ref', text: state.reference }),
       el('p', { class: 'sm-handsfree-phase', text }),
-      state.source === 'due' && state.done + state.remaining > 0
-        ? el('p', { class: 'sm-handsfree-progress', text: `${state.done} done, ${state.remaining} to go` })
+      state.source === 'due' && state.passageId !== null
+        ? el('p', { class: 'sm-handsfree-progress', text: progressText(state) })
         : null,
       state.phase === 'error' && state.error ? errorBanner(state.error.message) : null,
       el('div', { class: 'sm-handsfree-controls' }, [

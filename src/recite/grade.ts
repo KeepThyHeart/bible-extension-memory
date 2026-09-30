@@ -3,7 +3,7 @@
  * stores and shows. Pure. No heard text is kept beyond the returned result.
  */
 
-import { alignRecitation, POLICIES } from '@bible/core/recite';
+import { alignRecitation, POLICIES, stripEdgePunctuation } from '@bible/core/recite';
 import type { ILanguageKit, RecitationResult, RecognizedWord, WordVerdict } from '@bible/core/recite';
 import type { ReciteStrictness, VerseText } from '../types';
 import type { ReciteDetailInput } from '../store';
@@ -41,7 +41,7 @@ export function expectedFor(verses: VerseText[]): { words: string[]; verseStarts
 
 /** Edge punctuation off a surface word; inner apostrophes and hyphens stay. */
 export function stripPunctuation(word: string): string {
-  return word.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');
+  return stripEdgePunctuation(word);
 }
 
 function round2(n: number): number {

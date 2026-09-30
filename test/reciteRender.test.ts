@@ -223,3 +223,49 @@ describe('settings: Recite aloud group', () => {
     expect(h.requests).toContainEqual({ type: 'deleteReciteHistory' });
   });
 });
+
+describe('review fixes (render)', () => {
+  it('Try again starts the same source again; a due run retries the due queue', () => {
+    const c = { ...cbs(), onRetry: vi.fn() };
+    const err = { code: 'x', message: 'Mic failed' };
+    const a = renderRecite(state({ phase: 'error', error: err, passageId: 7 }), c);
+    Array.from(a.querySelectorAll('button')).find((b) => b.textContent === 'Try again')!.click();
+    expect(c.onRetry).toHaveBeenLastCalledWith({ kind: 'passage', passageId: 7 });
+    const b = renderRecite(state({ phase: 'error', error: err, source: 'due' }), c);
+    Array.from(b.querySelectorAll('button')).find((x) => x.textContent === 'Try again')!.click();
+    expect(c.onRetry).toHaveBeenLastCalledWith({ kind: 'due' });
+    expect(c.onControl).not.toHaveBeenCalled();
+  });
+
+  it('hands-free: Stop in the error phase leaves the screen', () => {
+    const c = cbs();
+    const root = renderHandsFree(state({ mode: 'handsfree', phase: 'error', error: { code: 'x', message: 'Mic failed' } }), c);
+    const stop = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Stop')!;
+    stop.click();
+    expect(c.onExit).toHaveBeenCalled();
+    expect(c.onControl).not.toHaveBeenCalled();
+  });
+
+  it('progress reads "Card 1 of 1", never "0 done, 1 to go"', () => {
+    const one = renderRecite(state({ source: 'due', done: 0, remaining: 0 }), cbs());
+    expect(text(one)).toContain('Card 1 of 1');
+    expect(text(one)).not.toContain('to go');
+    const two = renderHandsFree(state({ mode: 'handsfree', source: 'due', done: 1, remaining: 2 }), cbs());
+    expect(text(two.querySelector('.sm-handsfree-progress')!)).toBe('Card 2 of 4');
+  });
+
+  it('listening shows a visible Listening label beside Stop; the heard line hides once scored', () => {
+    const live = renderRecite(state({ phase: 'listening' }), cbs());
+    expect(text(live.querySelector('.sm-recite-talk-row .sm-recite-listening')!)).toBe('Listening…');
+    expect(live.querySelector('.sm-recite-talk-on')).not.toBeNull();
+    const done = renderRecite({ ...scored, heard: ['in', 'the'] }, cbs());
+    expect(done.querySelector('.sm-recite-heard')).toBeNull();
+  });
+
+  it('puts a space before the (missed) and (close) tags in the text', () => {
+    const root = renderRecite(scored, cbs());
+    const diff = root.querySelector('.sm-recite-diff')!;
+    expect(text(diff)).toContain('beginning (missed)');
+    expect(text(diff)).toContain('the (close)');
+  });
+});

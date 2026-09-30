@@ -36,6 +36,7 @@ import { renderManagePassages } from './ui/managePassagesView';
 import { renderSettings } from './ui/settingsView';
 import { createReciteView } from './ui/reciteView';
 import { createHandsFreeView } from './ui/handsFreeView';
+import { startReciteRun } from './ui/activities';
 import { call } from './ui/rpc';
 import { pickFlowTarget } from './ui/suggest';
 import { INITIAL_NAV, navReduce, sameView } from './ui/state';
@@ -249,10 +250,16 @@ function sendRecite(action: ReciteAction): void {
   });
 }
 
+function retryRecite(source: { kind: 'passage'; passageId: number } | { kind: 'due' }): void {
+  const current = reciteState;
+  if (current === null) return;
+  void startReciteRun(host, source, current.mode);
+}
+
 function leaveRecite(): void {
   const current = reciteState;
   // Leaving mid-run ends it, so a hands-free loop does not keep listening to nobody.
-  if (current !== null && current.phase !== 'summary' && current.phase !== 'done') {
+  if (current !== null && current.phase !== 'summary' && current.phase !== 'done' && current.phase !== 'error') {
     void host.request({ type: 'reciteControl', reciteId: current.reciteId, action: 'stop' });
   }
   host.go({ type: 'reciteEnded' });
@@ -263,7 +270,7 @@ function mountRecite(state: ReciteStateView): void {
   const screen =
     state.mode === 'handsfree'
       ? createHandsFreeView(state, { onControl: sendRecite, onExit: leaveRecite })
-      : createReciteView(state, { onControl: sendRecite, onExit: leaveRecite, now: () => host.now() });
+      : createReciteView(state, { onControl: sendRecite, onExit: leaveRecite, now: () => host.now(), onRetry: retryRecite });
   reciteScreen = screen;
   clear(main);
   main.appendChild(screen.element);
@@ -514,7 +521,7 @@ void bible
 void host
   .request({ type: 'getReciteState' })
   .then((reply) => {
-    if (reply.ok && reply.data !== null && reply.data.phase !== 'summary' && reply.data.phase !== 'done') {
+    if (reply.ok && reply.data !== null && reply.data.phase !== 'summary' && reply.data.phase !== 'done' && reply.data.phase !== 'error') {
       nav = navReduce(nav, { type: 'reciteStarted', reciteId: reply.data.reciteId, mode: reply.data.mode });
     }
   })

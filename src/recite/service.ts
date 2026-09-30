@@ -151,7 +151,7 @@ export class ReciteService {
     const active = this.loop;
     if (active) {
       const v = active.view();
-      const finished = v.phase === 'done' || v.phase === 'error';
+      const finished = v.phase === 'done' || v.phase === 'error' || v.phase === 'summary';
       const replaceable = finished || (v.phase === 'paused' && req.mode === 'tap' && req.source.kind === 'passage');
       if (!replaceable) return v;
       await this.stopLoop();
@@ -169,6 +169,9 @@ export class ReciteService {
     if (req.source.kind === 'passage') {
       first = await this.o.store.getPassage(req.source.passageId);
       if (!first) throw new Error('That passage is no longer in your plan.');
+      if (kitFor(await this.languageOf(first)) === null) {
+        throw new Error(unavailableMessage({ ...avail, state: 'unsupported-language' }));
+      }
     }
 
     const reciteId = `recite-${++this.counter}`;
@@ -197,7 +200,13 @@ export class ReciteService {
         const hit = await store.nextDueRecite(scope, now, exclude);
         if (!hit) return null;
         const due = await store.reciteDueCount(scope, now);
-        return this.toLoopCard(hit.card, hit.passage, Math.max(0, due - exclude.length - 1));
+        // `due` still counts excluded passages that remain due (skipped ones); count only those.
+        let excludedDue = 0;
+        for (const id of exclude) {
+          const c = await store.getCard(id, 'recite');
+          if (c && (c.dueAt === null || c.dueAt <= now)) excludedDue++;
+        }
+        return this.toLoopCard(hit.card, hit.passage, Math.max(0, due - excludedDue - 1));
       },
       record: async (card, g, startedAt) => {
         const rec = await this.o.recordAndSchedule({
@@ -218,7 +227,7 @@ export class ReciteService {
         return { level: rec.level, nextDueAt: rec.nextDueAt, passageWellLearned: rec.passageWellLearned };
       },
       emit: (s) => {
-        this.last = s;
+        this.last = this.sanitized(s);
         this.o.push(s);
       },
     };
@@ -244,13 +253,24 @@ export class ReciteService {
     const loop = this.loop;
     this.loop = null;
     if (loop) {
-      this.last = loop.view();
+      this.last = this.sanitized(loop.view());
       await loop.dispose();
     }
   }
 
+  /** Privacy: a finished or failed run keeps no heard words or per-word result. */
+  private sanitized(s: ReciteStateView): ReciteStateView {
+    if (s.phase !== 'done' && s.phase !== 'error' && s.phase !== 'summary') return s;
+    return { ...s, heard: [], result: null, verses: null };
+  }
+
+  private async languageOf(passage: Passage): Promise<string> {
+    // 'und' (undetermined) has no kit, so an unknown module is unsupported rather than English.
+    return (await this.o.bibleModuleLanguage(passage.moduleId)) ?? 'und';
+  }
+
   private async toLoopCard(card: Card, passage: Passage, remaining: number): Promise<LoopCard> {
-    const language = (await this.o.bibleModuleLanguage(passage.moduleId)) ?? 'en';
+    const language = await this.languageOf(passage);
     const verses = await this.o.loadVerses(passage);
     const context = this.o.contextWords ? await this.o.contextWords(passage) : [];
     return {

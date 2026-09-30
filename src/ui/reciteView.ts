@@ -24,6 +24,8 @@ export interface ReciteCallbacks {
   onControl(action: ReciteAction): void;
   /** Leaves the screen (breadcrumb, and "Done" on the summary). */
   onExit(): void;
+  /** Starts the same recitation again after an error (a new run, same source). Omitted: falls back to a `listen` control. */
+  onRetry?(source: { kind: 'passage'; passageId: number } | { kind: 'due' }): void;
   /** Wall clock for "next due"; defaults to `Date.now`. */
   now?: () => number;
 }
@@ -96,7 +98,8 @@ export function renderDiff(state: ReciteStateView, result: ReciteResultView): HT
     items.push(
       el('span', { class: `sm-recite-word sm-recite-${w.verdict}`, attrs: { 'data-verdict': w.verdict } }, [
         text,
-        label ? el('span', { class: 'sm-recite-tag', text: ` (${label})` }) : null,
+        label ? ' ' : null,
+        label ? el('span', { class: 'sm-recite-tag', text: `(${label})` }) : null,
         w.verdict === 'near' && w.heard ? el('span', { class: 'sm-sr-only', text: ` heard ${w.heard}` }) : null,
       ]),
       ' ',
@@ -130,6 +133,11 @@ function renderResult(state: ReciteStateView, result: ReciteResultView, cb: Reci
       }),
     ]),
   ]);
+}
+
+/** "Card 2 of 5" style progress for a due-queue run (never "0 done, 1 to go"). */
+export function progressText(state: ReciteStateView): string {
+  return `Card ${state.done + 1} of ${state.done + state.remaining + 1}`;
 }
 
 function talkButton(phase: LoopPhase, cb: ReciteCallbacks): HTMLButtonElement | null {
@@ -178,6 +186,16 @@ export function createReciteView(initial: ReciteStateView, cb: ReciteCallbacks):
     }
   });
 
+  function retry(): void {
+    if (!cb.onRetry) {
+      cb.onControl('listen');
+      return;
+    }
+    if (state.source === 'due') cb.onRetry({ kind: 'due' });
+    else if (state.passageId !== null) cb.onRetry({ kind: 'passage', passageId: state.passageId });
+    else cb.onExit();
+  }
+
   let lastAnnounced = '';
   function draw(): void {
     root.setAttribute('data-phase', state.phase);
@@ -191,16 +209,23 @@ export function createReciteView(initial: ReciteStateView, cb: ReciteCallbacks):
 
     replace(body, [
       el('h2', { class: 'sm-recite-ref', text: state.reference }),
-      state.source === 'due' && state.done + state.remaining > 0
-        ? el('p', { class: 'sm-hint', text: `${state.done} done, ${state.remaining} to go` })
+      state.source === 'due' && state.passageId !== null
+        ? el('p', { class: 'sm-hint', text: progressText(state) })
         : null,
       state.error ? errorBanner(state.error.message) : null,
       state.phase === 'error' && !state.error ? errorBanner('Something went wrong.') : null,
       showVerses
         ? el('p', { class: 'sm-recite-hint-text' }, [state.verses!.flatMap((v) => v.words).join(' ')])
         : null,
-      talk ? el('div', { class: 'sm-recite-talk-row' }, [talk]) : null,
-      state.phase === 'listening' || state.phase === 'hinting' || heardText
+      talk
+        ? el('div', { class: 'sm-recite-talk-row' }, [
+            talk,
+            state.phase === 'listening'
+              ? el('span', { class: 'sm-recite-listening', text: 'Listening…' })
+              : null,
+          ])
+        : null,
+      !state.result && (state.phase === 'listening' || state.phase === 'hinting' || heardText)
         ? el('p', { class: 'sm-recite-heard', attrs: { 'aria-label': 'Words heard so far' } }, [
             heardText || (state.phase === 'listening' ? 'Listening…' : ''),
           ])
@@ -213,7 +238,7 @@ export function createReciteView(initial: ReciteStateView, cb: ReciteCallbacks):
       state.result ? renderResult(state, state.result, cb) : null,
       state.phase === 'error'
         ? el('div', { class: 'sm-exercise-actions' }, [
-            button('Try again', () => cb.onControl('listen'), { class: 'sm-btn' }),
+            button('Try again', () => retry(), { class: 'sm-btn' }),
             button('Back', () => cb.onExit(), { class: 'sm-btn sm-btn-quiet' }),
           ])
         : null,

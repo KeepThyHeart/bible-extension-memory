@@ -90,6 +90,9 @@ export function resetModuleCache(): void {
   modules = null;
 }
 
+/** Modules whose language the host may not report but which are known to be English. */
+const WELL_KNOWN_ENGLISH = new Set(['KJV', 'WEB']);
+
 /** Language tag of a Bible module (by abbreviation or id); undefined when unknown. */
 export async function moduleLanguage(api: ModuleHost, moduleId: string): Promise<string | undefined> {
   if (!modules) {
@@ -100,11 +103,13 @@ export async function moduleLanguage(api: ModuleHost, moduleId: string): Promise
       modules.set(m.id, m.language);
     }
   }
-  return modules.get(moduleId);
+  const lang = modules.get(moduleId);
+  if (lang) return lang;
+  return WELL_KNOWN_ENGLISH.has(moduleId.toUpperCase()) ? 'en' : undefined;
 }
 
-/** The language kit for a module, or null (unsupported language). Unknown language falls back to English. */
+/** The language kit for a module, or null (unsupported language). An unknown language is unsupported (never silently English). */
 export async function moduleKit(api: ModuleHost, moduleId: string): Promise<ILanguageKit | null> {
   const lang = await moduleLanguage(api, moduleId);
-  return kitFor(lang ?? 'en');
+  return lang ? kitFor(lang) : null;
 }

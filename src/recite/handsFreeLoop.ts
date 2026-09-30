@@ -113,11 +113,14 @@ export class HandsFreeLoop {
   private heardTexts: string[] = [];
   private result: ReciteResultView | null = null;
   private startedAt = 0;
+  private lastLanguage = 'en';
   private engineId: string | null = null;
   private modelId: string | null = null;
 
   private listenId: string | null = null;
   private hintReq = 0;
+  /** A repeat asked for while a listen is open: spoken after the in-flight utterance returns. */
+  private repeatReq = false;
   private hintCount = 0;
   private stall = 0;
   private noSpeech = 0;
@@ -188,6 +191,8 @@ export class HandsFreeLoop {
         if (s === 'ready') {
           this.step = 'listen';
           this.interrupt();
+        } else if (s === 'paused') {
+          this.resume();
         } else if (s === 'listen' && !handsFree && this.heardTexts.length > 0) {
           this.step = 'score';
           this.interrupt();
@@ -197,7 +202,9 @@ export class HandsFreeLoop {
       case 'hint': {
         if (s === 'listen' || s === 'ready' || s === 'announce') {
           this.hintReq = this.ladder();
-          if (s !== 'announce') this.interrupt();
+          // Mid-listen: keep the session open; the driver speaks it after the
+          // in-flight utterance returns, so nothing the user said is dropped.
+          if (s === 'ready') this.interrupt();
         }
         return;
       }
@@ -205,7 +212,9 @@ export class HandsFreeLoop {
         if (s === 'feedback') {
           this.feedbackSpoken = false;
           this.interrupt();
-        } else if (handsFree && (s === 'listen' || s === 'announce' || s === 'ready')) {
+        } else if (handsFree && s === 'listen') {
+          this.repeatReq = true;
+        } else if (handsFree && (s === 'announce' || s === 'ready')) {
           this.step = 'announce';
           this.interrupt();
         }
@@ -248,17 +257,15 @@ export class HandsFreeLoop {
         return;
       }
       case 'resume': {
-        if (s === 'paused') {
-          this.step = !this.card || this.result ? 'fetch' : handsFree ? 'announce' : 'ready';
-          this.interrupt();
-        }
+        if (s === 'paused') this.resume();
         return;
       }
       case 'stop': {
         if (s === 'summary') return;
-        // Tap-to-talk: Stop while words were heard means "I'm finished speaking".
-        if (!handsFree && s === 'listen' && this.heardTexts.length > 0) {
-          this.step = 'score';
+        // Tap-to-talk: Stop while words were heard means "I'm finished speaking";
+        // before any word was heard it just cancels the listen.
+        if (!handsFree && s === 'listen') {
+          this.step = this.heardTexts.length > 0 ? 'score' : 'ready';
           this.interrupt();
           return;
         }
@@ -268,6 +275,13 @@ export class HandsFreeLoop {
         return;
       }
     }
+  }
+
+  private resume(): void {
+    this.noSpeech = 0;
+    const handsFree = this.deps.mode === 'handsfree';
+    this.step = !this.card || this.result ? 'fetch' : handsFree ? 'announce' : 'listen';
+    this.interrupt();
   }
 
   /** Invalidate whatever the driver is awaiting and make it re-dispatch. */
@@ -360,6 +374,7 @@ export class HandsFreeLoop {
       return;
     }
     this.card = card;
+    this.lastLanguage = card.language;
     this.kit = kit;
     this.words = expectedFor(card.verses).words;
     this.resetCard();
@@ -372,18 +387,25 @@ export class HandsFreeLoop {
       this.step = 'fetch';
       return;
     }
+    await this.sayPrompt(gen, true);
+    if (this.stale(gen)) return;
+    await this.earcon('listen');
+    if (this.stale(gen)) return;
+    this.step = 'listen';
+  }
+
+  /** The reference (and opening words, when configured), spoken. */
+  private async sayPrompt(gen: number, first: boolean): Promise<void> {
+    const c = this.card;
+    if (!c) return;
     this.setPhase('announcing', `Recite ${c.reference}`);
     await this.say(c.spokenReference, c.language);
     if (this.stale(gen)) return;
     if (this.deps.settings().promptStyle === 'reference+opening') {
       const idx = this.indexRange(0, LOOP.openingWords);
-      for (const i of idx) this.hinted.add(i);
+      if (first) for (const i of idx) this.hinted.add(i);
       await this.say(this.quote(idx), c.language);
-      if (this.stale(gen)) return;
     }
-    await this.earcon('listen');
-    if (this.stale(gen)) return;
-    this.step = 'listen';
   }
 
   private async doReady(gen: number): Promise<void> {
@@ -410,6 +432,12 @@ export class HandsFreeLoop {
       this.hintReq = 0;
       await this.giveHint(n, gen);
       if (this.stale(gen)) return;
+    }
+    if (this.repeatReq) {
+      this.repeatReq = false;
+      await this.sayPrompt(gen, false);
+      if (this.stale(gen)) return;
+      this.setPhase('listening', 'Listening');
     }
     if (!this.listenId) {
       this.setPhase('listening', 'Listening');
@@ -478,9 +506,8 @@ export class HandsFreeLoop {
   private async onSpeech(ws: RecognizedWord[], gen: number): Promise<void> {
     const cursor = this.cursor as ReciteCursor;
     const c = this.card as LoopCard;
-    const ev = cursor.push(ws);
+    const ev = cursor.push(ws, { commands: this.deps.settings().voiceCommands });
     if (ev.kind === 'command') {
-      if (!this.deps.settings().voiceCommands) return;
       this.onCommand(ev.command);
       return;
     }
@@ -699,15 +726,18 @@ export class HandsFreeLoop {
   private async doSummary(gen: number): Promise<void> {
     await this.closeListen();
     if (this.stale(gen)) return;
-    const nothingDue = this.done === 0 && this.skipped === 0;
+    const nothingDue = this.done === 0 && this.skipped === 0 && this.deps.source === 'due';
     const text =
       this.done > 0
         ? `All done. ${this.done} ${this.done === 1 ? 'passage' : 'passages'}, average ${Math.round((this.scoreSum / this.done) * 100)} percent.`
         : nothingDue
           ? 'Nothing is due to recite right now.'
           : 'All done.';
+    const language = this.card ? this.card.language : this.lastLanguage;
+    // Privacy: drop the card, heard words and result before the final summary.
+    this.clearCard();
     this.setPhase('summary', text);
-    await this.say(text, this.card ? this.card.language : 'en');
+    await this.say(text, language);
     if (this.stale(gen)) return;
     await this.earcon('done');
     if (this.stale(gen)) return;
@@ -774,6 +804,7 @@ export class HandsFreeLoop {
     this.stall = 0;
     this.noSpeech = 0;
     this.lostCount = 0;
+    this.repeatReq = false;
     this.feedbackSpoken = false;
     this.startedAt = this.deps.now();
     this.error = null;
@@ -798,6 +829,10 @@ export class HandsFreeLoop {
 
   private fail(code: string, message: string): void {
     this.error = { code, message };
+    // Privacy: nothing heard survives a failed run.
+    this.heardTexts = [];
+    this.result = null;
+    this.cursor = null;
     this.phase = 'error';
     this.message = message;
     this.step = 'end';

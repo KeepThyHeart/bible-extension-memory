@@ -9,7 +9,7 @@ import type { LoopCard, LoopDeps } from '../src/recite/handsFreeLoop';
 import type { GradedRecitation } from '../src/recite/grade';
 import { ReciteService } from '../src/recite/service';
 import type { ReciteStoreAdapter } from '../src/recite/service';
-import { probeSpeech, resetProbeCache } from '../src/recite/speechAvailability';
+import { moduleKit, moduleLanguage, probeSpeech, resetModuleCache, resetProbeCache } from '../src/recite/speechAvailability';
 
 // -- fixtures -------------------------------------------------------------------
 
@@ -36,6 +36,13 @@ function loopCard(id: number, remaining = 0): LoopCard {
     contextWords: [],
     remaining,
   };
+}
+
+/** The last view that carried a result (the loop clears its card before the summary). */
+function scored(s: { views: ReciteStateView[] }): ReciteStateView {
+  const v = [...s.views].reverse().find((x) => x.result !== null);
+  if (!v) throw new Error('no scored view');
+  return v;
 }
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -191,7 +198,7 @@ describe('hands-free loop', () => {
     expect(s.recorded).toHaveLength(1);
     expect(s.recorded[0].g.attempt.score).toBe(1);
     expect(s.view().done).toBe(1);
-    expect(s.view().result?.level).toBe(3);
+    expect(scored(s).result?.level).toBe(3);
     expect(s.api.starts[0].language).toBe('en-US');
     expect(s.api.starts[0].maxDurationMs).toBe(30000 + 600 * 25);
     // The bias never lists the passage in order.
@@ -205,7 +212,7 @@ describe('hands-free loop', () => {
     expect(spoken.some((t) => /^\d+ percent\. You missed: shepherd\.$/.test(t))).toBe(true);
     expect(spoken).toContain(VERSES.map((v) => v.words.join(' ')).join(' '));
     expect(s.api.earcons).toContain('miss');
-    expect(s.view().result?.missedQuote).toEqual(['shepherd']);
+    expect(scored(s).result?.missedQuote).toEqual(['shepherd']);
   });
 
   it('readBack off (brief feedback) does not read the passage', async () => {
@@ -220,7 +227,7 @@ describe('hands-free loop', () => {
     const spoken = s.api.spoken.map((x) => x.text);
     expect(spoken[1]).toBe('The LORD is');
     expect(s.recorded[0].g.detail.verdicts.slice(0, 3)).toBe('hhh');
-    expect(s.view().result?.score).toBeLessThan(1);
+    expect(scored(s).result?.score).toBeLessThan(1);
   });
 
   it('shows verses only after scoring', async () => {
@@ -229,7 +236,7 @@ describe('hands-free loop', () => {
     const beforeResult = s.views.filter((v) => v.result === null);
     expect(beforeResult.length).toBeGreaterThan(0);
     for (const v of beforeResult) expect(v.verses).toBeNull();
-    expect(s.view().verses).toEqual(VERSES);
+    expect(scored(s).verses).toEqual(VERSES);
   });
 
   it('nothing due: says so and finishes', async () => {
@@ -277,7 +284,7 @@ describe('tap mode', () => {
     expect(s.recorded).toHaveLength(1);
   });
 
-  it('Stop with words heard scores what was said; Stop with nothing ends the session', async () => {
+  it('Stop with words heard scores what was said; Stop with nothing heard goes back to ready', async () => {
     const { fn, gate } = makeGate();
     const api = new FakeSpeechApi({ script: [{ say: V1 }], gate: fn });
     const held = gate.hold('nextUtterance', 1); // hold the second pull, after V1 was heard
@@ -295,8 +302,22 @@ describe('tap mode', () => {
     const t = setup({ mode: 'tap' });
     await until(() => t.view().phase === 'ready');
     t.act('stop');
-    await until(() => t.view().phase === 'done');
+    await until(() => t.view().phase === 'done'); // Stop outside a listen still ends the run
     expect(t.recorded).toHaveLength(0);
+
+    // Stop after Talk but before any word: back to ready, listen closed, Talk works again.
+    const g2 = makeGate();
+    const held2 = g2.gate.hold('nextUtterance');
+    const u = setup({ mode: 'tap', api: new FakeSpeechApi({ script: [{ say: FULL }], gate: g2.fn }) });
+    await until(() => u.view().phase === 'ready');
+    u.act('listen');
+    await held2.reached;
+    u.act('stop');
+    held2.release();
+    await until(() => u.view().phase === 'ready' && u.stops.length === 1);
+    expect(u.view().phase).not.toBe('summary');
+    u.act('listen');
+    await until(() => u.view().phase === 'feedback');
   });
 
   it('again after feedback discards heard and hints and waits for Talk', async () => {
@@ -387,7 +408,7 @@ describe('derails', () => {
     const s = setup({ script: [{ say: 'hint' }, { say: FULL }, { silence: true }] });
     await until(() => s.view().phase === 'done');
     expect(s.api.spoken.map((x) => x.text)).toContain('The');
-    expect(s.api.starts.length).toBe(3); // listen, re-listen after the hint, command window
+    expect(s.api.starts.length).toBe(2); // one listen kept open across the hint, plus the command window
     expect(s.recorded[0].g.detail.verdicts[0]).toBe('h');
   });
 
@@ -444,7 +465,7 @@ describe('controls', () => {
 
   it('again hands-free discards heard and hints and re-announces', async () => {
     const { fn, gate } = makeGate();
-    const api = new FakeSpeechApi({ script: [{ say: GARBAGE }, { say: FULL }, { silence: true }], gate: fn });
+    const api = new FakeSpeechApi({ script: [{ say: GARBAGE }, { say: GARBAGE }, { say: FULL }, { silence: true }], gate: fn });
     const heldListen = gate.hold('nextUtterance', 1);
     const heldSpeak = gate.hold('speak', 1); // let the announcement through, hold the hint
     const s = setup({ api, settings: { voiceCommands: false } });
@@ -585,7 +606,7 @@ describe('race rules', () => {
       },
     });
     await until(() => s.view().phase === 'done');
-    expect(s.view().result?.score).toBe(1);
+    expect(s.recorded[0].g.attempt.score).toBe(1);
   });
 
   it('5. a card removed mid-run is reported and the loop continues', async () => {
@@ -700,7 +721,7 @@ function card(id: number): Card {
   return { id: id * 10, passageId: id, rung: 'recite' } as unknown as Card;
 }
 
-function makeService(o: { speech?: FakeSpeechApi | null; script?: ScriptItem[] } = {}) {
+function makeService(o: { speech?: FakeSpeechApi | null; script?: ScriptItem[]; language?: () => Promise<string | undefined>; moduleId?: string; dueCount?: number; dueAt?: (pid: number) => number | null } = {}) {
   const settings = new Map<string, string>();
   const details: { attemptId: number; cardId: number; detail: unknown }[] = [];
   const attempts: unknown[] = [];
@@ -708,11 +729,12 @@ function makeService(o: { speech?: FakeSpeechApi | null; script?: ScriptItem[] }
   let deleted = 0;
   const speech = o.speech === null ? undefined : (o.speech ?? new FakeSpeechApi({ script: o.script ?? [] }));
   const store: ReciteStoreAdapter = {
-    getPassage: async (id) => (id === 1 || id === 2 ? passage(id) : undefined),
-    getCard: async (pid) => card(pid),
+    getPassage: async (id) => (id === 1 || id === 2 ? { ...passage(id), moduleId: o.moduleId ?? 'KJV' } : undefined),
+    getCard: async (pid) => ({ ...card(pid), dueAt: o.dueAt ? o.dueAt(pid) : null }) as Card,
     getScope: async () => ({ kind: 'all' }),
-    nextDueRecite: async (_s, _n, ex) => (ex.includes(1) ? undefined : { card: card(1), passage: passage(1) }),
-    reciteDueCount: async () => 1,
+    nextDueRecite: async (_s, _n, ex) =>
+      ex.includes(1) ? (o.dueCount && !ex.includes(2) ? { card: card(2), passage: passage(2) } : undefined) : { card: card(1), passage: passage(1) },
+    reciteDueCount: async () => o.dueCount ?? 1,
     recordReciteDetail: async (attemptId, cardId, _at, detail) => void details.push({ attemptId, cardId, detail }),
     deleteReciteHistory: async () => void deleted++,
     getSetting: async (k) => settings.get(k),
@@ -723,7 +745,7 @@ function makeService(o: { speech?: FakeSpeechApi | null; script?: ScriptItem[] }
     speech,
     now: () => 10_000,
     rng: () => 0.5,
-    bibleModuleLanguage: async () => 'en',
+    bibleModuleLanguage: o.language ?? (async () => 'en'),
     loadVerses: async () => VERSES,
     recordAndSchedule: async (a) => {
       attempts.push(a);
@@ -761,7 +783,7 @@ describe('ReciteService', () => {
     expect(t.details[0].attemptId).toBe(77);
     expect(t.details[0].cardId).toBe(10);
     expect(t.pushed.length).toBeGreaterThan(3);
-    expect(t.svc.get()?.result?.level).toBe(2);
+    expect(t.pushed.find((p) => p.result !== null)?.result?.level).toBe(2);
     await t.svc.dispose();
   });
 
@@ -850,5 +872,128 @@ describe('probeSpeech', () => {
     const r = await probeSpeech({ speech: un }, 1, { force: true });
     expect(r.state).toBe('unavailable');
     expect(r.handsFree).toBe(false);
+  });
+});
+
+// -- review fixes ------------------------------------------------------------------
+
+describe('review fixes', () => {
+  it('2. tap: Talk while paused after two no-speech timeouts resumes listening', async () => {
+    const s = setup({ mode: 'tap', script: [{ silence: true }, { silence: true }, { say: FULL }], settings: { voiceCommands: false } });
+    await until(() => s.view().phase === 'ready');
+    s.act('listen');
+    await until(() => s.view().phase === 'paused', 'paused');
+    s.act('listen');
+    await until(() => s.view().phase === 'feedback');
+    expect(s.recorded).toHaveLength(1);
+  });
+
+  it('3. error phase: loop stays finished (controls no-ops) and the error view keeps no heard text', async () => {
+    const s = setup({ mode: 'tap', script: [{ say: V1 }, { error: 'mic-busy' }] });
+    await until(() => s.view().phase === 'ready');
+    s.act('listen');
+    await until(() => s.view().phase === 'error');
+    expect(s.view().heard).toEqual([]);
+    expect(s.view().result).toBeNull();
+    expect(s.view().passageId).toBe(1); // kept so the view can retry the same passage
+    expect(s.act('stop').phase).toBe('error');
+    expect(s.act('listen').phase).toBe('error');
+  });
+
+  it('6. the summary for a single passage run is not "Nothing is due"', async () => {
+    const s = setup({ mode: 'handsfree', cards: [] });
+    await until(() => s.view().phase === 'done');
+    expect(s.view().message).toBe('Nothing is due to recite right now.');
+    const t = makeService();
+    await t.svc.start({ source: { kind: 'passage', passageId: 1 }, mode: 'tap' });
+    await until(() => t.svc.get()?.phase === 'ready');
+    t.svc.control({ reciteId: 'recite-1', action: 'skip' });
+    await until(() => t.svc.get()?.phase === 'done');
+    expect(t.svc.get()?.message).toBe('All done.');
+    await t.svc.dispose();
+  });
+
+  it('7. hint mid-listen keeps the session open and does not drop the in-flight utterance', async () => {
+    const { fn, gate } = makeGate();
+    const rest = V2.split(' ').slice(3).join(' ');
+    const api = new FakeSpeechApi({ script: [{ say: V1 }, { say: 'he maketh me' }, { say: rest }, { silence: true }], gate: fn });
+    const held = gate.hold('nextUtterance', 1); // the second pull is in flight
+    const s = setup({ api, settings: { voiceCommands: false } });
+    await held.reached;
+    s.act('hint');
+    s.act('repeat');
+    expect(s.stops).toHaveLength(0); // the listen was not closed
+    held.release();
+    await until(() => s.view().phase === 'done');
+    // The in-flight utterance (V2) was heard and scored; no second listen was opened for the hint.
+    expect(s.recorded).toHaveLength(1);
+    expect(s.api.starts).toHaveLength(1); // one listen, kept open across the hint and repeat
+    expect(s.recorded[0].g.detail.verdicts).toContain('h'); // the queued hint was given
+    const spoken = s.api.spoken.map((x) => x.text);
+    expect(spoken.filter((t) => t === 'Psalm chapter 23, verses 1 to 2')).toHaveLength(2); // announce + repeat
+  });
+
+  it('9. a summary phase is replaceable by a new start, and so is a stopped-then-left run', async () => {
+    const t = makeService({ script: [] });
+    const a = await t.svc.start({ source: { kind: 'passage', passageId: 1 }, mode: 'tap' });
+    await until(() => t.svc.get()?.phase === 'ready');
+    t.svc.control({ reciteId: a.reciteId, action: 'stop' });
+    expect(t.svc.get()?.phase).toBe('summary');
+    const b = await t.svc.start({ source: { kind: 'passage', passageId: 2 }, mode: 'tap' });
+    expect(b.reciteId).not.toBe(a.reciteId);
+    await t.svc.dispose();
+  });
+
+  it('4. privacy: nothing heard stays readable once the run is done or failed', async () => {
+    const SENT = 'zebrafish';
+    const t = makeService({ script: [{ say: FULL.replace('my shepherd', `my ${SENT} shepherd`) }, { silence: true }] });
+    await t.svc.start({ source: { kind: 'due' }, mode: 'handsfree' });
+    await until(() => t.svc.get()?.phase === 'done');
+    const v = t.svc.get();
+    expect(v?.heard).toEqual([]);
+    expect(v?.result).toBeNull();
+    expect(v?.verses).toBeNull();
+    expect(JSON.stringify(v)).not.toContain(SENT);
+    await t.svc.dispose(); // last is sanitized as well
+    expect(JSON.stringify(t.svc.get())).not.toContain(SENT);
+    const last = t.pushed[t.pushed.length - 1];
+    expect(last.heard).toEqual([]);
+
+    const e = makeService({ script: [{ say: FULL.replace('my shepherd', `my ${SENT} shepherd`).split(' ').slice(0, 6).join(' ') }, { error: 'engine' }] });
+    await e.svc.start({ source: { kind: 'due' }, mode: 'handsfree' });
+    await until(() => e.svc.get()?.phase === 'error');
+    expect(e.svc.get()?.heard).toEqual([]);
+    await e.svc.dispose();
+    expect(e.svc.get()?.heard).toEqual([]);
+    expect(e.svc.get()?.result).toBeNull();
+  });
+
+  it('5. the "to go" count only subtracts excluded passages that are still due', async () => {
+    const t = makeService({ script: [{ say: FULL }, { silence: true }], dueCount: 2, dueAt: (pid) => (pid === 1 ? 999_999 : null) });
+    await t.svc.start({ source: { kind: 'due' }, mode: 'tap' });
+    await until(() => t.svc.get()?.phase === 'ready');
+    expect(t.svc.get()?.remaining).toBe(1); // two due now, this is one of them
+    t.svc.control({ reciteId: 'recite-1', action: 'listen' });
+    await until(() => t.svc.get()?.phase === 'feedback');
+    t.svc.control({ reciteId: 'recite-1', action: 'next' });
+    await until(() => t.svc.get()?.passageId === 2);
+    // Passage 1 was scored and is no longer due, so it is not subtracted again.
+    expect(t.svc.get()?.remaining).toBe(1);
+    await t.svc.dispose();
+  });
+
+  it('10. an unknown module language is unsupported, not English', async () => {
+    const t = makeService({ language: async () => undefined, moduleId: 'XYZ' });
+    await expect(t.svc.start({ source: { kind: 'passage', passageId: 1 }, mode: 'tap' })).rejects.toThrow(/language/);
+    resetProbeCache();
+    const ok = makeService({ language: async () => 'en-GB' });
+    await ok.svc.start({ source: { kind: 'passage', passageId: 1 }, mode: 'tap' });
+    await ok.svc.dispose();
+    const md = { bible: { listModules: async () => [{ id: 'kjv', abbreviation: 'KJV' }, { id: 'zz', abbreviation: 'ZZ' }] } };
+    resetModuleCache();
+    expect(await moduleLanguage(md, 'KJV')).toBe('en');
+    expect(await moduleKit(md, 'KJV')).not.toBeNull();
+    expect(await moduleKit(md, 'ZZ')).toBeNull();
+    resetModuleCache();
   });
 });
