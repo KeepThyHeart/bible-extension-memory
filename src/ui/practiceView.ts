@@ -282,7 +282,15 @@ export class PracticeView {
 
   private renderHead(): void {
     const step = this.session.step;
-    const reference = this.context?.reference ?? '';
+    // `refmatch`/`refprovide`: the passage's own reference IS the answer being
+    // asked for, so it must not appear as the page heading. The activity's
+    // label stands in for it - still one honest crumb, just not one that
+    // leaks the answer. (The context is still loaded: `refProvideAnswer`
+    // needs it to grade and to show the answer after the step.)
+    const reference =
+      this.session.rung === 'refprovide' || this.session.rung === 'refmatch'
+        ? RUNG_LABEL[this.session.rung]
+        : (this.context?.reference ?? '');
 
     replace(this.headEl, [
       breadcrumb({

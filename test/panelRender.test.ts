@@ -4504,3 +4504,47 @@ describe('Manage Passages lists table', () => {
     expect(confirm.disabled).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reference activities hide the reference in the heading
+// ---------------------------------------------------------------------------
+
+describe('the practice heading during reference activities', () => {
+  const johnContext = (): PassageContext => ({
+    passageId: 2,
+    reference: 'John 3:16',
+    before: [],
+    verses: [JOHN_3_16],
+    after: [],
+  });
+
+  it('shows the activity label, not the passage reference, during refmatch', async () => {
+    const step: RefMatchStep = {
+      kind: 'refmatch',
+      verse: JOHN_3_16,
+      candidates: [
+        { id: 'a', reference: 'John 3:16' },
+        { id: 'b', reference: 'Mark 1:1' },
+      ],
+      tier: 0,
+      stepNumber: 1,
+      totalSteps: 3,
+    };
+    const practice = await mountPractice(step, { rung: 'refmatch' }, { ok: true, data: johnContext() });
+    const crumb = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
+    expect(crumb.textContent).toBe(RUNG_LABEL.refmatch);
+    expect(practice.root.querySelector('.sm-crumbs')!.textContent).not.toContain('John 3:16');
+  });
+
+  it('shows the activity label, not the passage reference, during refprovide', async () => {
+    const practice = await mountPractice(null, { rung: 'refprovide', tier: 0, tiers: 1 }, { ok: true, data: johnContext() });
+    const crumb = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
+    expect(crumb.textContent).toBe(RUNG_LABEL.refprovide);
+    expect(practice.root.querySelector('.sm-crumbs')!.textContent).not.toContain('John 3:16');
+  });
+
+  it('still shows the reference for a blanks session', async () => {
+    const practice = await mountPractice(null, { rung: 'blanks' }, { ok: true, data: johnContext() });
+    expect(practice.root.querySelector('.sm-crumb-current')!.textContent).toBe('John 3:16');
+  });
+});
