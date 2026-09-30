@@ -19,7 +19,7 @@
 
 import type { ListSummary, Passage, PassageView, PlanView } from '../types';
 import { append, button, el, focusQuietly, replace } from './dom';
-import { emptyState, errorBanner, listSelector, modal, toolbar } from './components';
+import { breadcrumb, emptyState, errorBanner, listSelector, modal } from './components';
 import type { ListSelectorOption } from './components';
 import { countLabel } from './format';
 import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
@@ -30,7 +30,7 @@ import type { PanelHost } from './host';
 export function renderManagePassages(host: PanelHost, plan: PlanView): HTMLElement {
   const root = el('section', { class: 'sm-screen sm-screen-manage-passages' });
 
-  root.appendChild(toolbar({ title: 'Manage Passages', onBack: () => host.go({ type: 'goPlan' }) }));
+  root.appendChild(breadcrumb({ crumbs: [{ label: 'Home', onClick: () => host.go({ type: 'goPlan' }) }, { label: 'Manage Passages' }] }));
 
   root.appendChild(renderListManagement(host, plan));
 

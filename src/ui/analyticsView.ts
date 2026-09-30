@@ -24,7 +24,7 @@
  */
 
 import type { AnalyticsView } from '../types';
-import { emptyState, statTile, toolbar } from './components';
+import { breadcrumb, emptyState, statTile } from './components';
 import { button, el } from './dom';
 import { RUNG_LABEL, calendarWeeks, countLabel, formatShortDate, weekdayLabel } from './format';
 import type { PanelHost } from './host';
@@ -33,7 +33,7 @@ export function renderAnalytics(host: PanelHost, analytics: AnalyticsView): HTML
   const root = el('section', { class: 'sm-screen sm-screen-analytics' });
 
   root.appendChild(
-    toolbar({ title: 'Analytics', onBack: () => host.go({ type: 'goPlan' }) }),
+    breadcrumb({ crumbs: [{ label: 'Home', onClick: () => host.go({ type: 'goPlan' }) }, { label: 'Analytics' }] }),
   );
 
   if (analytics.passagesWellLearned === 0 && analytics.streakDays === 0) {

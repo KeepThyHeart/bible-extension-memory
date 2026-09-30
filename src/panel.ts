@@ -149,7 +149,7 @@ const host: PanelHost = {
     // owns its own DOM and its own lifetime - so the mount happens here.
     practice?.destroy();
     clear(main);
-    practice = new PracticeView(host, session);
+    practice = new PracticeView(host, session, sessionFlow);
     practice.mount(main);
     announce('');
   },
@@ -239,7 +239,7 @@ async function buildScreen(): Promise<HTMLElement> {
         return planReply.ok ? renderPlan(host, planReply.data) : failure(planReply.error);
       }
       if (!settingsReply.ok) return failure(settingsReply.error);
-      return renderPassageScreen(host, passageReply.data, settingsReply.data.defaultAnswerMode);
+      return renderPassageScreen(host, passageReply.data, settingsReply.data.defaultAnswerMode, nav.view.rung);
     }
 
     case 'analytics': {

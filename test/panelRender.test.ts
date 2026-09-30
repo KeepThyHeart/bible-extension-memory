@@ -75,7 +75,7 @@ import type {
   VerseText,
 } from '../src/types';
 import type { PanelHost } from '../src/ui/host';
-import type { NavAction } from '../src/ui/state';
+import type { Flow, NavAction } from '../src/ui/state';
 import { WordMeasurer, blankWidthFor, estimateTextWidth, MIN_BLANK_WIDTH_PX } from '../src/ui/measure';
 import { renderPassage } from '../src/ui/scripture';
 import { PracticeView } from '../src/ui/practiceView';
@@ -464,6 +464,7 @@ function emptyPlan(): PlanView {
     scope: 'all',
     scopeVerseCount: 0,
     referenceActivitiesUnlocked: false,
+    sortOrder: 'bible',
     passages: [],
     totalDue: 0,
     defaultAnswerMode: 'firstLetter',
@@ -551,6 +552,7 @@ class TestHost implements PanelHost {
   readonly navigations: NavAction[] = [];
   readonly sessionsStarted: { passageId: number; rung?: Rung; restart?: boolean; tier?: number }[] = [];
   readonly openedVerses: number[] = [];
+  readonly flowsStarted: { flow: Flow; exclude?: ReadonlySet<number> }[] = [];
   reloads = 0;
   activeReference: string | null = null;
   readonly measurer: WordMeasurer;
@@ -586,8 +588,13 @@ class TestHost implements PanelHost {
     this.reloads += 1;
   }
 
-  async startSession(passageId: number, rung?: Rung, restart?: boolean, tier?: number): Promise<void> {
+  async startSession(passageId: number, rung?: Rung, restart?: boolean, tier?: number, flow?: Flow): Promise<void> {
+    void flow;
     this.sessionsStarted.push({ passageId, rung, restart, tier });
+  }
+
+  async startFlow(flow: Flow, exclude?: ReadonlySet<number>): Promise<void> {
+    this.flowsStarted.push({ flow, exclude });
   }
 
   openInBible(verseId: number): void {
@@ -778,8 +785,8 @@ describe('scripture rendering', () => {
 // ---------------------------------------------------------------------------
 
 describe('the working verse among its context', () => {
-  it('shows the reference in the toolbar as soon as context arrives, before any answer is submitted', async () => {
-    // The toolbar title comes from `PassageContext.reference` alone, fetched
+  it('shows the reference in the breadcrumb as soon as context arrives, before any answer is submitted', async () => {
+    // The breadcrumb's current crumb comes from `PassageContext.reference` alone, fetched
     // separately from the step and deliberately not awaited before the first
     // paint (see `practiceView.ts#loadContext`'s own header). Before this,
     // nothing re-rendered the head once that fetch resolved, so the title
@@ -788,7 +795,7 @@ describe('the working verse among its context', () => {
     // being prominent on this screen.
     const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
 
-    const title = practice.root.querySelector<HTMLElement>('.sm-toolbar-title')!;
+    const title = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
     expect(title.textContent).toBe('Psalm 1:2-3');
   });
 
@@ -1393,16 +1400,13 @@ describe('accessibility', () => {
     expect(label).toBe('Missing word 1 of 13');
   });
 
-  it('gives the home screen\'s activity picker a real accessible name', () => {
-    // The add-passage field's own label test moved with the form itself to
-    // Manage Passages (T11); this is the home screen's own labelled control
-    // now - the `<select>` T10 added beside the Practice button.
+  it('gives the home screen\'s sort select and menu trigger real accessible names', () => {
     const plan: PlanView = { ...emptyPlan(), passages: [passageViewFixture()] };
     const root = renderPlan(host, plan);
     container.appendChild(root);
 
-    const select = root.querySelector<HTMLSelectElement>('.sm-activity-picker')!;
-    expect(select.getAttribute('aria-label')).toBeTruthy();
+    expect(root.querySelector<HTMLSelectElement>('#sm-passage-sort')!.getAttribute('aria-label')).toBeTruthy();
+    expect(root.querySelector<HTMLElement>('.sm-menu-btn')!.getAttribute('aria-label')).toBeTruthy();
   });
 
   it('marks the working verse in the accessibility tree, not only in colour', async () => {
@@ -1428,6 +1432,7 @@ describe('the plan row', () => {
       scope: 'all',
       scopeVerseCount: pv.passage.verseCount,
       referenceActivitiesUnlocked: false,
+      sortOrder: 'bible',
       totalDue: 0,
       defaultAnswerMode: 'firstLetter',
       passages: [pv],
@@ -1512,31 +1517,53 @@ describe('the passage screen', () => {
     expect(host.sessionsStarted).toEqual([{ passageId: pv.passage.id, rung: 'blanks', restart: undefined }]);
   });
 
-  it('draws one aligned row for every applicable activity, and none for one that does not apply', () => {
+  it('draws one tab for every applicable activity, and explains the one that does not apply', () => {
     const pv = passageViewFixture();
     const root = renderPassageScreen(host, pv, 'firstLetter');
     container.appendChild(root);
 
-    const rows = root.querySelectorAll('.sm-activity-row');
-    // Four rungs in the fixture; `refmatch` is inapplicable but still shown,
-    // with an explanation rather than being hidden outright.
-    expect(rows.length).toBe(4);
+    const tabButtons = Array.from(root.querySelectorAll('[role="tab"]'));
+    // Four rungs in the fixture; `refmatch` is inapplicable, so it gets a
+    // line of explanation rather than a tab.
+    expect(tabButtons.map((t) => t.textContent)).toEqual([
+      RUNG_LABEL.ordering,
+      RUNG_LABEL.blanks,
+      RUNG_LABEL.firstletters,
+    ]);
     expect(spokenText(root)).toContain('Matching a reference needs 25 verses in this list');
   });
 
-  it('badges the suggested activity, and only that one', () => {
-    // The fixture's `blanks` is due; everything else is not. `suggestedRungFor`
-    // is exercised for real here, not stubbed.
+  it('selects the suggested activity\'s tab by default, and badges it in the panel', () => {
+    // The fixture's `blanks` is due; everything else is not.
     const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
     container.appendChild(root);
 
-    const badges = Array.from(root.querySelectorAll('.sm-badge-suggested'));
-    expect(badges.length).toBe(1);
-    const row = badges[0]!.closest('.sm-activity-row')!;
-    expect(spokenText(row)).toContain('Fill in the blanks');
+    const selected = root.querySelector('[role="tab"][aria-selected="true"]')!;
+    expect(selected.textContent).toBe(RUNG_LABEL.blanks);
+    expect(root.querySelectorAll('.sm-badge-suggested').length).toBe(1);
   });
 
-  it('shows an untried activity with empty level boxes and no "Not tried yet" text', () => {
+  it('shows the tab named by the remembered rung, and no suggested badge on another tab', () => {
+    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter', 'ordering');
+    container.appendChild(root);
+
+    expect(root.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe(RUNG_LABEL.ordering);
+    expect(root.querySelectorAll('.sm-badge-suggested').length).toBe(0);
+  });
+
+  it('selecting another tab goes to the passage with that rung', () => {
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    const tab = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(
+      (t) => t.textContent === RUNG_LABEL.firstletters,
+    )!;
+    tab.click();
+    expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: pv.passage.id, rung: 'firstletters' });
+  });
+
+  it('shows an untried activity with empty level boxes and "Not tried yet"', () => {
     const pv = passageViewFixture({
       rungs: [
         rungView({ rung: 'ordering', level: 0, attempts: 0 }),
@@ -1545,40 +1572,34 @@ describe('the passage screen', () => {
         rungView({ rung: 'firstletters', level: 0, attempts: 0 }),
       ],
     });
-    const root = renderPassageScreen(host, pv, 'firstLetter');
+    const root = renderPassageScreen(host, pv, 'firstLetter', 'ordering');
     container.appendChild(root);
 
-    expect(spokenText(root)).not.toContain('Not tried yet');
-    const orderingRow = Array.from(root.querySelectorAll('.sm-activity-row')).find((r) =>
-      spokenText(r).includes('Put in order'),
-    )!;
-    expect(orderingRow.querySelectorAll('.sm-level-box-yellow, .sm-level-box-green').length).toBe(0);
+    const panel = root.querySelector('.sm-activity-card')!;
+    expect(spokenText(panel)).toContain('Not tried yet');
+    expect(panel.querySelectorAll('.sm-level-box-yellow, .sm-level-box-green').length).toBe(0);
   });
 
-  it('shows a compact progress indicator for a paused activity instead of a sentence, and no Restart/Resume buttons', () => {
+  it('shows a paused activity\'s progress with Restart and Resume, and tier pips', () => {
     const pv = passageViewFixture({
       rungs: [
-        rungView({ rung: 'ordering', level: 2, resume: { stepsDone: 2, totalSteps: 5 } }),
+        rungView({ rung: 'ordering', level: 2, tiers: 2, tiersPassed: 1, resume: { stepsDone: 2, totalSteps: 5 } }),
         rungView({ rung: 'refmatch', applicable: false }),
         rungView({ rung: 'blanks' }),
         rungView({ rung: 'firstletters' }),
       ],
     });
-    const root = renderPassageScreen(host, pv, 'firstLetter');
+    const root = renderPassageScreen(host, pv, 'firstLetter', 'ordering');
     container.appendChild(root);
 
-    const orderingRow = Array.from(root.querySelectorAll('.sm-activity-row')).find((r) =>
-      spokenText(r).includes('Put in order'),
-    )!;
-    // Resume/restart choices moved to the activity screen - this table only
-    // ever has one clickable target per row, the row itself.
-    expect(orderingRow.tagName).toBe('BUTTON');
-    expect(orderingRow.querySelectorAll('button').length).toBe(0);
-    expect(spokenText(orderingRow)).not.toContain('Paused at verse');
-    expect(orderingRow.querySelector('.sm-activity-row-progress')?.textContent).toBe('2/5');
+    const panel = root.querySelector<HTMLElement>('.sm-activity-card')!;
+    expect(panel.querySelector('.sm-activity-row-progress')?.textContent).toBe('2/5');
+    expect(panel.querySelector('.sm-tier-pips')).not.toBeNull();
+    const labels = Array.from(panel.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toEqual(['Restart', 'Resume']);
   });
 
-  it('starts (and thereby resumes) the right activity by clicking anywhere on its row', () => {
+  it('Resume starts without restart; Restart asks for one', () => {
     const pv = passageViewFixture({
       rungs: [
         rungView({ rung: 'ordering', resume: { stepsDone: 1, totalSteps: 5 } }),
@@ -1587,32 +1608,32 @@ describe('the passage screen', () => {
         rungView({ rung: 'firstletters' }),
       ],
     });
-    const root = renderPassageScreen(host, pv, 'firstLetter');
+    const root = renderPassageScreen(host, pv, 'firstLetter', 'ordering');
     container.appendChild(root);
 
-    const orderingRow = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-activity-row')).find((r) =>
-      spokenText(r).includes('Put in order'),
-    )!;
-    orderingRow.click();
+    const byLabel = (label: string) =>
+      Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-activity-card button')).find((b) => b.textContent === label)!;
+    byLabel('Resume').click();
+    byLabel('Restart').click();
 
-    // No `restart` - `host.startSession` without it already resumes a
-    // paused activity on its own.
-    expect(host.sessionsStarted).toEqual([{ passageId: pv.passage.id, rung: 'ordering', restart: undefined }]);
+    expect(host.sessionsStarted).toEqual([
+      { passageId: pv.passage.id, rung: 'ordering', restart: undefined },
+      { passageId: pv.passage.id, rung: 'ordering', restart: true },
+    ]);
   });
 
-  it('an inapplicable activity is present, visually distinct, and not clickable', () => {
+  it('an inapplicable activity has no tab and no button, only its explanation', () => {
     const pv = passageViewFixture(); // refmatch is inapplicable in the default fixture.
     const root = renderPassageScreen(host, pv, 'firstLetter');
     container.appendChild(root);
 
-    const refmatchRow = Array.from(root.querySelectorAll('.sm-activity-row')).find((r) =>
-      spokenText(r).includes('Match the reference'),
+    const tabLabels = Array.from(root.querySelectorAll('[role="tab"]')).map((t) => t.textContent);
+    expect(tabLabels).not.toContain(RUNG_LABEL.refmatch);
+    const blurb = Array.from(root.querySelectorAll('.sm-activity-blurb')).find((b) =>
+      (b.textContent ?? '').includes(RUNG_LABEL.refmatch),
     )!;
-    expect(refmatchRow.tagName).not.toBe('BUTTON');
-    expect(refmatchRow.classList.contains('sm-activity-row-na')).toBe(true);
-
-    refmatchRow.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(host.sessionsStarted).toEqual([]);
+    expect(blurb).toBeTruthy();
+    expect(blurb.querySelector('button')).toBeNull();
   });
 
   it('names the 25-verse gate for a gated refprovide row too', () => {
@@ -2272,50 +2293,55 @@ describe('the home screen: title, Practice, the activity picker and the shuffle'
     { id: 2, name: 'Romans Road', passageCount: 0, verseCount: 0 },
   ];
 
-  it('titles the screen literally "Bible Memory", never the current list\'s name', () => {
-    const plan = planWithPassages([], { collectionName: 'My plan' });
-    const root = renderPlan(host, plan);
-    expect(root.querySelector('h1')!.textContent).toBe('Bible Memory');
+  it('has a Home breadcrumb as its only crumb, with the hamburger menu beside it', () => {
+    const root = renderPlan(host, planWithPassages([passageViewFixture()]));
+    const h1 = root.querySelector('h1')!;
+    expect(h1.textContent).toBe('Home');
+    expect(h1.getAttribute('aria-current')).toBe('page');
+    expect(root.querySelectorAll('.sm-crumb').length).toBe(0);
+    expect(root.querySelector('.sm-menu')).not.toBeNull();
   });
 
-  it('replaces the bordered Start practicing button with a chrome-free Practice control', () => {
-    const plan = planWithPassages([passageViewFixture()]);
-    const root = renderPlan(host, plan);
+  it('folds Manage Passages, Analytics and Settings into the menu, with no separate buttons left', () => {
+    const root = renderPlan(host, planWithPassages([passageViewFixture()]));
     container.appendChild(root);
 
-    const labels = Array.from(root.querySelectorAll('button')).map((b) => b.textContent);
-    expect(labels).not.toContain('Start practicing');
+    const items = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    expect(items.map((b) => b.textContent)).toEqual(['Manage Passages', 'Analytics', 'Settings']);
+    const outside = Array.from(root.querySelectorAll('button'))
+      .filter((b) => b.getAttribute('role') !== 'menuitem')
+      .map((b) => b.textContent);
+    expect(outside).not.toContain('Analytics');
+    expect(outside).not.toContain('Settings');
+    expect(outside).not.toContain('Manage Passages');
+    expect(outside).not.toContain('Practice');
+    expect(root.querySelector('.sm-manage-passages-link')).toBeNull();
 
-    const practiceButton = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Practice')!;
-    expect(practiceButton.tagName).toBe('BUTTON');
-    expect(practiceButton.className).not.toContain('sm-btn-primary');
-    expect(practiceButton.className).toContain('sm-btn-quiet');
-  });
-
-  it('offers the six activity choices in order, disabling the two reference activities while locked', () => {
-    const plan = planWithPassages([passageViewFixture()], {
-      referenceActivitiesUnlocked: false,
-      scopeVerseCount: 12,
-    });
-    const root = renderPlan(host, plan);
-    container.appendChild(root);
-
-    const select = root.querySelector<HTMLSelectElement>('.sm-activity-picker')!;
-    const options = Array.from(select.options);
-    expect(options.map((o) => o.textContent)).toEqual([
-      'Next steps',
-      'Match references',
-      'Put in order',
-      'Fill in the blanks',
-      'First letters',
-      'Provide reference',
+    items[0]!.click();
+    items[1]!.click();
+    items[2]!.click();
+    expect(host.navigations).toEqual([
+      { type: 'goManagePassages' },
+      { type: 'goAnalytics' },
+      { type: 'goSettings' },
     ]);
-    expect(options.find((o) => o.textContent === 'Match references')!.disabled).toBe(true);
-    expect(options.find((o) => o.textContent === 'Provide reference')!.disabled).toBe(true);
-    expect(options.find((o) => o.textContent === 'Put in order')!.disabled).toBe(false);
   });
 
-  it('shows a persistent hint naming the shortfall, with a working link to Manage Passages, while locked', () => {
+  it('opens and closes the menu from its trigger, and closes it on Escape', () => {
+    const root = renderPlan(host, planWithPassages([passageViewFixture()]));
+    container.appendChild(root);
+
+    const trigger = root.querySelector<HTMLButtonElement>('.sm-menu-btn')!;
+    const panel = root.querySelector<HTMLElement>('.sm-menu-panel')!;
+    expect(panel.hidden).toBe(true);
+    trigger.click();
+    expect(panel.hidden).toBe(false);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(panel.hidden).toBe(true);
+  });
+
+  it('draws six activity tiles in order, with the two reference tiles disabled while locked', () => {
     const plan = planWithPassages([passageViewFixture()], {
       referenceActivitiesUnlocked: false,
       scopeVerseCount: 12,
@@ -2323,18 +2349,43 @@ describe('the home screen: title, Practice, the activity picker and the shuffle'
     const root = renderPlan(host, plan);
     container.appendChild(root);
 
-    const hint = root.querySelector('.sm-reference-hint');
-    expect(hint).not.toBeNull();
-    // A `title` on a disabled `<option>` is not reliably shown, so the hint
-    // itself has to carry both numbers - what's needed and what's there.
-    expect(spokenText(hint!)).toContain('25');
-    expect(spokenText(hint!)).toContain('12');
-
-    hint!.querySelector<HTMLButtonElement>('button')!.click();
-    expect(host.navigations).toContainEqual({ type: 'goManagePassages' });
+    const tiles = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-tile-grid .sm-tile'));
+    expect(tiles.map((t) => t.querySelector('.sm-tile-title')!.textContent)).toEqual([
+      'Variety',
+      'Match References',
+      'Put in Order',
+      'Fill in the Blanks',
+      'First Letters',
+      'Provide Reference',
+    ]);
+    const byTitle = (title: string) =>
+      tiles.find((t) => t.querySelector('.sm-tile-title')!.textContent === title)!;
+    expect(byTitle('Match References').disabled).toBe(true);
+    expect(byTitle('Provide Reference').disabled).toBe(true);
+    expect(byTitle('Put in Order').disabled).toBe(false);
+    expect(root.querySelector('.sm-activity-picker')).toBeNull();
+    expect(Array.from(root.querySelectorAll('h2')).map((h) => h.textContent)).toContain('Practice by Activity');
   });
 
-  it('shows no hint once the reference activities are unlocked', () => {
+  it('shows the reference hint text on each locked tile, naming the shortfall', () => {
+    const plan = planWithPassages([passageViewFixture()], {
+      referenceActivitiesUnlocked: false,
+      scopeVerseCount: 12,
+    });
+    const root = renderPlan(host, plan);
+    container.appendChild(root);
+
+    const warnings = Array.from(root.querySelectorAll('.sm-tile-warning'));
+    expect(warnings.length).toBe(2);
+    for (const warning of warnings) {
+      expect(spokenText(warning)).toContain('25');
+      expect(spokenText(warning)).toContain('13 more to go (12 so far)');
+    }
+    // A warning is inside a tile button, so it never nests a button.
+    expect(root.querySelector('.sm-tile button')).toBeNull();
+  });
+
+  it('shows no locked warning once the reference activities are unlocked', () => {
     const plan = planWithPassages([passageViewFixture()], {
       referenceActivitiesUnlocked: true,
       scopeVerseCount: 30,
@@ -2343,107 +2394,106 @@ describe('the home screen: title, Practice, the activity picker and the shuffle'
     container.appendChild(root);
 
     expect(root.querySelector('.sm-reference-hint')).toBeNull();
+    expect(Array.from(root.querySelectorAll('.sm-tile-warning')).some((w) => spokenText(w).includes('25'))).toBe(false);
   });
 
-  it('shows the recommended target as "<reference> — <activity>", and Practice starts exactly that', () => {
-    const pv = passageViewFixture({
-      passage: passageFixture({ reference: 'Psalm 23:1-6' }),
-      rungs: [rungView({ rung: 'blanks', level: 1 })],
-    });
-    const plan = planWithPassages([pv]);
+  it('pressing a tile starts its flow through the host', () => {
+    const plan = planWithPassages([passageViewFixture()], { referenceActivitiesUnlocked: true });
     const root = renderPlan(host, plan);
     container.appendChild(root);
 
-    expect(spokenText(root.querySelector('.sm-practice-target')!)).toBe('Psalm 23:1-6 — Fill in the blanks');
-
-    const practiceButton = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Practice')!;
-    practiceButton.click();
-    expect(host.sessionsStarted).toEqual([{ passageId: pv.passage.id, rung: 'blanks', restart: undefined }]);
+    const tiles = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-tile'));
+    tiles[0]!.click();
+    tiles[3]!.click();
+    expect(host.flowsStarted.map((f) => f.flow)).toEqual([
+      { kind: 'variety' },
+      { kind: 'activity', rung: 'blanks' },
+    ]);
+    expect(host.sessionsStarted).toEqual([]);
   });
 
-  it('picking a specific activity with no applicable passage shows a readable message and starts nothing', () => {
-    // Only `ordering` is applicable on this passage - `blanks` never appears
-    // in its `rungs` at all, so the picker's `blanks` choice has nothing to
-    // offer.
+  it('disables a tile whose activity has no applicable passage, with a readable warning', () => {
+    // Only `ordering` is applicable on this passage.
     const pv = passageViewFixture({ rungs: [rungView({ rung: 'ordering', level: 1 })] });
     const plan = planWithPassages([pv], { referenceActivitiesUnlocked: true });
     const root = renderPlan(host, plan);
     container.appendChild(root);
 
-    const select = root.querySelector<HTMLSelectElement>('.sm-activity-picker')!;
-    select.value = 'blanks';
-    select.dispatchEvent(new Event('change'));
-
-    expect(spokenText(root.querySelector('.sm-practice-target')!)).toBe('Nothing to practise for Fill in the blanks yet.');
-
-    const practiceButton = Array.from(root.querySelectorAll('button')).find((b) => b.textContent === 'Practice')!;
-    practiceButton.click();
-    expect(host.sessionsStarted).toEqual([]);
-    expect(host.announcements).toContain('Nothing to practise for Fill in the blanks yet.');
+    const blanksTile = Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-tile')).find(
+      (t) => t.querySelector('.sm-tile-title')!.textContent === 'Fill in the Blanks',
+    )!;
+    expect(blanksTile.disabled).toBe(true);
+    expect(spokenText(blanksTile.querySelector('.sm-tile-warning')!)).toContain('Nothing to practise');
   });
 
-  it('shuffle repaints only the target line - the rest of the screen is untouched', () => {
-    const randomSpy = vi.spyOn(Math, 'random');
-    try {
-      const passageA = passageViewFixture({
-        passage: passageFixture({ id: 1, reference: 'Psalm 23:1-6' }),
-        rungs: [rungView({ rung: 'ordering', level: 1 })],
-      });
-      const passageB = passageViewFixture({
-        passage: passageFixture({ id: 2, reference: 'John 3:16' }),
-        rungs: [rungView({ rung: 'blanks', level: 1 })],
-      });
-      const plan = planWithPassages([passageA, passageB]);
+  it('lists passages in plan order for "bible" and by need for "need"', () => {
+    const fresh = passageViewFixture({
+      passage: passageFixture({ id: 1, reference: 'Genesis 1:1', addedAt: 1 }),
+      bestLevel: 3,
+      dueCount: 0,
+      rungs: [rungView({ rung: 'blanks', level: 3, dueAt: null })],
+    });
+    const needy = passageViewFixture({
+      passage: passageFixture({ id: 2, reference: 'John 3:16', addedAt: 2 }),
+      bestLevel: 0,
+      dueCount: 0,
+      rungs: [rungView({ rung: 'blanks', level: 0, attempts: 0, dueAt: null })],
+    });
+    const refs = (root: HTMLElement) =>
+      Array.from(root.querySelectorAll('.sm-row-ref')).map((n) => n.textContent);
 
-      // Neither target is due, so `pickShuffledTarget` draws uniformly from
-      // both with exactly one `rng()` call - a low draw picks the first.
-      randomSpy.mockReturnValue(0);
-      const root = renderPlan(host, plan);
-      container.appendChild(root);
-
-      const select = root.querySelector('.sm-activity-picker');
-      const targetSlot = root.querySelector('.sm-practice-target')!;
-      const before = spokenText(targetSlot);
-      expect(before).toContain('Psalm 23:1-6');
-
-      const shuffleButton = root.querySelector<HTMLButtonElement>('[aria-label="Shuffle suggestion"]')!;
-      shuffleButton.click();
-
-      // Same picker node still in the document - this was a targeted repaint,
-      // not a screen rebuild.
-      expect(root.querySelector('.sm-activity-picker')).toBe(select);
-      expect(root.querySelector('.sm-practice-target')).toBe(targetSlot);
-
-      const after = spokenText(targetSlot);
-      expect(after).toContain('John 3:16');
-      expect(after).not.toBe(before);
-    } finally {
-      randomSpy.mockRestore();
-    }
+    const bible = renderPlan(host, planWithPassages([fresh, needy], { sortOrder: 'bible' }));
+    expect(refs(bible)).toEqual(['Genesis 1:1', 'John 3:16']);
+    const need = renderPlan(host, planWithPassages([fresh, needy], { sortOrder: 'need' }));
+    expect(refs(need)).toEqual(['John 3:16', 'Genesis 1:1']);
   });
 
-  it('announces there is nothing else, rather than appearing broken, when only one target applies', () => {
-    const pv = passageViewFixture({ rungs: [rungView({ rung: 'ordering', level: 1 })] });
-    const plan = planWithPassages([pv]);
-    const root = renderPlan(host, plan);
+  it('headed "Practice by Passage", with a sort select reading the plan\'s sortOrder', () => {
+    const root = renderPlan(host, planWithPassages([passageViewFixture()], { sortOrder: 'need' }));
     container.appendChild(root);
 
-    const before = spokenText(root.querySelector('.sm-practice-target')!);
-    const shuffleButton = root.querySelector<HTMLButtonElement>('[aria-label="Shuffle suggestion"]')!;
-    shuffleButton.click();
-
-    expect(host.announcements).toContain('Nothing else to practise right now.');
-    expect(spokenText(root.querySelector('.sm-practice-target')!)).toBe(before);
+    expect(Array.from(root.querySelectorAll('h2')).map((h) => h.textContent)).toContain('Practice by Passage');
+    const select = root.querySelector<HTMLSelectElement>('#sm-passage-sort')!;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(['Bible order', 'Needs practice']);
+    expect(select.value).toBe('need');
   });
 
-  it('has no activity picker or shuffle on an empty plan, and the one-click add-and-start path still works', async () => {
+  it('persists a changed sort through setPassageSortOrder, then reloads', async () => {
+    host.handlers.setPassageSortOrder = () => ({ ok: true, data: {} });
+    const root = renderPlan(host, planWithPassages([passageViewFixture()]));
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('#sm-passage-sort')!;
+    select.value = 'need';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(host.requests).toContainEqual({ type: 'setPassageSortOrder', order: 'need' });
+    expect(host.reloads).toBe(1);
+  });
+
+  it('announces the error and does not reload when the sort cannot be saved', async () => {
+    host.handlers.setPassageSortOrder = () => ({ ok: false, error: 'nope' });
+    const root = renderPlan(host, planWithPassages([passageViewFixture()]));
+    container.appendChild(root);
+
+    const select = root.querySelector<HTMLSelectElement>('#sm-passage-sort')!;
+    select.value = 'need';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(host.announcements).toContain('nope');
+    expect(host.reloads).toBe(0);
+  });
+
+  it('has no tiles or sort on an empty plan, and the one-click add-and-start path still works', async () => {
     host.activeReference = 'John 3:16';
     host.handlers.addPassage = (req) => ({ ok: true, data: { passage: passageFixture({ reference: req.reference }) } });
     const root = renderPlan(host, emptyPlan());
     container.appendChild(root);
 
-    expect(root.querySelector('.sm-activity-picker')).toBeNull();
-    expect(root.querySelector('[aria-label="Shuffle suggestion"]')).toBeNull();
+    expect(root.querySelector('.sm-tile')).toBeNull();
+    expect(root.querySelector('#sm-passage-sort')).toBeNull();
 
     const addButton = Array.from(root.querySelectorAll('button')).find((b) =>
       (b.textContent ?? '').includes('Add John 3:16 and start'),
@@ -2454,6 +2504,7 @@ describe('the home screen: title, Practice, the activity picker and the shuffle'
     expect(host.requests).toContainEqual({ type: 'addPassage', reference: 'John 3:16' });
     expect(host.sessionsStarted.length).toBe(1);
   });
+
 
   it('shows no list selector for a single-list plan', () => {
     const plan = planWithPassages([passageViewFixture()]);
@@ -2502,15 +2553,6 @@ describe('the home screen: title, Practice, the activity picker and the shuffle'
     expect(root2.querySelector<HTMLSelectElement>('.sm-list-selector')!.value).toBe('all');
   });
 
-  it('navigates to Manage Passages from its link', () => {
-    const plan = planWithPassages([passageViewFixture()]);
-    const root = renderPlan(host, plan);
-    container.appendChild(root);
-
-    const link = root.querySelector<HTMLButtonElement>('.sm-manage-passages-link')!;
-    link.click();
-    expect(host.navigations).toContainEqual({ type: 'goManagePassages' });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2884,60 +2926,26 @@ describe('the Manage Passages screen', () => {
 // T12: the passage-overview grid's alignment and narrow-width behaviour
 // ---------------------------------------------------------------------------
 
-describe('the passage screen: activity table alignment', () => {
-  /** Every row - applicable or not - spans the whole grid as one child of the table. */
-  function tableRows(root: HTMLElement): HTMLElement[] {
-    const table = root.querySelector<HTMLElement>('.sm-activity-table')!;
-    return Array.from(table.children) as HTMLElement[];
-  }
-
-  it('is one grid container whose rows share the same fixed column template', () => {
+describe('the passage screen: the tab panel', () => {
+  it('is a tablist followed by one activity panel, not a grid of rows', () => {
     const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
     container.appendChild(root);
 
-    const table = root.querySelector<HTMLElement>('.sm-activity-table')!;
-    expect(table).toBeTruthy();
-
-    const rows = tableRows(root);
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      expect(row.classList.contains('sm-activity-row')).toBe(true);
-      // Every row - button or div - is a direct child of the one grid
-      // container, so a row's own column widths cannot drift from another
-      // row's: they all read the same rule.
-      expect(row.parentElement).toBe(table);
-    }
+    expect(root.querySelector('.sm-activity-table')).toBeNull();
+    expect(root.querySelectorAll('[role="tablist"]').length).toBe(1);
+    expect(root.querySelectorAll('.sm-activity-card').length).toBe(1);
   });
 
-  it('an applicable row is a real <button> with the play glyph as a decorative, non-nested span', () => {
-    const root = renderPassageScreen(host, passageViewFixture(), 'firstLetter');
+  it('puts the settings gear and Show in Bible in the breadcrumb actions', () => {
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
     container.appendChild(root);
 
-    const row = Array.from(root.querySelectorAll<HTMLElement>('.sm-activity-row')).find((r) =>
-      spokenText(r).includes('Fill in the blanks'),
-    )!;
-    expect(row.tagName).toBe('BUTTON');
-
-    // Never a <button> nested inside this row's own <button>.
-    expect(row.querySelectorAll('button').length).toBe(0);
-
-    const play = row.querySelector('.sm-activity-row-play')!;
-    expect(play.tagName).toBe('SPAN');
-    expect(play.getAttribute('aria-hidden')).toBe('true');
-  });
-
-  it('the docked narrow-width rule keeps the play target inside its own row', () => {
-    // jsdom does not lay out CSS Grid, so this asserts the stylesheet's
-    // *rule* text (`ALL_RULE_TEXTS`, captured once at load), not a computed
-    // position - the same discipline the rest of this file uses for
-    // width/box-model claims it cannot ask a layout engine to confirm.
-    const playRule = ALL_RULE_TEXTS.find(
-      (r) => r.includes('.sm-activity-row-play') && r.includes('grid-area'),
-    );
-    expect(playRule).toBeTruthy();
-    // The play target keeps a named grid area of its own inside the row,
-    // rather than being left to wrap onto a line with nothing else on it.
-    expect(playRule).toMatch(/grid-area:\s*play/);
+    const actions = root.querySelector('.sm-crumbs-actions')!;
+    expect(actions.querySelector('[aria-label="Passage settings"]')).not.toBeNull();
+    const show = Array.from(actions.querySelectorAll('button')).find((b) => b.textContent === 'Show in Bible')!;
+    show.click();
+    expect(host.openedVerses).toEqual([pv.passage.startVerseId]);
   });
 });
 
@@ -2946,15 +2954,16 @@ describe('the passage screen: activity table alignment', () => {
 // ---------------------------------------------------------------------------
 
 describe('the practice screen: activity tabs, shuffle, and tier display', () => {
+  // The tab strip is `components.ts#tabs()`, the same one the passage screen uses.
   /** The tab strip's own buttons, in document order. */
   function tabs(root: HTMLElement): HTMLButtonElement[] {
-    return Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-practice-tab'));
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-tabs [role="tab"]'));
   }
 
   it('renders one tab per applicable activity, and marks the current one - never with aria-current="step"', async () => {
     const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
 
-    const strip = practice.root.querySelector('.sm-practice-tabs')!;
+    const strip = practice.root.querySelector('.sm-tabs')!;
     expect(strip).toBeTruthy();
     expect(strip.getAttribute('role')).toBe('tablist');
 
@@ -2963,9 +2972,9 @@ describe('the practice screen: activity tabs, shuffle, and tier display', () => 
     expect(labels).toEqual([RUNG_LABEL.ordering, RUNG_LABEL.blanks, RUNG_LABEL.firstletters]);
 
     const current = tabs(practice.root).find((t) => t.textContent === RUNG_LABEL.blanks)!;
-    expect(current.getAttribute('aria-current')).toBe('true');
+    expect(current.getAttribute('aria-selected')).toBe('true');
     const others = tabs(practice.root).filter((t) => t !== current);
-    for (const other of others) expect(other.hasAttribute('aria-current')).toBe(false);
+    for (const other of others) expect(other.getAttribute('aria-selected')).toBe('false');
 
     // `aria-current="step"` is already this file's own word for the verse
     // being worked on inside the passage (see `workingVerse()` and the
@@ -2986,7 +2995,7 @@ describe('the practice screen: activity tabs, shuffle, and tier display', () => 
       { ok: true, data: singlePassageView },
     );
 
-    expect(practice.root.querySelector('.sm-practice-tabs')).toBeNull();
+    expect(practice.root.querySelector('.sm-tabs')).toBeNull();
   });
 
   it('clicking another tab ends the in-flight session via endSession BEFORE starting the next, and never resubmits with the old session id', async () => {
@@ -3103,7 +3112,7 @@ describe('the practice screen: activity tabs, shuffle, and tier display', () => 
     view = practice;
 
     // No tab strip yet - the fetch has not resolved.
-    expect(practice.root.querySelector('.sm-practice-tabs')).toBeNull();
+    expect(practice.root.querySelector('.sm-tabs')).toBeNull();
 
     const input = practice.root.querySelectorAll<HTMLInputElement>('.sm-blank')[0]!;
     input.value = 'his';
@@ -3114,7 +3123,7 @@ describe('the practice screen: activity tabs, shuffle, and tier display', () => 
 
     // The tab strip is now present, but `contextEl` was never rebuilt: the
     // very same input node still holds what the user typed.
-    expect(practice.root.querySelector('.sm-practice-tabs')).not.toBeNull();
+    expect(practice.root.querySelector('.sm-tabs')).not.toBeNull();
     const inputAfter = practice.root.querySelectorAll<HTMLInputElement>('.sm-blank')[0]!;
     expect(inputAfter).toBe(input);
     expect(inputAfter.value).toBe('his');
@@ -3761,7 +3770,7 @@ describe('refprovide - supply the reference from memory', () => {
     });
 
     const practice = await mountPractice(step, { rung: 'refprovide' }, { ok: true, data: johnContext() });
-    const metaBefore = practice.root.querySelector('.sm-toolbar-meta')!.textContent;
+    const metaBefore = practice.root.querySelector('.sm-crumbs-meta')!.textContent;
     const fillBefore = practice.root.querySelector<HTMLElement>('.sm-bar-fill')!.style.width;
 
     const input = refInput(practice.root);
@@ -3769,7 +3778,7 @@ describe('refprovide - supply the reference from memory', () => {
     practice.root.querySelector<HTMLButtonElement>('.sm-btn-primary')!.click();
     await settle();
 
-    expect(practice.root.querySelector('.sm-toolbar-meta')!.textContent).toBe(metaBefore);
+    expect(practice.root.querySelector('.sm-crumbs-meta')!.textContent).toBe(metaBefore);
     expect(practice.root.querySelector<HTMLElement>('.sm-bar-fill')!.style.width).toBe(fillBefore);
     // Still the refprovide exercise, not a summary or a different step.
     expect(refInput(practice.root)).not.toBeNull();
@@ -4269,5 +4278,110 @@ describe('the batch-add popup', () => {
 
     expect(popup()).toBeNull();
     expect(document.activeElement).toBe(link);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Navigation: breadcrumbs on every screen
+// ---------------------------------------------------------------------------
+
+describe('breadcrumbs replace the toolbar on every screen', () => {
+  function crumbLabels(root: HTMLElement): string[] {
+    return Array.from(root.querySelectorAll('.sm-crumb-item')).map((n) => n.textContent ?? '');
+  }
+
+  it('the passage screen shows Home > reference, and Home goes to the plan', () => {
+    const pv = passageViewFixture();
+    const root = renderPassageScreen(host, pv, 'firstLetter');
+    container.appendChild(root);
+
+    expect(crumbLabels(root)).toEqual(['Home', pv.passage.reference]);
+    expect(root.querySelector('.sm-toolbar')).toBeNull();
+    root.querySelector<HTMLButtonElement>('.sm-crumb')!.click();
+    expect(host.navigations).toContainEqual({ type: 'goPlan' });
+  });
+
+  it('settings, analytics and Manage Passages show Home > their name', () => {
+    const screens: [HTMLElement, string][] = [
+      [renderSettings(host, { defaultAnswerMode: 'firstLetter' }, emptyPlan()), 'Settings'],
+      [renderAnalytics(host, emptyAnalytics()), 'Analytics'],
+      [renderManagePassages(host, emptyPlan()), 'Manage Passages'],
+    ];
+    for (const [root, name] of screens) {
+      expect(crumbLabels(root)).toEqual(['Home', name]);
+      expect(root.querySelector('h1')!.textContent).toBe(name);
+      expect(root.querySelector('.sm-back')).toBeNull();
+    }
+  });
+
+  it('the practice screen shows Home > reference, and Home ends the session', async () => {
+    host.handlers.endSession = () => ({ ok: true, data: { summary: null } });
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+
+    expect(practice.root.querySelector('.sm-crumb-current')!.textContent).toBe('Psalm 1:2-3');
+    practice.root.querySelector<HTMLButtonElement>('.sm-crumb')!.click();
+    await settle();
+
+    expect(host.requests.some((r) => r.type === 'endSession')).toBe(true);
+    expect(host.navigations).toContainEqual({ type: 'sessionEnded' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Navigation: the practice screen's Next skip button
+// ---------------------------------------------------------------------------
+
+describe('the practice screen: Next skips within a tile flow', () => {
+  async function mountWithFlow(flow: Flow): Promise<PracticeView> {
+    host.handlers.getContext = () => ({ ok: true, data: psalmContext() });
+    host.handlers.getPassageView = () => ({ ok: true, data: passageViewFixture() });
+    host.handlers.endSession = () => ({ ok: true, data: { summary: null } });
+    const practice = new PracticeView(host, session(blanksStep(PSALM_1_2, BLANKED), { passageId: 7, rung: 'blanks' }), flow);
+    practice.mount(container);
+    await settle();
+    view = practice;
+    return practice;
+  }
+
+  const nextButton = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll<HTMLButtonElement>('.sm-crumbs-actions button')).find((b) => b.textContent === 'Next');
+
+  it('is hidden for a passage flow, and for a view built without a flow', async () => {
+    const withFlow = await mountWithFlow({ kind: 'passage', passageId: 7 });
+    expect(nextButton(withFlow.root)).toBeUndefined();
+
+    const bare = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+    expect(nextButton(bare.root)).toBeUndefined();
+  });
+
+  it('is shown for variety and activity flows', async () => {
+    const variety = await mountWithFlow({ kind: 'variety' });
+    expect(nextButton(variety.root)).toBeDefined();
+    variety.destroy();
+
+    const activity = await mountWithFlow({ kind: 'activity', rung: 'blanks' });
+    expect(nextButton(activity.root)).toBeDefined();
+  });
+
+  it('ends the session, then restarts the same flow excluding the passage just left', async () => {
+    const order: string[] = [];
+    const practice = await mountWithFlow({ kind: 'activity', rung: 'blanks' });
+    host.handlers.endSession = () => {
+      order.push('end');
+      return { ok: true, data: { summary: null } };
+    };
+    const originalStartFlow = host.startFlow.bind(host);
+    host.startFlow = async (flow, exclude) => {
+      order.push('flow');
+      return originalStartFlow(flow, exclude);
+    };
+
+    nextButton(practice.root)!.click();
+    await settle();
+
+    expect(order).toEqual(['end', 'flow']);
+    expect(host.flowsStarted).toHaveLength(1);
+    expect(host.flowsStarted[0]!.flow).toEqual({ kind: 'activity', rung: 'blanks' });
+    expect([...host.flowsStarted[0]!.exclude!]).toEqual([7]);
   });
 });

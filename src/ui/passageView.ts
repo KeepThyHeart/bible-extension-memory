@@ -29,13 +29,14 @@
 import type { AnswerMode, PassageView, Rung, RungView } from '../types';
 import { button, el, replace } from './dom';
 import {
+  breadcrumb,
   errorBanner,
   inapplicabilityNote,
   levelBoxes,
   modal,
   suggestedBadge,
+  tabs,
   tierPips,
-  toolbar,
 } from './components';
 import { RUNG_LABEL, countLabel, formatDue, formatScore, inLadderOrder, isDue, suggestedRungFor } from './format';
 import type { PanelHost } from './host';
@@ -51,6 +52,12 @@ export function renderPassageScreen(
   host: PanelHost,
   pv: PassageView,
   defaultAnswerMode: AnswerMode,
+  /**
+   * Which activity tab is showing: `state.ts#View`'s `rung`; `null` means the
+   * suggested one (`suggestedRungFor`). Defaults to `null` for callers with no
+   * view state.
+   */
+  viewRung: Rung | null = null,
 ): HTMLElement {
   const now = host.now();
   const root = el('section', { class: 'sm-screen sm-screen-passage' });
@@ -61,9 +68,8 @@ export function renderPassageScreen(
   });
 
   root.appendChild(
-    toolbar({
-      title: pv.passage.reference,
-      onBack: () => host.go({ type: 'goPlan' }),
+    breadcrumb({
+      crumbs: [{ label: 'Home', onClick: () => host.go({ type: 'goPlan' }) }, { label: pv.passage.reference }],
       actions: [
         button('Show in Bible', () => host.openInBible(pv.passage.startVerseId), {
           class: 'sm-btn sm-btn-quiet sm-btn-small',
@@ -87,13 +93,32 @@ export function renderPassageScreen(
   const practiceLink = renderPracticeLink(host, pv, suggested);
   if (practiceLink) root.appendChild(practiceLink);
 
-  root.appendChild(
-    el(
-      'div',
-      { class: 'sm-activity-table' },
-      inLadderOrder(pv.rungs).map((rv) => renderActivityRow(host, pv, rv, rv.rung === suggested, now)),
-    ),
-  );
+  const applicable = inLadderOrder(pv.rungs).filter((rv) => rv.applicable);
+  if (applicable.length > 0) {
+    // An explicit tab wins; otherwise the suggested one. A stale `viewRung`
+    // naming a rung that is no longer applicable falls back to the first tab.
+    const active = applicable.find((rv) => rv.rung === (viewRung ?? suggested)) ?? applicable[0]!;
+
+    root.appendChild(
+      tabs({
+        items: applicable.map((rv) => ({ value: rv.rung, label: RUNG_LABEL[rv.rung] })),
+        selected: active.rung,
+        onSelect: (rung) => host.go({ type: 'goPassage', passageId: pv.passage.id, rung }),
+        ariaLabel: 'Activity',
+      }),
+    );
+
+    root.appendChild(el('div', { class: 'sm-activities' }, [renderActivityDetail(host, pv, active, suggested === active.rung, now)]));
+  }
+
+  for (const rv of inLadderOrder(pv.rungs).filter((r) => !r.applicable)) {
+    root.appendChild(
+      el('p', { class: 'sm-activity-blurb' }, [
+        el('strong', { text: RUNG_LABEL[rv.rung] }),
+        `: ${inapplicabilityNote(rv.rung)}`,
+      ]),
+    );
+  }
 
   return root;
 }
@@ -123,18 +148,13 @@ function renderPracticeLink(host: PanelHost, pv: PassageView, suggested: Rung | 
 }
 
 // ---------------------------------------------------------------------------
-// The activity table
+// The selected activity's panel
 // ---------------------------------------------------------------------------
 
 /**
- * What the schedule/progress cell reads.
- *
- * An untried activity (`attempts === 0`) shows nothing here at all - the
- * empty level boxes already say "not tried yet"; repeating that in words was
- * the exact text a review round asked to drop. A paused activity shows a
- * compact `stepsDone/totalSteps` indicator instead of a sentence, since this
- * is a single grid cell, not a paragraph. Anything else falls back to the
- * due date, plus the last score when one exists.
+ * What the progress cell reads: nothing for an untried activity (the empty
+ * level boxes already say so), `stepsDone/totalSteps` when paused, otherwise
+ * the due date plus the last score when one exists.
  */
 function progressText(rv: RungView, now: number): string {
   if (rv.resume) return `${rv.resume.stepsDone}/${rv.resume.totalSteps}`;
@@ -145,62 +165,62 @@ function progressText(rv: RungView, now: number): string {
 }
 
 /**
- * One row of the aligned activity table.
- *
- * An inapplicable activity is still shown - a ladder with a missing step
- * reads like a bug - but as a plain `<div>`, not a `<button>`: there is
- * nothing to start, and it must not be reachable by click or by Tab as if
- * there were. `inapplicabilityNote` supplies the reason inline, which for
- * the two reference activities now names the verse-count gate
- * (`ladder.ts#MIN_VERSES_FOR_REFERENCE_ACTIVITIES`).
- *
- * An applicable activity is one `<button>` spanning the whole grid row, its
- * accessible name set explicitly via `aria-label` rather than left to
- * accumulate from its children - the tier pips and level boxes are their own
- * `role="img"` elements with their own labels, and letting all of that
- * concatenate into the button's name would read as noise to a screen reader
- * rather than as "Practice Fill in the blanks".
+ * The selected tab's activity: name, suggested badge, tier pips, level boxes,
+ * progress text / schedule, and the Practice (or Restart + Resume) actions.
+ * Only applicable activities get a tab; inapplicable ones are explained in
+ * one line each below the panel.
  */
-function renderActivityRow(
+function renderActivityDetail(
   host: PanelHost,
   pv: PassageView,
   rv: RungView,
   isSuggested: boolean,
   now: number,
 ): HTMLElement {
-  if (!rv.applicable) {
-    return el('div', { class: 'sm-activity-row sm-activity-row-na' }, [
-      el('span', { class: 'sm-activity-row-name', text: RUNG_LABEL[rv.rung] }),
-      el('span', { class: 'sm-activity-row-note', text: inapplicabilityNote(rv.rung) }),
-    ]);
-  }
-
   const due = isDue(rv, now);
-  const classes = ['sm-activity-row'];
-  if (due) classes.push('sm-activity-row-due');
+  const classes = ['sm-activity-card'];
+  if (due) classes.push('sm-activity-due');
 
-  const nameCell = el('span', { class: 'sm-activity-row-name' }, [
-    RUNG_LABEL[rv.rung],
+  const header = el('div', { class: 'sm-activity-card-head' }, [
     isSuggested ? suggestedBadge() : null,
+    tierPips(rv.tiersPassed, rv.tiers),
   ]);
 
-  const label = rv.resume ? `Resume ${RUNG_LABEL[rv.rung]}` : `Practice ${RUNG_LABEL[rv.rung]}`;
+  const level = el('div', { class: 'sm-activity-level-row' }, [
+    levelBoxes(rv.level, { due }),
+    el('span', { class: 'sm-activity-level-text', text: rv.level === 0 ? 'Not tried yet' : `${rv.level}/5` }),
+  ]);
 
-  return el(
-    'button',
-    {
-      class: classes.join(' '),
-      attrs: { type: 'button', 'aria-label': label },
-      on: { click: () => void host.startSession(pv.passage.id, rv.rung) },
-    },
-    [
-      nameCell,
-      tierPips(rv.tiersPassed, rv.tiers),
-      levelBoxes(rv.level, { due }),
-      el('span', { class: 'sm-activity-row-progress', text: progressText(rv, now) }),
-      el('span', { class: 'sm-activity-row-play', attrs: { 'aria-hidden': 'true' }, text: '▶' }),
-    ],
-  );
+  const progress = progressText(rv, now);
+  const status = rv.resume
+    ? el('p', {
+        class: 'sm-activity-paused',
+        text: `Paused at verse ${rv.resume.stepsDone} of ${rv.resume.totalSteps}`,
+      })
+    : null;
+
+  const actions = rv.resume
+    ? el('div', { class: 'sm-activity-actions' }, [
+        button('Restart', () => void host.startSession(pv.passage.id, rv.rung, true), {
+          class: 'sm-btn sm-btn-small sm-btn-quiet',
+        }),
+        button('Resume', () => void host.startSession(pv.passage.id, rv.rung), {
+          class: 'sm-btn sm-btn-small sm-btn-primary',
+        }),
+      ])
+    : el('div', { class: 'sm-activity-actions' }, [
+        button('Practice', () => void host.startSession(pv.passage.id, rv.rung), {
+          class: 'sm-btn sm-btn-small sm-btn-primary',
+        }),
+      ]);
+
+  return el('div', { class: classes.join(' ') }, [
+    header,
+    level,
+    el('p', { class: 'sm-activity-row-progress', text: progress }),
+    status,
+    actions,
+  ]);
 }
 
 // ---------------------------------------------------------------------------

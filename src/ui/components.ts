@@ -16,7 +16,7 @@
  * asked this panel to look like the rest of the app in the meantime: a
  * full-width toolbar band, a plain back arrow at the left, and small flat
  * buttons rather than v0's rounded filled ones and text-link "Back to plan".
- * `toolbar()` and `.sm-toolbar*` in `styles.css` are that local approximation.
+ * `breadcrumb()` and `.sm-crumb*` in `styles.css` are that local approximation.
  * The proper fix is a shared stylesheet from the host (`ext-ui://host/controls.css`,
  * raised as a separate Bible-repo task per that review) that this panel would
  * then consume instead of maintaining its own copy.
@@ -35,26 +35,6 @@ import {
   formatScore,
   inLadderOrder,
 } from './format';
-
-/**
- * The toolbar band at the top of every screen.
- *
- * `onBack` is omitted only on the home screen, which is the one place there
- * is nowhere further back to go.
- */
-export function toolbar(opts: {
-  title: string;
-  onBack?: () => void;
-  actions?: (HTMLElement | null)[];
-}): HTMLElement {
-  return el('header', { class: 'sm-toolbar' }, [
-    opts.onBack
-      ? button('←', opts.onBack, { class: 'sm-back', attrs: { 'aria-label': 'Back' } })
-      : el('span', { class: 'sm-toolbar-spacer', attrs: { 'aria-hidden': 'true' } }),
-    el('h1', { class: 'sm-toolbar-title', text: opts.title }),
-    el('div', { class: 'sm-toolbar-actions' }, opts.actions ?? []),
-  ]);
-}
 
 // ---------------------------------------------------------------------------
 // Breadcrumb, menu, tabs

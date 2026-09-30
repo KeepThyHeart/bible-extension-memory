@@ -294,97 +294,6 @@ ul, ol {
 }
 
 /* ==========================================================================
-   Toolbar
-
-   A local approximation of the host's own `PaneToolbar` look, described in
-   the task 0004 review: a full-width band, a plain back arrow at the left,
-   and small flat buttons rather than v0's rounded filled ones. The host
-   serves no button/toolbar tokens of its own yet (see `components.ts`'s file
-   header) - once it does, this block is what gets replaced.
-   ========================================================================== */
-
-.sm-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sm-s2);
-  margin: calc(-1 * var(--sm-s4)) calc(-1 * var(--sm-s4)) 0;
-  padding: var(--sm-s2) var(--sm-s4);
-  background: var(--sm-surface);
-  border-bottom: 1px solid var(--sm-border);
-}
-
-.sm-toolbar-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  /* Bumped from 1.05em - a review round found the reference on the passage
-     and practice screens not prominent enough next to the activity name
-     beneath it (`.sm-practice-rung`, `.sm-activity-title`), both smaller and
-     dimmer than this already. */
-  font-size: 1.2em;
-  font-weight: 600;
-  color: var(--sm-heading);
-  overflow-wrap: break-word;
-}
-
-.sm-toolbar-title:focus-visible {
-  outline-offset: 4px;
-}
-
-.sm-toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sm-s1);
-  flex: 0 0 auto;
-}
-
-.sm-toolbar-meta {
-  color: var(--sm-text-dim);
-  font-size: 0.85em;
-  white-space: nowrap;
-}
-
-/* The back arrow at the toolbar's left edge - the only place in the panel
-   that is an arrow rather than a word. A review round found the original,
-   fully transparent version "kind of hard to see": it read as blank space
-   until hovered, with nothing to say a control was even there. A second
-   round, on the practice screen specifically, still found it too easy to
-   miss ("so user doesn't feel trapped ever") - so it is bigger again and,
-   critically, filled with `--sm-control-bg`, the same solid fill every other
-   `.sm-btn` actually uses (the surface-raised fill this carried before was
-   nearly the toolbar's own background and read as barely there). */
-.sm-back {
-  flex: 0 0 auto;
-  width: 2.3em;
-  height: 2.3em;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.4em;
-  font-weight: 700;
-  line-height: 1;
-  padding: 0;
-  border: 1px solid var(--sm-border-strong);
-  border-radius: var(--sm-radius);
-  background: var(--sm-control-bg);
-  color: var(--sm-control-text);
-  cursor: pointer;
-}
-
-.sm-back:hover {
-  background: var(--sm-control-hover);
-  border-color: var(--sm-accent);
-  color: var(--sm-accent);
-}
-
-/* Reserves the same width as `.sm-back` on the one screen with nowhere
-   further back to go, so the title still lines up across every screen. */
-.sm-toolbar-spacer {
-  flex: 0 0 auto;
-  width: 2.3em;
-  height: 2.3em;
-}
-
-/* ==========================================================================
    Breadcrumb
 
    Replaces the old toolbar's plain back arrow (Decision 1 of the nav/chrome
@@ -1736,64 +1645,11 @@ ul, ol {
   margin-bottom: var(--sm-s3);
 }
 
-/* The Practice control: the activity picker sits to the left of the
-   chrome-free `Practice` button, per T10 - "Start practicing" loses its
-   border and becomes a plain text control, same family as `.sm-btn-quiet`
-   elsewhere, just a little larger so it still reads as the primary action. */
-.sm-practice-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sm-s2);
-  margin-bottom: var(--sm-s3);
-}
-
-.sm-practice-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sm-s2);
-  flex-wrap: wrap;
-}
-
-.sm-activity-picker {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.sm-practice-btn {
-  font-size: calc(var(--sm-control-size) * 1.15);
-  font-weight: 600;
-  padding-left: 0;
-  padding-right: 0;
-}
-
-.sm-reference-hint {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--sm-s1);
-}
-
-.sm-practice-target-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sm-s2);
-}
-
-.sm-practice-target {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.sm-manage-passages-link {
-  align-self: flex-start;
-  margin-bottom: var(--sm-s3);
-}
-
 /* ==========================================================================
    Passage overview
 
    T12's passage-overview grid: one `display: grid` container
-   (`.sm-activity-table`) with fixed column tracks - activity name, tier
+   (the activity row) with fixed column tracks - activity name, tier
    pips, level boxes, schedule/progress, play target - so every row's pieces
    line up regardless of how long its own name or note is.
 
@@ -1809,21 +1665,10 @@ ul, ol {
    up in the same tracks if anything else ever reuses it.
    ========================================================================== */
 
-.sm-activity-table {
-  --sm-activity-cols: minmax(8rem, 1.3fr) 3.25rem 6.25rem minmax(6rem, 1fr) 1.75rem;
-  display: grid;
-  grid-template-columns: var(--sm-activity-cols);
-  row-gap: 2px;
-  border: 1px solid var(--sm-border);
-  border-radius: var(--sm-radius-lg);
-  background: var(--sm-surface-raised);
-  overflow: hidden;
-}
-
 .sm-activity-row {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: var(--sm-activity-cols);
+  grid-template-columns: minmax(8rem, 1.3fr) 3.25rem 6.25rem minmax(6rem, 1fr) 1.75rem;
   align-items: center;
   column-gap: var(--sm-s3);
   padding: var(--sm-s2) var(--sm-s3);
@@ -1835,10 +1680,6 @@ ul, ol {
   color: inherit;
   text-align: left;
   width: 100%;
-}
-
-.sm-activity-table .sm-activity-row:last-child {
-  border-bottom: none;
 }
 
 button.sm-activity-row {
@@ -2133,30 +1974,6 @@ button.sm-activity-row:hover {
   margin-left: auto;
 }
 
-.sm-practice-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sm-s1);
-}
-
-.sm-practice-tab {
-  border: 1px solid var(--sm-border);
-  border-radius: var(--sm-radius);
-  background: transparent;
-  color: var(--sm-text-dim);
-  padding: 0.3em 0.75em;
-  font-size: 0.85em;
-  cursor: pointer;
-}
-
-.sm-practice-tab-current {
-  border-color: var(--sm-accent);
-  background: var(--sm-accent-light);
-  color: var(--sm-heading);
-  font-weight: 600;
-  cursor: default;
-}
-
 .sm-summary-tier {
   color: var(--sm-text-muted);
   font-size: 0.9em;
@@ -2176,12 +1993,6 @@ button.sm-activity-row:hover {
 @media (max-width: 30rem) {
   .sm-main {
     padding: var(--sm-s3);
-  }
-
-  /* Keeps the toolbar band flush with the pane's edges as `.sm-main`'s own
-     padding shrinks - see `.sm-toolbar`'s negative margin. */
-  .sm-toolbar {
-    margin: calc(-1 * var(--sm-s3)) calc(-1 * var(--sm-s3)) 0;
   }
 
   .sm-crumbs {
@@ -2216,54 +2027,8 @@ button.sm-activity-row:hover {
     flex-wrap: wrap;
   }
 
-  /* T12's activity table: the name/pips/level/progress cells stack into two
-     narrow columns instead of five wide ones, but the play target
-     (`.sm-activity-row-play`) stays pinned to the row's right edge and
-     spans its full height - it must never end up on a wrapped line of its
-     own, away from the row it belongs to. */
-  .sm-activity-table {
-    --sm-activity-cols: 1fr auto;
-  }
-
-  .sm-activity-row {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      'name play'
-      'pips play'
-      'level play'
-      'progress play';
-    row-gap: 2px;
-  }
-
-  .sm-activity-row-na {
-    grid-template-areas: 'name' 'note';
+  .sm-tile-grid {
     grid-template-columns: 1fr;
-  }
-
-  .sm-activity-row-na .sm-activity-row-note {
-    grid-column: auto;
-    grid-area: note;
-  }
-
-  .sm-activity-row-name {
-    grid-area: name;
-  }
-
-  .sm-activity-row .sm-tier-pips {
-    grid-area: pips;
-  }
-
-  .sm-activity-row .sm-level-boxes {
-    grid-area: level;
-  }
-
-  .sm-activity-row-progress {
-    grid-area: progress;
-  }
-
-  .sm-activity-row-play {
-    grid-area: play;
-    align-self: center;
   }
 }
 
@@ -2273,10 +2038,6 @@ button.sm-activity-row:hover {
 @media (min-width: 52rem) {
   .sm-main {
     padding: var(--sm-s5);
-  }
-
-  .sm-toolbar {
-    margin: calc(-1 * var(--sm-s5)) calc(-1 * var(--sm-s5)) 0;
   }
 
   .sm-crumbs {
@@ -2306,4 +2067,76 @@ button.sm-activity-row:hover {
 .sm-context,
 .sm-choice-text {
   overflow-wrap: break-word;
+}
+
+/* "Practice by Passage" heading and its sort <select>: one row, wrapping
+   rather than truncating either at the narrowest width. */
+.sm-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sm-s2);
+}
+
+/* "Practice by Activity": the six-tile grid - two columns, one in the narrow
+   docked pane (see the max-width block above). */
+.sm-tile-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s2);
+}
+
+.sm-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sm-s2);
+}
+
+.sm-tile {
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sm-s1);
+  text-align: left;
+  padding: var(--sm-s3);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+  color: inherit;
+  cursor: pointer;
+}
+
+.sm-tile:hover:not(:disabled) {
+  background: var(--sm-hover);
+  border-color: var(--sm-accent);
+}
+
+/* Dimmed and inert: an unavailable tile is a normal state, not a fault. */
+.sm-tile:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sm-tile-title {
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-tile-sub {
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-tile-warning {
+  color: var(--sm-warning-text);
+  font-size: 0.92em;
+}
+
+/* The selected activity's panel on the passage screen, under the tab strip. */
+.sm-activity-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
 }

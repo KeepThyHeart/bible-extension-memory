@@ -65,7 +65,7 @@ import type {
   StepResult,
 } from '../types';
 import { append, button, clear, el, focusQuietly, replace, textNode } from './dom';
-import { errorBanner, iconButton, levelBoxes, toolbar } from './components';
+import { breadcrumb, errorBanner, iconButton, levelBoxes, tabs } from './components';
 import {
   RUNG_LABEL,
   formatScore,
@@ -75,6 +75,7 @@ import {
   pickDueTarget,
 } from './format';
 import type { PanelHost } from './host';
+import type { Flow } from './state';
 import { plainWord, renderPassage } from './scripture';
 import type { WordRenderer } from './scripture';
 import { resolveWrongPositions, revealedWord } from './stepResult';
@@ -137,6 +138,11 @@ export class PracticeView {
   constructor(
     private readonly host: PanelHost,
     session: SessionView,
+    /**
+     * The flow this session belongs to (`state.ts#Flow`). Only a non-`passage`
+     * flow shows the Next skip button. Defaults to the session's own passage.
+     */
+    private readonly flow: Flow = { kind: 'passage', passageId: session.passageId },
   ) {
     this.session = session;
 
@@ -279,14 +285,30 @@ export class PracticeView {
     const reference = this.context?.reference ?? '';
 
     replace(this.headEl, [
-      toolbar({
-        title: reference,
-        // Leaving mid-exercise is not "ending" anything any more: the resume
-        // point is written to disk after every verse (see `main.ts`), so
-        // going back genuinely does what task 0004 asked for - "a way to go
-        // back from an activity to the passage" that picks up later.
-        onBack: () => void this.endSession(),
-        actions: step !== null ? [el('span', { class: 'sm-toolbar-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })] : [],
+      breadcrumb({
+        crumbs: [
+          {
+            label: 'Home',
+            // Leaving mid-exercise is not "ending" anything any more: the
+            // resume point is written to disk after every verse (see
+            // `main.ts`), so going back picks up later. `endSession` returns
+            // to `returnTo` - the plan or the passage screen.
+            onClick: () => void this.endSession(),
+          },
+          { label: reference },
+        ],
+        actions: [
+          step !== null
+            ? el('span', { class: 'sm-crumbs-meta', text: formatStepProgress(step.stepNumber, step.totalSteps) })
+            : null,
+          // Only a flow with a rule to re-run has anywhere to skip to.
+          this.flow.kind !== 'passage'
+            ? button('Next', () => void this.onNext(), {
+                class: 'sm-btn sm-btn-quiet sm-btn-small',
+                attrs: { 'aria-label': 'Skip to the next passage' },
+              })
+            : null,
+        ],
       }),
       el('div', { class: 'sm-practice-sub' }, [
         el('span', { class: 'sm-practice-rung', text: RUNG_LABEL[this.session.rung] }),
@@ -338,7 +360,7 @@ export class PracticeView {
    * ever say "you are here, there is nowhere else to go" in a more
    * complicated way than showing nothing.
    *
-   * The current tab is marked `aria-current="true"` rather than the more
+   * (Now drawn by `components.ts#tabs`, `aria-selected`.) The current tab was once marked `aria-current="true"` rather than the more
    * usual `"step"` value the plan text names - `aria-current="step"` is
    * already this file's own vocabulary for the verse being worked on inside
    * the passage (`scripture.ts`'s `current` word renderer option), and a
@@ -352,25 +374,14 @@ export class PracticeView {
     const applicable = inLadderOrder(this.passageView.rungs).filter((rv) => rv.applicable);
     if (applicable.length <= 1) return null;
 
-    const tabs = applicable.map((rv) => {
-      const isCurrent = rv.rung === this.session.rung;
-      return button(
-        RUNG_LABEL[rv.rung],
-        () => {
-          if (!isCurrent) void this.switchActivity(this.session.passageId, rv.rung);
-        },
-        {
-          class: `sm-practice-tab${isCurrent ? ' sm-practice-tab-current' : ''}`,
-          attrs: isCurrent ? { 'aria-current': 'true' } : {},
-        },
-      );
+    return tabs({
+      items: applicable.map((rv) => ({ value: rv.rung, label: RUNG_LABEL[rv.rung] })),
+      selected: this.session.rung,
+      onSelect: (rung) => {
+        if (rung !== this.session.rung) void this.switchActivity(this.session.passageId, rung);
+      },
+      ariaLabel: 'Activities for this passage',
     });
-
-    return el(
-      'div',
-      { class: 'sm-practice-tabs', attrs: { role: 'tablist', 'aria-label': 'Activities for this passage' } },
-      tabs,
-    );
   }
 
   /**
@@ -1678,6 +1689,20 @@ export class PracticeView {
       return;
     }
     void this.host.startSession(target.passageId, target.rung);
+  }
+
+  /**
+   * The Next button: "not this one right now". Ends the session as the Home
+   * crumb does, then re-runs this session's flow excluding the passage just
+   * left. `flow` and the passage id are captured first because `endSession`
+   * drives `sessionEnded`, which can destroy this view.
+   */
+  private async onNext(): Promise<void> {
+    if (this.flow.kind === 'passage') return;
+    const flow = this.flow;
+    const exclude = new Set([this.session.passageId]);
+    await this.endSession();
+    void this.host.startFlow(flow, exclude);
   }
 
   private async endSession(): Promise<void> {

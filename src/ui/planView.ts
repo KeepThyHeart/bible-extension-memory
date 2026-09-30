@@ -12,19 +12,21 @@
  * Memory" rather than the current list's name (`PlanView.collectionName` no
  * longer drives it - see that field's own doc comment in `types.ts`), the
  * bordered "Start practicing" button is gone in favour of a chrome-free
- * `Practice` text control with an activity picker beside it, and the full
+ * `six-tile activity grid, and the full
  * add-passage form (paste-batch flow included) has moved to the Manage
  * Passages screen (T11) - this file keeps only `renderAddAndStart`, the
  * one-press shortcut for a plan with nothing in it yet.
  */
 
-import type { PassageView, PlanView, Rung } from '../types';
-import { append, button, el, replace } from './dom';
-import { activitySquares, dueBadge, emptyState, iconButton, listSelector, toolbar } from './components';
+import type { PassageSortOrder, PassageView, PlanView } from '../types';
+import { append, button, el } from './dom';
+import { activitySquares, breadcrumb, dueBadge, emptyState, icon, listSelector, menu } from './components';
 import type { ListSelectorOption } from './components';
-import { RUNG_LABEL } from './format';
-import { listTargets, pickShuffledTarget } from './suggest';
-import type { PracticeTarget as SuggestTarget } from './suggest';
+import { sortPassagesByNeed } from './format';
+import { flowUnavailable } from './suggest';
+import { ACTIVITY_TILES } from './activities';
+import type { ActivityTile } from './activities';
+import type { Flow } from './state';
 import { MIN_VERSES_FOR_REFERENCE_ACTIVITIES } from '../ladder';
 import type { PanelHost } from './host';
 
@@ -33,12 +35,17 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
   const root = el('section', { class: 'sm-screen sm-screen-plan' });
 
   root.appendChild(
-    toolbar({
-      title: 'Bible Memory',
-      actions: [
-        button('Analytics', () => host.go({ type: 'goAnalytics' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
-        button('Settings', () => host.go({ type: 'goSettings' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
-      ],
+    breadcrumb({
+      crumbs: [{ label: 'Home' }],
+      menu: menu({
+        label: 'Menu',
+        items: [
+          { label: 'Manage Passages', onClick: () => host.go({ type: 'goManagePassages' }) },
+          { label: 'Analytics', onClick: () => host.go({ type: 'goAnalytics' }) },
+          { label: 'Settings', onClick: () => host.go({ type: 'goSettings' }) },
+        ],
+      }),
+      actions: [],
     }),
   );
 
@@ -48,7 +55,6 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
 
   if (plan.passages.length === 0) {
     root.appendChild(renderAddAndStart(host));
-    root.appendChild(renderManagePassagesLink(host));
     root.appendChild(
       emptyState(
         'Nothing in your plan yet.',
@@ -58,14 +64,17 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
     return root;
   }
 
-  root.appendChild(renderPracticeSection(host, plan, now));
-  root.appendChild(renderManagePassagesLink(host));
+  root.appendChild(renderActivityTiles(host, plan, now));
+  root.appendChild(renderPassageListHeader(host, plan));
+
+  // 'bible' is `plan.passages`'s own order (ORDER BY start_verse_id).
+  const sortedPassages = plan.sortOrder === 'need' ? sortPassagesByNeed(plan.passages, now) : plan.passages;
 
   root.appendChild(
     el(
       'ul',
       { class: 'sm-list', attrs: { 'aria-label': 'Passages in this plan' } },
-      plan.passages.map((pv) => renderPassageRow(host, pv)),
+      sortedPassages.map((pv) => renderPassageRow(host, pv)),
     ),
   );
 
@@ -73,176 +82,117 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// Practice: activity picker, the chrome-free Practice control, and the
-// shuffled recommendation
+// Activity tiles
 // ---------------------------------------------------------------------------
 
-/** What the activity `<select>` offers, in the order the task asked for. */
-const ACTIVITY_OPTIONS: { value: Rung | 'next'; label: string }[] = [
-  { value: 'next', label: 'Next steps' },
-  { value: 'refmatch', label: 'Match references' },
-  { value: 'ordering', label: 'Put in order' },
-  { value: 'blanks', label: 'Fill in the blanks' },
-  { value: 'firstletters', label: 'First letters' },
-  { value: 'refprovide', label: 'Provide reference' },
-];
-
-const ACTIVITY_LABEL: Readonly<Record<Rung | 'next', string>> = Object.fromEntries(
-  ACTIVITY_OPTIONS.map((opt) => [opt.value, opt.label]),
-) as Record<Rung | 'next', string>;
-
-/** The two activities gated behind `plan.referenceActivitiesUnlocked`. */
-function isReferenceActivity(value: Rung | 'next'): boolean {
-  return value === 'refmatch' || value === 'refprovide';
-}
-
-function sameSuggestTarget(a: SuggestTarget, b: SuggestTarget): boolean {
-  return a.passageId === b.passageId && a.rung === b.rung;
-}
-
-/** Every applicable (passage, activity) pair the current picker choice offers. */
-function poolFor(plan: PlanView, now: number, activity: Rung | 'next'): SuggestTarget[] {
-  const all = listTargets(plan, now);
-  return activity === 'next' ? all : all.filter((t) => t.rung === activity);
-}
-
 /**
- * Picks a target for whatever the activity picker currently says.
+ * "Practice by Activity": the six-tile grid, one tile per
+ * `activities.ts#ACTIVITY_TILES` entry. A tile press goes through
+ * `host.startFlow`, which picks the passage with `suggest.ts#pickFlowTarget`
+ * (main's weighted shuffle for Variety, a rung-filtered draw otherwise).
  *
- * "Next steps" defers to `pickShuffledTarget` (the plan's own 30/70
- * due-weighted draw). A specific activity narrows the pool to that rung
- * first - `pickShuffledTarget` has no rung filter of its own, and duplicating
- * its due-weighting for a single-rung pool would be more machinery than a
- * "shuffle within one activity" control needs - then draws uniformly from
- * whatever is left once `exclude` is removed, falling back to the whole
- * narrowed pool (which may just be `exclude` itself) rather than returning
- * nothing when there is genuinely only one applicable target.
- *
- * `rng` is passed in deliberately, the same discipline `suggest.ts` uses -
- * this is the one place in the panel proper that wants real unpredictability
- * (the "shuffle" affordance), so it is `Math.random` at the call site rather
- * than a value read off the clock, but it still never gets called from
- * inside this function so a test can substitute it.
+ * Main's old "shuffle suggestion" target line is dropped: a tile starts a
+ * fresh random pick each press, so there is no pending suggestion to show.
  */
-function pickTargetFor(
-  plan: PlanView,
-  now: number,
-  activity: Rung | 'next',
-  rng: () => number,
-  exclude?: SuggestTarget,
-): SuggestTarget | null {
-  if (activity === 'next') return pickShuffledTarget(plan, now, rng, exclude);
-
-  const pool = poolFor(plan, now, activity);
-  if (pool.length === 0) return null;
-
-  const candidates = exclude ? pool.filter((t) => !sameSuggestTarget(t, exclude)) : pool;
-  const chosen = candidates.length > 0 ? candidates : pool;
-  const idx = Math.min(Math.floor(rng() * chosen.length), chosen.length - 1);
-  return chosen[Math.max(idx, 0)]!;
-}
-
-function targetLineContent(target: SuggestTarget | null, activity: Rung | 'next'): HTMLElement {
-  if (!target) {
-    return el('p', {
-      class: 'sm-callout-text',
-      text: `Nothing to practise for ${ACTIVITY_LABEL[activity]} yet.`,
-    });
-  }
-  return el('p', { class: 'sm-callout-text', text: `${target.reference} — ${RUNG_LABEL[target.rung]}` });
-}
-
-/**
- * The Practice control: the activity picker, the chrome-free `Practice`
- * button, the persistent lock hint (when reference activities are not
- * unlocked), and the recommended target with its shuffle button.
- *
- * The picker, the button and the target line all close over the same
- * `activity`/`current` pair rather than being three independently-rendered
- * pieces, because picking a new activity has to change what both the button
- * and the target line do - there is exactly one "what should Practice start
- * right now" fact and everything here reads it from the same place.
- */
-function renderPracticeSection(host: PanelHost, plan: PlanView, now: number): HTMLElement {
-  let activity: Rung | 'next' = 'next';
-  let current: SuggestTarget | null = pickTargetFor(plan, now, activity, Math.random);
-
-  const targetSlot = el('div', { class: 'sm-practice-target' }, [targetLineContent(current, activity)]);
-
-  function repaint(target: SuggestTarget | null, forActivity: Rung | 'next'): void {
-    current = target;
-    replace(targetSlot, [targetLineContent(target, forActivity)]);
-  }
-
-  const practiceButton = button(
-    'Practice',
-    () => {
-      if (!current) {
-        host.announce(`Nothing to practise for ${ACTIVITY_LABEL[activity]} yet.`);
-        return;
-      }
-      void host.startSession(current.passageId, current.rung);
-    },
-    { class: 'sm-btn sm-btn-quiet sm-practice-btn' },
-  );
-
-  const select = el('select', {
-    class: 'sm-select sm-activity-picker',
-    attrs: { 'aria-label': 'Activity' },
-  }) as HTMLSelectElement;
-  for (const opt of ACTIVITY_OPTIONS) {
-    const locked = isReferenceActivity(opt.value) && !plan.referenceActivitiesUnlocked;
-    select.appendChild(el('option', { value: opt.value, text: opt.label, disabled: locked }));
-  }
-  select.addEventListener('change', () => {
-    activity = (select.value as Rung | 'next') || 'next';
-    repaint(pickTargetFor(plan, now, activity, Math.random), activity);
-  });
-
-  const shuffleButton = iconButton('🔀', 'Shuffle suggestion', () => {
-    const pool = poolFor(plan, now, activity);
-    const others = current ? pool.filter((t) => !sameSuggestTarget(t, current!)) : pool;
-    if (others.length === 0) {
-      // Not broken - there is simply nothing else applicable to offer right
-      // now (an empty plan never reaches here; this is the "exactly one
-      // target" case).
-      host.announce('Nothing else to practise right now.');
-      return;
-    }
-    repaint(pickTargetFor(plan, now, activity, Math.random, current ?? undefined), activity);
-  });
-
-  const children: (HTMLElement | null)[] = [
-    el('div', { class: 'sm-practice-row' }, [select, practiceButton]),
-    plan.referenceActivitiesUnlocked ? null : renderReferenceHint(host, plan),
-    el('div', { class: 'sm-practice-target-row' }, [targetSlot, shuffleButton]),
-  ];
-
-  return el('div', { class: 'sm-practice-section' }, children);
-}
-
-/**
- * The persistent explanation under the activity picker while the two
- * reference activities are locked - a `title` on a disabled `<option>` is
- * not reliably shown by any browser, so this line is what actually carries
- * the "why", plus a real way to fix it.
- */
-function renderReferenceHint(host: PanelHost, plan: PlanView): HTMLElement {
-  const needed = MIN_VERSES_FOR_REFERENCE_ACTIVITIES;
-  const short = Math.max(0, needed - plan.scopeVerseCount);
-  return el('p', { class: 'sm-hint sm-reference-hint' }, [
-    `Match references and Provide reference need ${needed} verses in this list - ` +
-      `${short} more to go (${plan.scopeVerseCount} so far). `,
-    button('Manage Passages', () => host.go({ type: 'goManagePassages' }), {
-      class: 'sm-btn sm-btn-quiet sm-btn-small',
-    }),
+function renderActivityTiles(host: PanelHost, plan: PlanView, now: number): HTMLElement {
+  return el('section', { class: 'sm-tile-section' }, [
+    el('h2', { class: 'sm-block-title', text: 'Practice by Activity' }),
+    el(
+      'div',
+      { class: 'sm-tile-grid' },
+      ACTIVITY_TILES.map((tile) => renderActivityTile(host, plan, tile, now)),
+    ),
   ]);
 }
 
-function renderManagePassagesLink(host: PanelHost): HTMLElement {
-  return button('Manage Passages', () => host.go({ type: 'goManagePassages' }), {
-    class: 'sm-btn sm-btn-quiet sm-btn-small sm-manage-passages-link',
+function tileFlow(tile: ActivityTile): Flow {
+  return tile.id === 'variety' ? { kind: 'variety' } : { kind: 'activity', rung: tile.rung! };
+}
+
+/**
+ * One tile: icon, title, subtext and, when it cannot be pressed, a warning
+ * line. Locked reference tiles show the reference-hint text; the tile stays
+ * visible but disabled so a gap in the grid never reads as a bug.
+ */
+function renderActivityTile(host: PanelHost, plan: PlanView, tile: ActivityTile, now: number): HTMLElement {
+  const flow = tileFlow(tile);
+  const unavailable = flowUnavailable(plan, flow, now);
+  const warning =
+    unavailable === 'locked'
+      ? referenceHintText(plan)
+      : unavailable === 'empty'
+        ? 'Nothing to practise for this activity yet.'
+        : null;
+
+  const tileButton = button(tile.title, () => void host.startFlow(flow), {
+    class: 'sm-tile',
+    text: '',
+    disabled: unavailable !== null,
   });
+
+  append(tileButton, [
+    icon(tile.id),
+    el('span', { class: 'sm-tile-title', text: tile.title }),
+    el('span', { class: 'sm-tile-sub', text: tile.subtext }),
+    warning === null ? null : el('span', { class: 'sm-tile-warning', text: warning }),
+  ]);
+
+  return tileButton;
+}
+
+/** Why the two reference tiles are locked, and how far from unlocking. */
+function referenceHintText(plan: PlanView): string {
+  const needed = MIN_VERSES_FOR_REFERENCE_ACTIVITIES;
+  const short = Math.max(0, needed - plan.scopeVerseCount);
+  return (
+    `Match references and Provide reference need ${needed} verses in this list - ` +
+    `${short} more to go (${plan.scopeVerseCount} so far). Add passages in Manage Passages.`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Passage list heading and sort control
+// ---------------------------------------------------------------------------
+
+/**
+ * "Practice by Passage" heading plus the Bible-order / Needs-practice sort
+ * `<select>`. The choice persists through the `setPassageSortOrder` request
+ * (`PlanView.sortOrder`); `host.reload()` re-fetches the plan afterwards.
+ */
+function renderPassageListHeader(host: PanelHost, plan: PlanView): HTMLElement {
+  const select = el('select', {
+    class: 'sm-select',
+    id: 'sm-passage-sort',
+    attrs: { 'aria-label': 'Sort passages' },
+  }) as HTMLSelectElement;
+
+  const options: { value: PassageSortOrder; label: string }[] = [
+    { value: 'bible', label: 'Bible order' },
+    { value: 'need', label: 'Needs practice' },
+  ];
+  for (const opt of options) {
+    const optionEl = el('option', { value: opt.value, text: opt.label });
+    if (plan.sortOrder === opt.value) optionEl.selected = true;
+    select.appendChild(optionEl);
+  }
+
+  select.addEventListener('change', () => {
+    const order = select.value as PassageSortOrder;
+    select.disabled = true;
+    void host.request({ type: 'setPassageSortOrder', order }).then((reply) => {
+      select.disabled = false;
+      if (!reply.ok) {
+        host.announce(reply.error);
+        return;
+      }
+      host.reload();
+    });
+  });
+
+  return el('div', { class: 'sm-list-header' }, [
+    el('h2', { class: 'sm-block-title', text: 'Practice by Passage' }),
+    select,
+  ]);
 }
 
 function renderListPicker(host: PanelHost, plan: PlanView): HTMLElement {
