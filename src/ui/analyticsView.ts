@@ -12,6 +12,15 @@
  * Still no chart library, for the same reason v0 had none: `default-src
  * 'none'` with `connect-src 'self'` means nothing loads from anywhere, and a
  * handful of `<div>`s with a width are not worth bundling one for.
+ *
+ * `versesLearned` and `passagesWellLearned` are not this file's numbers to
+ * define - they come from `store.ts#analytics`, which already applies T4's
+ * `ladder.ts#passageWellLearned` (every applicable activity satisfied, not
+ * `bestLevel >= 4`) and already scopes the whole query to
+ * `store.ts#getScope()` - the same list-or-all scope the plan screen's
+ * picker drives (`types.ts#Scope`). There is nothing for this view to filter
+ * a second time; switching lists on the plan screen and coming back here
+ * shows this screen's numbers for that scope automatically.
  */
 
 import type { AnalyticsView } from '../types';
@@ -42,7 +51,10 @@ export function renderAnalytics(host: PanelHost, analytics: AnalyticsView): HTML
     el('div', { class: 'sm-stats' }, [
       statTile(String(analytics.streakDays), countLabel(analytics.streakDays, 'day') + ' in a row'),
       statTile(String(analytics.versesLearned), 'verses learned'),
-      statTile(String(analytics.passagesWellLearned), countLabel(analytics.passagesWellLearned, 'passage')),
+      statTile(
+        String(analytics.passagesWellLearned),
+        `${countLabel(analytics.passagesWellLearned, 'passage')} well learned`,
+      ),
     ]),
   );
 

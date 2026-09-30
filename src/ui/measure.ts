@@ -100,6 +100,7 @@ export class WordMeasurer {
   private readonly cache = new Map<string, number>();
   private fontKey = '';
   private fontSizePx = 16;
+  private estimated = false;
 
   constructor(private readonly doc: Document) {
     this.span = doc.createElement('span');
@@ -174,7 +175,31 @@ export class WordMeasurer {
       rect.width > 0 ? rect.width : estimateTextWidth(text, this.fontSizePx);
 
     if (rect.width > 0) this.cache.set(text, width);
+    else this.estimated = true;
     return width;
+  }
+
+  /**
+   * True if any `measure` call since the last {@link invalidate} had to fall
+   * back to {@link estimateTextWidth}. Widths handed out in that state are
+   * proportional but not exact, so a caller holding them should re-measure
+   * once real layout exists.
+   */
+  get usedEstimate(): boolean {
+    return this.estimated;
+  }
+
+  /**
+   * Forgets every cached measurement and the estimate flag.
+   *
+   * `adoptFontFrom` only clears on a font-key change, which cannot see a
+   * webfont finishing loading under an unchanged `font-family` string, so a
+   * re-measure pass (pane becoming visible, fonts settling) calls this rather
+   * than trusting whatever was cached earlier.
+   */
+  invalidate(): void {
+    this.cache.clear();
+    this.estimated = false;
   }
 
   /** The width an input standing in for `text` should be given. */

@@ -23,7 +23,8 @@
  */
 
 import type { Rung, RungView } from '../types';
-import { button, el } from './dom';
+import { append, button, el, focusQuietly } from './dom';
+import { MIN_VERSES_FOR_REFERENCE_ACTIVITIES } from '../ladder';
 import {
   MASTERED_LEVEL,
   RUNG_LABEL,
@@ -187,6 +188,246 @@ export function activitySquares(rungs: RungView[]): HTMLElement {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Icon buttons
+// ---------------------------------------------------------------------------
+
+/**
+ * A button whose visible content is a glyph rather than a word, given an
+ * accessible name through `aria-label` (and, for a mouse user, `title` as a
+ * tooltip). Mirrors the pattern `passageView.ts`'s answer-mode gear (`⚙`)
+ * already uses inline - `.sm-btn .sm-btn-quiet .sm-btn-small .sm-icon-btn` -
+ * factored out here so later screens do not each re-type that class list.
+ */
+export function iconButton(glyph: string, label: string, onClick: () => void): HTMLButtonElement {
+  return button(glyph, onClick, {
+    class: 'sm-btn sm-btn-quiet sm-btn-small sm-icon-btn',
+    title: label,
+    attrs: { 'aria-label': label },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Modal
+// ---------------------------------------------------------------------------
+
+/** What `modal()` needs to build and behave. */
+export interface ModalOptions {
+  /** Heading text, also used to build the dialog's accessible name. */
+  title: string;
+  /** The modal's body. A single element or a list of children. */
+  content: HTMLElement | (HTMLElement | string)[];
+  /**
+   * Called once, the moment the modal is closed by the user - Esc, a
+   * backdrop click, or the built-in close button - never called for a close
+   * the caller drives itself. The caller owns what happens next (usually
+   * nothing further: `modal()` already removes its own DOM and restores
+   * focus before this fires).
+   */
+  onClose: () => void;
+}
+
+let modalIdSeq = 0;
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (node) => node.offsetParent !== null || node.getClientRects().length > 0 || !node.hidden,
+  );
+}
+
+/**
+ * A hand-rolled overlay dialog - never `<dialog>.showModal()`, never
+ * `window.confirm`. Both are off the table for this panel: a sandboxed iframe
+ * can suppress native modal dialogs outright (see `passageView.ts`'s inline
+ * remove-confirmation for the same reasoning applied to `confirm()`), and
+ * jsdom's `<dialog>` support is unreliable in tests. This is an ordinary pair
+ * of `div`s (`role="dialog"`, `aria-modal="true"`) with the modal behaviour -
+ * focus trap, Esc, backdrop click, focus restore - implemented by hand.
+ *
+ * Returns the backdrop element, detached. **The caller must insert it into
+ * the document itself** (typically `document.body.appendChild(...)`), and
+ * must do so synchronously after calling `modal()` - the element the trigger
+ * had focus on is captured at call time, and initial focus is moved into the
+ * modal on the next microtask (after `queueMicrotask`), which assumes the
+ * node is already connected by then. Tests can flush that microtask the same
+ * way the rest of this codebase settles a promise queue.
+ *
+ * On close (Esc, a backdrop click, or the built-in `✕` button) the backdrop
+ * removes itself from its parent, focus returns to whatever had it before the
+ * modal opened, and `onClose` runs last.
+ */
+export function modal(opts: ModalOptions): HTMLElement {
+  const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const titleId = `sm-modal-title-${(modalIdSeq += 1)}`;
+
+  const container = el('div', {
+    class: 'sm-modal',
+    attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabindex: '-1' },
+  });
+
+  function close(): void {
+    backdrop.remove();
+    focusQuietly(previouslyFocused);
+    opts.onClose();
+  }
+
+  const closeButton = iconButton('✕', 'Close', close);
+  const header = el('div', { class: 'sm-modal-header' }, [
+    el('h2', { id: titleId, class: 'sm-modal-title', text: opts.title }),
+    closeButton,
+  ]);
+  const body = el('div', { class: 'sm-modal-body' }, Array.isArray(opts.content) ? opts.content : [opts.content]);
+  append(container, [header, body]);
+
+  container.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.stopPropagation();
+      close();
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+
+    const focusables = focusableElements(container);
+    if (focusables.length === 0) {
+      ev.preventDefault();
+      return;
+    }
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    if (ev.shiftKey && document.activeElement === first) {
+      ev.preventDefault();
+      focusQuietly(last);
+    } else if (!ev.shiftKey && document.activeElement === last) {
+      ev.preventDefault();
+      focusQuietly(first);
+    }
+  });
+
+  const backdrop = el('div', { class: 'sm-modal-backdrop' }, [container]);
+  backdrop.addEventListener('mousedown', (ev) => {
+    if (ev.target === backdrop) close();
+  });
+
+  queueMicrotask(() => {
+    if (!backdrop.isConnected) return; // Caller never inserted it, or already closed.
+    const focusables = focusableElements(container);
+    focusQuietly(focusables[0] ?? container);
+  });
+
+  return backdrop;
+}
+
+// ---------------------------------------------------------------------------
+// Tier pips
+// ---------------------------------------------------------------------------
+
+/**
+ * Small dot-per-tier progress, e.g. for a passage-overview row: `tiers` pips,
+ * `tiersPassed` of them marked passed. Colour is never the only signal - the
+ * whole thing carries a text `aria-label` with the count, the way
+ * `levelBoxes` does for its five boxes.
+ */
+export function tierPips(tiersPassed: number, tiers: number): HTMLElement {
+  const pips: HTMLElement[] = [];
+  for (let i = 1; i <= tiers; i += 1) {
+    const passed = i <= tiersPassed;
+    pips.push(
+      el('span', {
+        class: `sm-tier-pip${passed ? ' sm-tier-pip-passed' : ''}`,
+        attrs: { 'aria-hidden': 'true' },
+      }),
+    );
+  }
+  return el(
+    'span',
+    {
+      class: 'sm-tier-pips',
+      attrs: { role: 'img', 'aria-label': `${tiersPassed} of ${countLabel(tiers, 'tier')} passed` },
+    },
+    pips,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// List selector
+// ---------------------------------------------------------------------------
+
+/** One choice in `listSelector` - `'all'` for the "All lists" option. */
+export interface ListSelectorOption {
+  id: number | 'all';
+  name: string;
+}
+
+/**
+ * A `<select>`-based "All lists"/per-list picker. Deliberately minimal - T10
+ * is what wires this into the home screen's header and decides how it looks
+ * there; this just gets a working, accessible control in place.
+ */
+export function listSelector(
+  options: ListSelectorOption[],
+  selected: number | 'all',
+  onChange: (id: number | 'all') => void,
+): HTMLSelectElement {
+  const select = el('select', {
+    class: 'sm-select sm-list-selector',
+    attrs: { 'aria-label': 'List' },
+  }) as HTMLSelectElement;
+
+  for (const opt of options) {
+    const optionEl = el('option', { value: String(opt.id), text: opt.name });
+    if (opt.id === selected) optionEl.selected = true;
+    select.appendChild(optionEl);
+  }
+
+  select.addEventListener('change', () => {
+    const match = options.find((opt) => String(opt.id) === select.value);
+    if (match) onChange(match.id);
+  });
+
+  return select;
+}
+
+// ---------------------------------------------------------------------------
+// Activity row
+// ---------------------------------------------------------------------------
+
+/** What one `activityRow` needs. */
+export interface ActivityRowOptions {
+  rung: Rung;
+  /** 0-5, same scale as `levelBoxes`. */
+  level: number;
+  /** How many difficulty tiers this activity has. See `ladder.ts#TIERS`. */
+  tiers: number;
+  tiersPassed: number;
+  /** Whether this activity is due now - passed through to `levelBoxes`. */
+  due?: boolean;
+  /** The schedule/progress slot, e.g. `scheduleLine`'s text - left blank if omitted. */
+  scheduleText?: string;
+  onPlay: () => void;
+  /** Accessible name for the play icon. Defaults to "Practice <activity>". */
+  playLabel?: string;
+}
+
+/**
+ * One row of an aligned activity table: name, tier pips, level boxes, a
+ * schedule/progress slot, and a play icon - in that order, as plain flex
+ * children rather than a real `<table>` (matching `.sm-activity-card`'s own
+ * approach elsewhere in this file). Deliberately minimal/generic: T12 builds
+ * the actual passage-overview grid on top of this and owns the polish.
+ */
+export function activityRow(opts: ActivityRowOptions): HTMLElement {
+  return el('div', { class: 'sm-activity-row' }, [
+    el('span', { class: 'sm-activity-row-name', text: RUNG_LABEL[opts.rung] }),
+    tierPips(opts.tiersPassed, opts.tiers),
+    levelBoxes(opts.level, { due: opts.due }),
+    el('span', { class: 'sm-activity-row-schedule', text: opts.scheduleText ?? '' }),
+    iconButton('▶', opts.playLabel ?? `Practice ${RUNG_LABEL[opts.rung]}`, opts.onPlay),
+  ]);
+}
+
 function squaresLabel(applicable: RungView[], allRungs: RungView[]): string {
   return applicable
     .map((rv) => {
@@ -240,7 +481,9 @@ export function inapplicabilityNote(rung: Rung): string {
     case 'ordering':
       return 'Putting verses in order needs more than one verse.';
     case 'refmatch':
-      return 'Matching a reference needs other passages to tell it apart from.';
+      return `Matching a reference needs ${MIN_VERSES_FOR_REFERENCE_ACTIVITIES} verses in this list to tell references apart.`;
+    case 'refprovide':
+      return `Naming a reference needs ${MIN_VERSES_FOR_REFERENCE_ACTIVITIES} verses in this list to tell references apart.`;
     default:
       return 'This activity does not apply to this passage.';
   }

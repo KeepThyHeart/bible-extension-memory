@@ -41,6 +41,7 @@ export const RUNG_LABEL: Readonly<Record<Rung, string>> = {
   refmatch: 'Match the reference',
   blanks: 'Fill in the blanks',
   firstletters: 'First letters only',
+  refprovide: 'Name the reference',
 };
 
 /** What each activity asks of the user, in one line. */
@@ -49,6 +50,7 @@ export const RUNG_BLURB: Readonly<Record<Rung, string>> = {
   refmatch: 'Given the words, choose the reference they belong to.',
   blanks: 'Type the words that have been removed from the passage.',
   firstletters: 'Every word is hidden. Recall the whole verse.',
+  refprovide: 'Given the words, say which reference they come from.',
 };
 
 // ---------------------------------------------------------------------------

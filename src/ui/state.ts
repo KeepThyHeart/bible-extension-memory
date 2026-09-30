@@ -13,7 +13,7 @@
  */
 
 /**
- * The five screens.
+ * The six screens.
  *
  * Practice carries the session id rather than the session: the worker owns the
  * session, and a copy of it stored here would be a second source of truth that
@@ -24,6 +24,7 @@ export type View =
   | { name: 'passage'; passageId: number }
   | { name: 'analytics' }
   | { name: 'settings' }
+  | { name: 'managePassages' }
   | { name: 'practice'; sessionId: string };
 
 export interface NavState {
@@ -44,6 +45,7 @@ export type NavAction =
   | { type: 'goPlan' }
   | { type: 'goAnalytics' }
   | { type: 'goSettings' }
+  | { type: 'goManagePassages' }
   | { type: 'goPassage'; passageId: number }
   | { type: 'sessionStarted'; sessionId: string }
   | { type: 'sessionEnded' }
@@ -72,6 +74,11 @@ export function navReduce(state: NavState, action: NavAction): NavState {
 
     case 'goSettings':
       return { view: { name: 'settings' }, returnTo: { name: 'plan' } };
+
+    case 'goManagePassages':
+      // Also a leaf, for the same reason as Analytics and Settings above: it
+      // starts no sessions, so it must not become a return target.
+      return { view: { name: 'managePassages' }, returnTo: { name: 'plan' } };
 
     case 'goPassage':
       return {

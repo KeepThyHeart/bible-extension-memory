@@ -125,6 +125,45 @@ const MIGRATIONS: readonly string[][] = [
        updated_at    INTEGER NOT NULL
      )`,
   ],
+
+  // --- v3: tiers, and progress that is derived rather than stored -----------
+  //
+  // An activity is no longer one exercise but a small ladder of harder
+  // renderings of itself (`ladder.ts#TIERS`), and the level the user sees is
+  // computed from the best attempt at each tier rather than from the last
+  // score. Two columns are all that needs to exist for that:
+  //
+  //   - `attempt.tier`, so an attempt remembers which rendering it answered.
+  //     `DEFAULT 0` is what makes the upgrade lossless: every attempt recorded
+  //     before this migration was the only rendering there was, which is tier
+  //     0, so existing history keeps counting rather than being discarded or
+  //     backfilled by a guess.
+  //
+  //   - `card.progress_reset_at`, nullable, meaning "attempts at or before
+  //     this instant no longer count". It is the ONLY thing that can lower a
+  //     level, and it is a timestamp rather than a delete because the
+  //     never-prune rule still holds: a reset hides the history from scoring,
+  //     it does not destroy it.
+  [
+    `ALTER TABLE attempt ADD COLUMN tier INTEGER NOT NULL DEFAULT 0`,
+
+    `ALTER TABLE card ADD COLUMN progress_reset_at INTEGER`,
+
+    // The hot query of the new model is "best score per tier for this card",
+    // which is a `GROUP BY card_id, tier` - see `store.ts#listTierProgress`.
+    `CREATE INDEX IF NOT EXISTS attempt_card_tier ON attempt (card_id, tier)`,
+  ],
+
+  // --- v4: T6 - a resume point remembers which tier it was taken at --------
+  //
+  // `blanks` tier 0 and tier 1 have different step counts (N verses vs. one
+  // whole-passage step) and `ordering`'s tiers differ in which candidates a
+  // step offers, so a `resume_state` row taken at one tier cannot be safely
+  // reapplied at another - reinterpreting a tier-0 `blanks` cursor of, say, 3
+  // against tier 1 (which only ever has step 0) is meaningless. `DEFAULT 0`
+  // keeps the upgrade lossless: every resume row written before this column
+  // existed was written by a session that only ever ran at tier 0.
+  [`ALTER TABLE resume_state ADD COLUMN tier INTEGER NOT NULL DEFAULT 0`],
 ];
 
 /** The version a fresh database is brought to. */

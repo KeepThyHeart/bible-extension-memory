@@ -2,18 +2,30 @@
  * The plan: "just go" and a quiet list of what is underway.
  *
  * This is the default screen and, for a user in the habit, the only one they
- * need: open the panel, press Start practicing, work, close it. Task 0004's
- * review asked for this explicitly - "it should be possible, and easy, for
- * the user to just go" - and the one-click add-and-start path below for an
- * empty plan is the sharpest form of that: a brand new user should never see
- * an empty list with nothing to press.
+ * need: open the panel, press Practice, work, close it. Task 0004's review
+ * asked for this explicitly - "it should be possible, and easy, for the user
+ * to just go" - and the one-click add-and-start path below for an empty plan
+ * is the sharpest form of that: a brand new user should never see an empty
+ * list with nothing to press.
+ *
+ * T10 reworked this screen: the title is now the literal string "Bible
+ * Memory" rather than the current list's name (`PlanView.collectionName` no
+ * longer drives it - see that field's own doc comment in `types.ts`), the
+ * bordered "Start practicing" button is gone in favour of a chrome-free
+ * `Practice` text control with an activity picker beside it, and the full
+ * add-passage form (paste-batch flow included) has moved to the Manage
+ * Passages screen (T11) - this file keeps only `renderAddAndStart`, the
+ * one-press shortcut for a plan with nothing in it yet.
  */
 
-import type { Passage, PassageView, PlanView } from '../types';
-import { append, button, el, focusQuietly, replace } from './dom';
-import { activitySquares, dueBadge, emptyState, errorBanner, toolbar } from './components';
-import { RUNG_LABEL, countLabel, pickStartTarget } from './format';
-import { dropContainedRanges, extractReferenceCandidates } from './referenceInput';
+import type { PassageView, PlanView, Rung } from '../types';
+import { append, button, el, replace } from './dom';
+import { activitySquares, dueBadge, emptyState, iconButton, listSelector, toolbar } from './components';
+import type { ListSelectorOption } from './components';
+import { RUNG_LABEL } from './format';
+import { listTargets, pickShuffledTarget } from './suggest';
+import type { PracticeTarget as SuggestTarget } from './suggest';
+import { MIN_VERSES_FOR_REFERENCE_ACTIVITIES } from '../ladder';
 import type { PanelHost } from './host';
 
 export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
@@ -22,7 +34,7 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
 
   root.appendChild(
     toolbar({
-      title: plan.collectionName,
+      title: 'Bible Memory',
       actions: [
         button('Analytics', () => host.go({ type: 'goAnalytics' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
         button('Settings', () => host.go({ type: 'goSettings' }), { class: 'sm-btn sm-btn-quiet sm-btn-small' }),
@@ -30,10 +42,13 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
     }),
   );
 
-  root.appendChild(renderStartPracticing(host, plan, now));
-  root.appendChild(renderAddPassage(host));
+  if (plan.lists.length > 1) {
+    root.appendChild(renderListPicker(host, plan));
+  }
 
   if (plan.passages.length === 0) {
+    root.appendChild(renderAddAndStart(host));
+    root.appendChild(renderManagePassagesLink(host));
     root.appendChild(
       emptyState(
         'Nothing in your plan yet.',
@@ -42,6 +57,9 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
     );
     return root;
   }
+
+  root.appendChild(renderPracticeSection(host, plan, now));
+  root.appendChild(renderManagePassagesLink(host));
 
   root.appendChild(
     el(
@@ -55,54 +73,216 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// The primary action
+// Practice: activity picker, the chrome-free Practice control, and the
+// shuffled recommendation
 // ---------------------------------------------------------------------------
 
+/** What the activity `<select>` offers, in the order the task asked for. */
+const ACTIVITY_OPTIONS: { value: Rung | 'next'; label: string }[] = [
+  { value: 'next', label: 'Next steps' },
+  { value: 'refmatch', label: 'Match references' },
+  { value: 'ordering', label: 'Put in order' },
+  { value: 'blanks', label: 'Fill in the blanks' },
+  { value: 'firstletters', label: 'First letters' },
+  { value: 'refprovide', label: 'Provide reference' },
+];
+
+const ACTIVITY_LABEL: Readonly<Record<Rung | 'next', string>> = Object.fromEntries(
+  ACTIVITY_OPTIONS.map((opt) => [opt.value, opt.label]),
+) as Record<Rung | 'next', string>;
+
+/** The two activities gated behind `plan.referenceActivitiesUnlocked`. */
+function isReferenceActivity(value: Rung | 'next'): boolean {
+  return value === 'refmatch' || value === 'refprovide';
+}
+
+function sameSuggestTarget(a: SuggestTarget, b: SuggestTarget): boolean {
+  return a.passageId === b.passageId && a.rung === b.rung;
+}
+
+/** Every applicable (passage, activity) pair the current picker choice offers. */
+function poolFor(plan: PlanView, now: number, activity: Rung | 'next'): SuggestTarget[] {
+  const all = listTargets(plan, now);
+  return activity === 'next' ? all : all.filter((t) => t.rung === activity);
+}
+
 /**
- * "Start practicing" - always one press away from doing something useful.
+ * Picks a target for whatever the activity picker currently says.
  *
- * On an empty plan this becomes a one-click "Add <verse> and start", using
- * whatever the host says the reader is currently looking at. That is the
- * whole point of the worker pushing `activeVerse` in the first place: someone
- * who has just read a verse and reached for this panel should not have to
- * type it back in before they can begin.
+ * "Next steps" defers to `pickShuffledTarget` (the plan's own 30/70
+ * due-weighted draw). A specific activity narrows the pool to that rung
+ * first - `pickShuffledTarget` has no rung filter of its own, and duplicating
+ * its due-weighting for a single-rung pool would be more machinery than a
+ * "shuffle within one activity" control needs - then draws uniformly from
+ * whatever is left once `exclude` is removed, falling back to the whole
+ * narrowed pool (which may just be `exclude` itself) rather than returning
+ * nothing when there is genuinely only one applicable target.
+ *
+ * `rng` is passed in deliberately, the same discipline `suggest.ts` uses -
+ * this is the one place in the panel proper that wants real unpredictability
+ * (the "shuffle" affordance), so it is `Math.random` at the call site rather
+ * than a value read off the clock, but it still never gets called from
+ * inside this function so a test can substitute it.
  */
-function renderStartPracticing(host: PanelHost, plan: PlanView, now: number): HTMLElement {
-  if (plan.passages.length === 0) {
-    return renderAddAndStart(host);
+function pickTargetFor(
+  plan: PlanView,
+  now: number,
+  activity: Rung | 'next',
+  rng: () => number,
+  exclude?: SuggestTarget,
+): SuggestTarget | null {
+  if (activity === 'next') return pickShuffledTarget(plan, now, rng, exclude);
+
+  const pool = poolFor(plan, now, activity);
+  if (pool.length === 0) return null;
+
+  const candidates = exclude ? pool.filter((t) => !sameSuggestTarget(t, exclude)) : pool;
+  const chosen = candidates.length > 0 ? candidates : pool;
+  const idx = Math.min(Math.floor(rng() * chosen.length), chosen.length - 1);
+  return chosen[Math.max(idx, 0)]!;
+}
+
+function targetLineContent(target: SuggestTarget | null, activity: Rung | 'next'): HTMLElement {
+  if (!target) {
+    return el('p', {
+      class: 'sm-callout-text',
+      text: `Nothing to practise for ${ACTIVITY_LABEL[activity]} yet.`,
+    });
+  }
+  return el('p', { class: 'sm-callout-text', text: `${target.reference} — ${RUNG_LABEL[target.rung]}` });
+}
+
+/**
+ * The Practice control: the activity picker, the chrome-free `Practice`
+ * button, the persistent lock hint (when reference activities are not
+ * unlocked), and the recommended target with its shuffle button.
+ *
+ * The picker, the button and the target line all close over the same
+ * `activity`/`current` pair rather than being three independently-rendered
+ * pieces, because picking a new activity has to change what both the button
+ * and the target line do - there is exactly one "what should Practice start
+ * right now" fact and everything here reads it from the same place.
+ */
+function renderPracticeSection(host: PanelHost, plan: PlanView, now: number): HTMLElement {
+  let activity: Rung | 'next' = 'next';
+  let current: SuggestTarget | null = pickTargetFor(plan, now, activity, Math.random);
+
+  const targetSlot = el('div', { class: 'sm-practice-target' }, [targetLineContent(current, activity)]);
+
+  function repaint(target: SuggestTarget | null, forActivity: Rung | 'next'): void {
+    current = target;
+    replace(targetSlot, [targetLineContent(target, forActivity)]);
   }
 
-  const target = pickStartTarget(plan, now);
-  if (target === null) {
-    // Unreachable in practice - every applicable passage always has a
-    // suggested activity now that nothing is locked - but kept as an honest
-    // fallback rather than a silent no-op button.
-    return el('div', { class: 'sm-callout' }, [
-      el('p', { class: 'sm-callout-text', text: 'Add a passage to get started.' }),
-    ]);
-  }
-
-  const action = button(
-    'Start practicing',
-    () => void host.startSession(target.passageId, target.rung),
-    { class: 'sm-btn sm-btn-primary sm-btn-block sm-btn-large' },
+  const practiceButton = button(
+    'Practice',
+    () => {
+      if (!current) {
+        host.announce(`Nothing to practise for ${ACTIVITY_LABEL[activity]} yet.`);
+        return;
+      }
+      void host.startSession(current.passageId, current.rung);
+    },
+    { class: 'sm-btn sm-btn-quiet sm-practice-btn' },
   );
 
-  return el('div', { class: 'sm-callout sm-callout-action' }, [
-    action,
-    el('p', {
-      class: 'sm-callout-text',
-      text: `${target.reference} — ${RUNG_LABEL[target.rung]}`,
+  const select = el('select', {
+    class: 'sm-select sm-activity-picker',
+    attrs: { 'aria-label': 'Activity' },
+  }) as HTMLSelectElement;
+  for (const opt of ACTIVITY_OPTIONS) {
+    const locked = isReferenceActivity(opt.value) && !plan.referenceActivitiesUnlocked;
+    select.appendChild(el('option', { value: opt.value, text: opt.label, disabled: locked }));
+  }
+  select.addEventListener('change', () => {
+    activity = (select.value as Rung | 'next') || 'next';
+    repaint(pickTargetFor(plan, now, activity, Math.random), activity);
+  });
+
+  const shuffleButton = iconButton('🔀', 'Shuffle suggestion', () => {
+    const pool = poolFor(plan, now, activity);
+    const others = current ? pool.filter((t) => !sameSuggestTarget(t, current!)) : pool;
+    if (others.length === 0) {
+      // Not broken - there is simply nothing else applicable to offer right
+      // now (an empty plan never reaches here; this is the "exactly one
+      // target" case).
+      host.announce('Nothing else to practise right now.');
+      return;
+    }
+    repaint(pickTargetFor(plan, now, activity, Math.random, current ?? undefined), activity);
+  });
+
+  const children: (HTMLElement | null)[] = [
+    el('div', { class: 'sm-practice-row' }, [select, practiceButton]),
+    plan.referenceActivitiesUnlocked ? null : renderReferenceHint(host, plan),
+    el('div', { class: 'sm-practice-target-row' }, [targetSlot, shuffleButton]),
+  ];
+
+  return el('div', { class: 'sm-practice-section' }, children);
+}
+
+/**
+ * The persistent explanation under the activity picker while the two
+ * reference activities are locked - a `title` on a disabled `<option>` is
+ * not reliably shown by any browser, so this line is what actually carries
+ * the "why", plus a real way to fix it.
+ */
+function renderReferenceHint(host: PanelHost, plan: PlanView): HTMLElement {
+  const needed = MIN_VERSES_FOR_REFERENCE_ACTIVITIES;
+  const short = Math.max(0, needed - plan.scopeVerseCount);
+  return el('p', { class: 'sm-hint sm-reference-hint' }, [
+    `Match references and Provide reference need ${needed} verses in this list - ` +
+      `${short} more to go (${plan.scopeVerseCount} so far). `,
+    button('Manage Passages', () => host.go({ type: 'goManagePassages' }), {
+      class: 'sm-btn sm-btn-quiet sm-btn-small',
     }),
   ]);
 }
 
+function renderManagePassagesLink(host: PanelHost): HTMLElement {
+  return button('Manage Passages', () => host.go({ type: 'goManagePassages' }), {
+    class: 'sm-btn sm-btn-quiet sm-btn-small sm-manage-passages-link',
+  });
+}
+
+function renderListPicker(host: PanelHost, plan: PlanView): HTMLElement {
+  const options: ListSelectorOption[] = [
+    { id: 'all', name: 'All Lists' },
+    ...plan.lists.map((list) => ({ id: list.id, name: list.name })),
+  ];
+  // `selected` is always read from `plan.scope`, never from local state - the
+  // worker owns scope, so a `planChanged` push that rebuilds this whole
+  // screen still shows the right selection rather than silently resetting to
+  // "All Lists".
+  return listSelector(options, plan.scope, (id) => {
+    void host
+      .request({ type: 'setScope', scope: id === 'all' ? { kind: 'all' } : { kind: 'list', id } })
+      .then((reply) => {
+        if (reply.ok) host.reload();
+        else host.announce(reply.error);
+      });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The one-click empty-plan shortcut
+// ---------------------------------------------------------------------------
+
+/**
+ * On an empty plan, "Practice" becomes a one-click "Add <verse> and start",
+ * using whatever the host says the reader is currently looking at. That is
+ * the whole point of the worker pushing `activeVerse` in the first place:
+ * someone who has just read a verse and reached for this panel should not
+ * have to type it back in before they can begin. The full add-passage form
+ * (batches, paste handling) lives on the Manage Passages screen now; this is
+ * the one thing a brand-new user must still have to press.
+ */
 function renderAddAndStart(host: PanelHost): HTMLElement {
   const reference = host.activeReference;
 
   if (!reference) {
     return el('div', { class: 'sm-callout' }, [
-      el('p', { class: 'sm-callout-text', text: 'Add a verse below to get started.' }),
+      el('p', { class: 'sm-callout-text', text: 'Add a verse from Manage Passages to get started.' }),
     ]);
   }
 
@@ -125,254 +305,6 @@ function renderAddAndStart(host: PanelHost): HTMLElement {
   );
 
   return el('div', { class: 'sm-callout sm-callout-action' }, [action]);
-}
-
-// ---------------------------------------------------------------------------
-// Adding a passage
-// ---------------------------------------------------------------------------
-
-/**
- * The add-passage field.
- *
- * The error slot below the field is populated with whatever the worker said,
- * verbatim. A reference that does not parse is the ordinary case here, not an
- * exceptional one - "Jn 3.16", "1 Jn 1", "Psalm 151" - and the worker's own
- * message is the only thing that can say which of those went wrong. Replacing
- * it with a generic "Could not add passage" would be throwing away the only
- * useful information in the reply.
- *
- * A `<form>` rather than an input plus a click handler, because a form gives
- * Enter-to-submit and a properly associated label for nothing. The panel CSP
- * sets `form-action 'none'`, so the submit is inert beyond the handler below -
- * which is what we want, since the handler always calls `preventDefault`.
- *
- * **Pasting several references at once.** Task 0004's review pointed out that
- * a plan can hold far more passages than anyone will type in one at a time,
- * and asked for the smallest fix: paste a list, one reference per line. The
- * field stays a single-line input - Enter still adds one passage and gets out
- * of the way - but a paste is inspected before it lands in the field. More
- * than one candidate reference (see `referenceInput.ts#extractReferenceCandidates`)
- * is treated as a batch and never touches the input's value at all, so the
- * field never ends up holding a jumble of concatenated text.
- *
- * **Confirming a batch.** A follow-up review round asked that a pasted batch
- * be "auto-parsed and added in bulk (after confirmation)" rather than added
- * the instant the paste lands - a paste can carry far more than the intended
- * references (a whole verse list copied with a heading, say), and adding
- * every line unseen is the one place in this form that cannot be undone with
- * Ctrl+Z. So a multi-candidate paste shows the parsed list and waits for "Add
- * all" (or "Cancel") rather than calling the worker immediately.
- *
- * **Sprinkled references, and consolidating overlaps.** A further round asked
- * for two more things: pasting "lots of text with random verse references
- * sprinkled in" rather than a clean one-per-line list, and de-duplicating a
- * batch that names both a range and one of its own verses ("if John 3:16-17
- * is in there, John 3:16 separately should be ignored"). The first is
- * `extractReferenceCandidates`'s job; the second happens after every
- * candidate has been added, in `addReferences` below, since only the worker
- * knows each reference's real verse range.
- */
-function renderAddPassage(host: PanelHost): HTMLElement {
-  const input = el('input', {
-    class: 'sm-input',
-    id: 'sm-add-reference',
-    type: 'text',
-    placeholder: host.activeReference ?? 'e.g. Psalm 23:1-6',
-    attrs: {
-      autocomplete: 'off',
-      autocapitalize: 'words',
-      spellcheck: 'false',
-      enterkeyhint: 'done',
-    },
-  }) as HTMLInputElement;
-
-  // The error region is always in the DOM, empty, holding its own height. If
-  // it were created on demand the whole list below would jump down a line the
-  // moment a reference failed to parse - which is exactly when the user is
-  // looking at something else on the screen.
-  const errorSlot = el('div', {
-    class: 'sm-error-slot',
-    attrs: { 'aria-live': 'polite' },
-  });
-
-  const submit = el('button', { class: 'sm-btn', text: 'Add' }) as HTMLButtonElement;
-  submit.type = 'submit';
-
-  // Populated only while a pasted batch is awaiting "Add all" / "Cancel".
-  // Kept outside the `<form>` so it survives independently of a submit or
-  // reset the form might otherwise trigger.
-  const batchConfirmSlot = el('div', { class: 'sm-batch-confirm-slot' });
-
-  const form = el('form', { class: 'sm-add' }, [
-    el('label', { class: 'sm-label', text: 'Add passage', attrs: { for: 'sm-add-reference' } }),
-    el('div', { class: 'sm-add-row' }, [input, submit]),
-    errorSlot,
-    el('p', {
-      class: 'sm-hint',
-      text: 'Paste a list to add several at once - one reference per line.',
-    }),
-  ]) as HTMLFormElement;
-
-  /**
-   * Adds one or more references, in order, consolidates any that overlap
-   * within this same batch, and reports the outcome.
-   *
-   * A single reference keeps the original wording ("Added John 3:16.") so the
-   * common case reads exactly as it always has. A batch reports counts rather
-   * than naming every passage - the plan list below is about to show them all
-   * anyway - and any failures are listed individually, each with the worker's
-   * own message, so a batch of twenty that missed one bad line does not force
-   * a search for which one.
-   */
-  async function addReferences(references: string[]): Promise<void> {
-    submit.disabled = true;
-    input.disabled = true;
-    replace(errorSlot, []);
-
-    const addedPassages: Passage[] = [];
-    const failed: { reference: string; error: string }[] = [];
-
-    for (const reference of references) {
-      // Sequential, not `Promise.all` - these become real database rows and a
-      // race between them buys nothing while risking an interleaving no one
-      // asked for.
-      const reply = await host.request({ type: 'addPassage', reference });
-      if (reply.ok) addedPassages.push(reply.data.passage);
-      else failed.push({ reference, error: reply.error });
-    }
-
-    // Consolidate this batch's own overlaps ("if John 3:16-17 is in there,
-    // John 3:16 separately should be ignored" - task 0004's review). A
-    // passage id repeated in `addedPassages` (the same reference pasted
-    // twice, or two spellings that resolved to the same range) is collapsed
-    // to one entry first, so the range check below never mistakes "the same
-    // row twice" for "one range containing another" and removes the passage
-    // the user is trying to keep.
-    const distinct = dedupeById(addedPassages);
-    const { kept: survivors, dropped: subsumed } = dropContainedRanges(distinct);
-    const kept = [...survivors];
-    const dropped: Passage[] = [];
-    for (const passage of subsumed) {
-      // If removal itself fails - the passage disappeared already, a stray
-      // storage error - it is left counted as kept rather than reported gone
-      // while still sitting in the plan.
-      const reply = await host.request({ type: 'removePassage', passageId: passage.id });
-      if (reply.ok) dropped.push(passage);
-      else kept.push(passage);
-    }
-
-    submit.disabled = false;
-    input.disabled = false;
-
-    const added = kept.map((p) => p.reference);
-
-    if (added.length > 0) {
-      input.value = '';
-      const mergedNote =
-        dropped.length > 0
-          ? ` ${countLabel(dropped.length, 'reference')} already covered by another passage in this batch.`
-          : '';
-      host.announce(
-        added.length === 1 && failed.length === 0 && dropped.length === 0
-          ? `Added ${added[0]}.`
-          : failed.length === 0
-            ? `Added ${countLabel(added.length, 'passage')}.${mergedNote}`
-            : `Added ${countLabel(added.length, 'passage')}; ${failed.length} failed.${mergedNote}`,
-      );
-      host.reload();
-    }
-
-    if (failed.length > 0) {
-      replace(
-        errorSlot,
-        failed.map((f) => errorBanner(references.length === 1 ? f.error : `${f.reference}: ${f.error}`)),
-      );
-      focusQuietly(input);
-    }
-  }
-
-  /**
-   * Shows the parsed batch and waits for the user to confirm or cancel it,
-   * rather than adding it the instant the paste lands.
-   */
-  function showBatchConfirm(lines: string[]): void {
-    input.disabled = true;
-    submit.disabled = true;
-
-    const cancel = (): void => {
-      replace(batchConfirmSlot, []);
-      input.disabled = false;
-      submit.disabled = false;
-      focusQuietly(input);
-    };
-
-    replace(batchConfirmSlot, [
-      el('div', { class: 'sm-batch-confirm', attrs: { role: 'alert' } }, [
-        el('p', { class: 'sm-hint', text: `Add ${countLabel(lines.length, 'passage')}?` }),
-        el(
-          'ul',
-          { class: 'sm-batch-list' },
-          lines.map((line) => el('li', { class: 'sm-batch-list-item', text: line })),
-        ),
-        el('div', { class: 'sm-batch-actions' }, [
-          button(
-            `Add ${countLabel(lines.length, 'passage')}`,
-            () => {
-              replace(batchConfirmSlot, []);
-              input.disabled = false;
-              submit.disabled = false;
-              void addReferences(lines);
-            },
-            { class: 'sm-btn sm-btn-primary sm-btn-small' },
-          ),
-          button('Cancel', cancel, { class: 'sm-btn sm-btn-small sm-btn-quiet' }),
-        ]),
-      ]),
-    ]);
-  }
-
-  input.addEventListener('paste', (event: ClipboardEvent) => {
-    const text = event.clipboardData?.getData('text/plain') ?? '';
-    const candidates = extractReferenceCandidates(text);
-    if (candidates.length > 1) {
-      // More than one candidate - whether that is several lines, or several
-      // references sprinkled through one line of prose - take over the paste
-      // entirely rather than let the browser drop it into a single-line
-      // field, which - depending on the browser - can silently strip
-      // newlines and concatenate references into unparseable garbage. The
-      // batch itself waits for confirmation (above) rather than going
-      // straight to the worker.
-      event.preventDefault();
-      showBatchConfirm(candidates);
-    }
-  });
-
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-
-    const candidates = extractReferenceCandidates(input.value);
-    // An empty field falls back to whatever the main window is showing. This
-    // is why the worker pushes `activeVerse` at all: pressing Add with the
-    // placeholder showing does the obvious thing.
-    const references = candidates.length > 0 ? candidates : host.activeReference ? [host.activeReference.trim()] : [];
-    if (references.length === 0) {
-      replace(errorSlot, [errorBanner('Type a reference first, for example "John 3:16-18".')]);
-      focusQuietly(input);
-      return;
-    }
-
-    // Typed text can also name more than one reference ("John 3:16 and
-    // Romans 8:28"); it gets the same confirm-first treatment as a pasted
-    // batch rather than adding several passages on one Enter press unseen.
-    if (references.length > 1) {
-      showBatchConfirm(references);
-      return;
-    }
-
-    void addReferences(references);
-  });
-
-  return el('div', { class: 'sm-add-wrapper' }, [form, batchConfirmSlot]);
 }
 
 // ---------------------------------------------------------------------------
@@ -412,28 +344,4 @@ function renderPassageRow(host: PanelHost, pv: PassageView): HTMLElement {
   ]);
 
   return el('li', { class: 'sm-row' }, [main]);
-}
-
-// ---------------------------------------------------------------------------
-// Batch add helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Collapses a batch of `addPassage` replies to one entry per underlying
- * passage row, first occurrence wins.
- *
- * `store.addPassage` returns the *existing* row, unchanged, for an exact
- * repeat within the batch (the same reference pasted twice, or two spellings
- * that resolve to the same range) - so two entries in `passages` can be the
- * same row under two different array slots. Without this, `dropContainedRanges`
- * would see that "row" as containing itself and remove the very passage the
- * batch was trying to add, since a range check alone cannot tell "the same
- * passage twice" apart from "one range containing another".
- */
-function dedupeById(passages: Passage[]): Passage[] {
-  const byId = new Map<number, Passage>();
-  for (const p of passages) {
-    if (!byId.has(p.id)) byId.set(p.id, p);
-  }
-  return [...byId.values()];
 }

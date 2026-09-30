@@ -18,3 +18,6 @@ export type BibleExtensionAPI = Extensions.BibleExtensionAPI;
 export type IExtensionDatabase = Extensions.IExtensionDatabase;
 export type BibleVerseDto = Extensions.BibleVerseDto;
 export type DisposableHandle = Extensions.DisposableHandle;
+export type BibleBookDto = Extensions.BibleBookDto;
+export type BibleChapterDto = Extensions.BibleChapterDto;
+export type ParsedReferenceDto = Extensions.ParsedReferenceDto;
