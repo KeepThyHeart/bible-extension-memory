@@ -435,6 +435,12 @@ ul, ol {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
 }
 
+/* `display: flex` above beats the UA's `[hidden] { display: none }`, so without
+   this the closed menu is painted open. */
+.sm-menu-panel[hidden] {
+  display: none;
+}
+
 .sm-menu-item {
   font: inherit;
   font-size: var(--sm-control-size);

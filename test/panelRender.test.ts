@@ -4548,3 +4548,13 @@ describe('the practice heading during reference activities', () => {
     expect(practice.root.querySelector('.sm-crumb-current')!.textContent).toBe('John 3:16');
   });
 });
+
+describe('stylesheet: hidden popovers stay hidden', () => {
+  it('has a [hidden] rule for every class that sets display on a toggled element', () => {
+    // `.sm-menu-panel { display: flex }` and `.sm-modal-backdrop`'s display beat the
+    // UA `[hidden]` default, so each needs its own `[hidden] { display: none }`.
+    for (const cls of ['.sm-menu-panel', '.sm-modal-backdrop']) {
+      expect(STYLESHEET_TEXT).toContain(`${cls}[hidden]`);
+    }
+  });
+});
