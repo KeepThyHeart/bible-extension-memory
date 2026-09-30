@@ -784,8 +784,12 @@ describe('scripture rendering', () => {
 // 2. The working verse among its context
 // ---------------------------------------------------------------------------
 
+function crumbLabels(root: HTMLElement): string[] {
+  return Array.from(root.querySelectorAll('.sm-crumb-item')).map((n) => n.textContent ?? '');
+}
+
 describe('the working verse among its context', () => {
-  it('shows the reference in the breadcrumb as soon as context arrives, before any answer is submitted', async () => {
+  it('shows the reference as the passage crumb as soon as context arrives, before any answer is submitted', async () => {
     // The breadcrumb's current crumb comes from `PassageContext.reference` alone, fetched
     // separately from the step and deliberately not awaited before the first
     // paint (see `practiceView.ts#loadContext`'s own header). Before this,
@@ -795,8 +799,7 @@ describe('the working verse among its context', () => {
     // being prominent on this screen.
     const practice = await mountPractice(blanksStep(PSALM_1_2, [2, 16]));
 
-    const title = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
-    expect(title.textContent).toBe('Psalm 1:2-3');
+    expect(crumbLabels(practice.root)).toEqual(['Home', 'Psalm 1:2-3', RUNG_LABEL.blanks]);
   });
 
   it('marks exactly one verse as the one being worked on', async () => {
@@ -4288,10 +4291,6 @@ describe('the batch-add popup', () => {
 // ---------------------------------------------------------------------------
 
 describe('breadcrumbs replace the toolbar on every screen', () => {
-  function crumbLabels(root: HTMLElement): string[] {
-    return Array.from(root.querySelectorAll('.sm-crumb-item')).map((n) => n.textContent ?? '');
-  }
-
   it('the passage screen shows Home > reference, and Home goes to the plan', () => {
     const pv = passageViewFixture();
     const root = renderPassageScreen(host, pv, 'firstLetter');
@@ -4316,16 +4315,23 @@ describe('breadcrumbs replace the toolbar on every screen', () => {
     }
   });
 
-  it('the practice screen shows Home > reference, and Home ends the session', async () => {
+  it('the practice screen shows Home > passage > activity, each crumb ending the session and going there', async () => {
     host.handlers.endSession = () => ({ ok: true, data: { summary: null } });
-    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks' });
+    const practice = await mountPractice(blanksStep(PSALM_1_2, BLANKED), { rung: 'blanks', passageId: 7 });
 
-    expect(practice.root.querySelector('.sm-crumb-current')!.textContent).toBe('Psalm 1:2-3');
-    practice.root.querySelector<HTMLButtonElement>('.sm-crumb')!.click();
+    expect(crumbLabels(practice.root)).toEqual(['Home', 'Psalm 1:2-3', RUNG_LABEL.blanks]);
+    expect(practice.root.querySelector('.sm-crumb-current')!.textContent).toBe(RUNG_LABEL.blanks);
+    const crumbs = practice.root.querySelectorAll<HTMLButtonElement>('.sm-crumb');
+    expect(crumbs).toHaveLength(2);
+
+    crumbs[0].click();
     await settle();
-
     expect(host.requests.some((r) => r.type === 'endSession')).toBe(true);
-    expect(host.navigations).toContainEqual({ type: 'sessionEnded' });
+    expect(host.navigations).toContainEqual({ type: 'goPlan' });
+
+    crumbs[1].click();
+    await settle();
+    expect(host.navigations).toContainEqual({ type: 'goPassage', passageId: 7, rung: 'blanks' });
   });
 });
 
@@ -4518,7 +4524,7 @@ describe('the practice heading during reference activities', () => {
     after: [],
   });
 
-  it('shows the activity label, not the passage reference, during refmatch', async () => {
+  it('hides the passage reference from the crumbs during refmatch', async () => {
     const step: RefMatchStep = {
       kind: 'refmatch',
       verse: JOHN_3_16,
@@ -4533,19 +4539,21 @@ describe('the practice heading during reference activities', () => {
     const practice = await mountPractice(step, { rung: 'refmatch' }, { ok: true, data: johnContext() });
     const crumb = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
     expect(crumb.textContent).toBe(RUNG_LABEL.refmatch);
+    expect(crumbLabels(practice.root)).toEqual(['Home', 'Passage', RUNG_LABEL.refmatch]);
     expect(practice.root.querySelector('.sm-crumbs')!.textContent).not.toContain('John 3:16');
   });
 
-  it('shows the activity label, not the passage reference, during refprovide', async () => {
+  it('hides the passage reference from the crumbs during refprovide', async () => {
     const practice = await mountPractice(null, { rung: 'refprovide', tier: 0, tiers: 1 }, { ok: true, data: johnContext() });
     const crumb = practice.root.querySelector<HTMLElement>('.sm-crumb-current')!;
     expect(crumb.textContent).toBe(RUNG_LABEL.refprovide);
+    expect(crumbLabels(practice.root)).toEqual(['Home', 'Passage', RUNG_LABEL.refprovide]);
     expect(practice.root.querySelector('.sm-crumbs')!.textContent).not.toContain('John 3:16');
   });
 
   it('still shows the reference for a blanks session', async () => {
     const practice = await mountPractice(null, { rung: 'blanks' }, { ok: true, data: johnContext() });
-    expect(practice.root.querySelector('.sm-crumb-current')!.textContent).toBe('John 3:16');
+    expect(crumbLabels(practice.root)).toEqual(['Home', 'John 3:16', RUNG_LABEL.blanks]);
   });
 });
 

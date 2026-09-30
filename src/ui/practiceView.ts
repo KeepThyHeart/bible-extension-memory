@@ -75,7 +75,7 @@ import {
   pickDueTarget,
 } from './format';
 import type { PanelHost } from './host';
-import type { Flow } from './state';
+import type { Flow, NavAction } from './state';
 import { plainWord, renderPassage } from './scripture';
 import type { WordRenderer } from './scripture';
 import { resolveWrongPositions, revealedWord } from './stepResult';
@@ -283,27 +283,24 @@ export class PracticeView {
   private renderHead(): void {
     const step = this.session.step;
     // `refmatch`/`refprovide`: the passage's own reference IS the answer being
-    // asked for, so it must not appear as the page heading. The activity's
-    // label stands in for it - still one honest crumb, just not one that
-    // leaks the answer. (The context is still loaded: `refProvideAnswer`
-    // needs it to grade and to show the answer after the step.)
-    const reference =
-      this.session.rung === 'refprovide' || this.session.rung === 'refmatch'
-        ? RUNG_LABEL[this.session.rung]
-        : (this.context?.reference ?? '');
+    // asked for, so the passage crumb must not show it; a generic "Passage"
+    // stands in. (The context is still loaded: `refProvideAnswer` needs it to
+    // grade and to show the answer after the step.)
+    const hidesReference = this.session.rung === 'refprovide' || this.session.rung === 'refmatch';
+    const passageLabel = hidesReference ? 'Passage' : (this.context?.reference || 'Passage');
+    const passageId = this.session.passageId;
+    const rung = this.session.rung;
 
     replace(this.headEl, [
       breadcrumb({
+        // Home > passage > activity. Leaving mid-exercise is not "ending"
+        // anything: the resume point is written to disk after every verse (see
+        // `main.ts`), so going back picks up later. Each crumb ends the
+        // session, then goes where it says.
         crumbs: [
-          {
-            label: 'Home',
-            // Leaving mid-exercise is not "ending" anything any more: the
-            // resume point is written to disk after every verse (see
-            // `main.ts`), so going back picks up later. `endSession` returns
-            // to `returnTo` - the plan or the passage screen.
-            onClick: () => void this.endSession(),
-          },
-          { label: reference },
+          { label: 'Home', onClick: () => void this.endSession({ type: 'goPlan' }) },
+          { label: passageLabel, onClick: () => void this.endSession({ type: 'goPassage', passageId, rung }) },
+          { label: RUNG_LABEL[rung] },
         ],
         actions: [
           step !== null
@@ -319,10 +316,6 @@ export class PracticeView {
         ],
       }),
       el('div', { class: 'sm-practice-sub' }, [
-        // The heading already shows the label for refmatch/refprovide.
-        this.session.rung === 'refprovide' || this.session.rung === 'refmatch'
-          ? null
-          : el('span', { class: 'sm-practice-rung', text: RUNG_LABEL[this.session.rung] }),
         this.session.tiers > 1
           ? el('span', {
               class: 'sm-practice-tier',
@@ -1718,7 +1711,7 @@ export class PracticeView {
     void this.host.startFlow(flow, exclude);
   }
 
-  private async endSession(): Promise<void> {
+  private async endSession(dest: NavAction = { type: 'sessionEnded' }): Promise<void> {
     // The reply is not inspected: the user pressed Back, and the screen has to
     // change whether or not the worker had a summary to give. A failure here
     // is announced rather than trapping them in a session that is already over
@@ -1730,7 +1723,7 @@ export class PracticeView {
     });
     if (this.disposed) return;
     if (!reply.ok) this.host.announce(reply.error);
-    this.host.go({ type: 'sessionEnded' });
+    this.host.go(dest);
   }
 
   // -------------------------------------------------------------------------
