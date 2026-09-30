@@ -1698,8 +1698,8 @@ export class PracticeView {
   }
 
   /**
-   * The Next button: "not this one right now". Ends the session as the Home
-   * crumb does, then re-runs this session's flow excluding the passage just
+   * The Next button: "not this one right now". Ends the session as the
+   * crumbs do, then re-runs this session's flow excluding the passage just
    * left. `flow` and the passage id are captured first because `endSession`
    * drives `sessionEnded`, which can destroy this view.
    */
