@@ -300,6 +300,9 @@ const REQUIRED_GRANTS = [
   'ui:notification',
 ] as const;
 
+/** How long a soft-deleted passage is kept (restorable by re-adding it) before it is purged. */
+const DELETED_PASSAGE_RETENTION_MS = 7 * 24 * 3600 * 1000;
+
 /** Set once storage is open. Panel requests answer honestly while it is false. */
 let ready = false;
 
@@ -317,6 +320,14 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
     store = new MemoryStore(db);
     defaultCollectionId = await ensureDefaultCollection(db, DEFAULT_COLLECTION_NAME, Date.now());
     await renameLegacyDefaultCollection();
+    // Housekeeping only: a failed purge must never block activation.
+    try {
+      await store.purgeOldDeletedPassages(Date.now(), DELETED_PASSAGE_RETENTION_MS);
+    } catch (err) {
+      console.error(
+        `Scripture Memory could not purge old deleted passages: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     ready = true;
   } catch (err) {
     console.error(
@@ -648,7 +659,7 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
     }
 
     case 'removePassage':
-      await store.removePassage(req.passageId);
+      await store.removePassage(req.passageId, Date.now());
       await refreshStatusBar();
       return {};
 
@@ -1011,7 +1022,7 @@ async function addPassageFromReference(reference: string) {
   const now = Date.now();
   const targetCollectionId = await resolveAddTargetCollectionId();
 
-  const { passage, created } = await store.addPassage(
+  const { passage, created, revived } = await store.addPassage(
     {
       collectionId: targetCollectionId,
       moduleId,
@@ -1023,7 +1034,7 @@ async function addPassageFromReference(reference: string) {
     },
   );
 
-  if (created) await refreshStatusBar();
+  if (created || revived) await refreshStatusBar();
   void api.panels.postMessage({ type: 'planChanged' });
   return passage;
 }
@@ -1038,7 +1049,7 @@ async function addPassageFromVerseId(
   const now = Date.now();
   const targetCollectionId = await resolveAddTargetCollectionId();
 
-  const { created } = await store.addPassage(
+  const { created, revived } = await store.addPassage(
     {
       collectionId: targetCollectionId,
       moduleId,
@@ -1053,7 +1064,11 @@ async function addPassageFromVerseId(
   await refreshStatusBar();
   void api.panels.postMessage({ type: 'planChanged' });
   await api.ui.showNotification(
-    created ? 'Added to your memorization plan.' : 'That verse is already in your plan.',
+    created
+      ? 'Added to your memorization plan.'
+      : revived
+        ? 'Restored to your memorization plan with its progress.'
+        : 'That verse is already in your plan.',
   );
 }
 

@@ -653,7 +653,7 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
       durationMs: 4000,
     });
 
-    await store.removePassage(second.id);
+    await store.removePassage(second.id, NOW);
 
     const survivor = await store.getCard(first.id, 'refmatch');
     expect(survivor).toBeDefined();
@@ -687,12 +687,9 @@ describe('syncLadders - the ladder re-syncs when the collection changes', () => 
 // ---------------------------------------------------------------------------
 
 describe('removePassage', () => {
-  it('cascades to the passage\'s cards and their attempts', async () => {
-    // The one place the never-prune rule yields. Keeping the attempt history
-    // of a passage the user explicitly removed would mean their delete did
-    // not delete, and the Analytics screen would go on counting work against
-    // material that is gone. This only works if the FK cascade is real, which
-    // is why it is asserted against SQLite rather than against a fake.
+  it('soft-deletes: row, cards and attempts survive but are hidden from normal reads', async () => {
+    // Soft delete (migration v5): the row, its cards and attempts stay and
+    // only `deleted_at` hides it, so re-adding the reference restores progress.
     const { store, collectionId, harness } = await freshStore();
     const { passage } = await store.addPassage(
       passageInput(collectionId, 19023001, 3, 'Psalm 23:1-3'),
@@ -710,14 +707,12 @@ describe('removePassage', () => {
     }
     expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(cards.length);
 
-    await store.removePassage(passage.id);
+    await store.removePassage(passage.id, NOW);
 
     expect(await store.getPassage(passage.id)).toBeUndefined();
-    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(0);
-    // The cascade has to reach two levels: passage -> card -> attempt. A
-    // schema that cascaded only the first level would leave orphan attempt
-    // rows that `analytics()` still counts.
-    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [passage.id])).toHaveLength(cards.length);
+    // Soft delete keeps the attempt history too, so re-adding restores it.
+    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(cards.length);
   });
 
   it('leaves other passages and their history untouched', async () => {
@@ -738,7 +733,7 @@ describe('removePassage', () => {
       durationMs: null,
     });
 
-    await store.removePassage(drop.id);
+    await store.removePassage(drop.id, NOW);
 
     expect(await store.getPassage(keep.id)).toBeDefined();
     expect(
@@ -750,7 +745,7 @@ describe('removePassage', () => {
     // Two panels open on the same plan can both send `removePassage` for the
     // same row. The second must not throw across the RPC boundary.
     const { store } = await freshStore();
-    await expect(store.removePassage(4242)).resolves.toBeUndefined();
+    await expect(store.removePassage(4242, NOW)).resolves.toBeUndefined();
   });
 });
 
@@ -1628,5 +1623,180 @@ describe('scope', () => {
     expect(await store.listPassagesInScope({ kind: 'list', id: collectionId })).toHaveLength(1);
     expect(await store.listPassagesInScope({ kind: 'list', id: second.id })).toHaveLength(1);
     expect(await store.listPassagesInScope({ kind: 'all' })).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Soft delete (migration v5)
+// ---------------------------------------------------------------------------
+
+describe('soft delete', () => {
+  const scopeAll = { kind: 'all' } as const;
+
+  async function practise(store: MemoryStore, passageId: number, rung: Rung, at: number) {
+    const card = await store.getCard(passageId, rung);
+    await store.applySchedule(
+      card!.id,
+      schedule({ intervalStep: card!.intervalStep, streak: card!.streak, score: 0.9, now: at, rng: makeRng(1) }),
+      0.9,
+    );
+    await store.recordAttempt({
+      cardId: card!.id,
+      at,
+      score: 0.9,
+      correctFirst: 1,
+      totalSteps: 1,
+      durationMs: 1000,
+    });
+    return card!;
+  }
+
+  it('upgrades a v4 database to v5 with deleted_at, leaving rows live', async () => {
+    const harness = new SqliteHarness();
+    await migrate(harness);
+    const { store, collectionId } = await freshStore(harness);
+    await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    // Rewind to a v4 shape.
+    await harness.exec(`DROP INDEX passage_deleted_at`);
+    await harness.exec(`ALTER TABLE passage DROP COLUMN deleted_at`);
+    await harness.run(`UPDATE meta SET value = '4' WHERE key = 'schema_version'`);
+
+    expect(await migrate(harness)).toBe(5);
+    const cols = await harness.query<{ name: string }>(`PRAGMA table_info(passage)`);
+    expect(cols.map((c) => c.name)).toContain('deleted_at');
+    expect(await store.listPassages(collectionId)).toHaveLength(1);
+  });
+
+  it('hides a removed passage from every read, list count and due query', async () => {
+    const { store, collectionId } = await freshStore();
+    const { passage: gone } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    const { passage: kept } = await store.addPassage(passageInput(collectionId, 45008028, 1, 'Romans 8:28'));
+    await practise(store, gone.id, 'blanks', NOW);
+    await practise(store, kept.id, 'blanks', NOW + 1000);
+    const later = NOW + 30 * DAY_MS;
+    expect(await store.dueCount(scopeAll, later)).toBeGreaterThan(0);
+
+    await store.removePassage(gone.id, NOW);
+
+    expect(await store.getPassage(gone.id)).toBeUndefined();
+    expect((await store.listPassages(collectionId)).map((p) => p.id)).toEqual([kept.id]);
+    expect((await store.listPassagesInScope(scopeAll)).map((p) => p.id)).toEqual([kept.id]);
+    expect((await store.listPassagesInScope({ kind: 'list', id: collectionId })).map((p) => p.id)).toEqual([kept.id]);
+    const list = (await store.listCollections()).find((l) => l.id === collectionId);
+    expect(list).toMatchObject({ passageCount: 1, verseCount: 1 });
+    // Only the survivor's due cards count, in both scope shapes.
+    const keptDue = (await store.listCards(kept.id)).filter((c) => c.dueAt !== null && c.dueAt <= later).length;
+    expect(await store.dueCount(scopeAll, later)).toBe(keptDue);
+    expect(await store.dueCount({ kind: 'list', id: collectionId }, later)).toBe(keptDue);
+    // The soft-deleted card is due earlier; it must not be the "next" one.
+    expect((await store.nextDueCard(scopeAll, later))?.passage.id).toBe(kept.id);
+    expect((await store.nextDueCard({ kind: 'list', id: collectionId }, later))?.passage.id).toBe(kept.id);
+  });
+
+  it('keeps an empty list visible in listCollections when its only passage is removed', async () => {
+    const { store, collectionId } = await freshStore();
+    const { passage } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    await store.removePassage(passage.id, NOW);
+    expect(await store.listCollections()).toEqual([
+      { id: collectionId, name: 'My plan', passageCount: 0, verseCount: 0 },
+    ]);
+  });
+
+  it('revives with the same row, cards and attempts, reporting revived not created', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    const { passage } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    const card = await practise(store, passage.id, 'blanks', NOW);
+    await store.removePassage(passage.id, NOW + 1);
+
+    const res = await store.addPassage(passageInput(other.id, 43003016, 1, 'John 3:16'));
+
+    expect(res).toMatchObject({ created: false, revived: true });
+    expect(res.passage.id).toBe(passage.id);
+    expect(res.passage.collectionId).toBe(other.id);
+    expect((await store.getCard(passage.id, 'blanks'))!.id).toBe(card.id);
+    expect(await harness.query(`SELECT id FROM attempt WHERE card_id = ?`, [card.id])).toHaveLength(1);
+    expect(await store.listPassages(other.id)).toHaveLength(1);
+  });
+
+  it('revive prefers a soft-deleted twin in the target list', async () => {
+    const { store, collectionId } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    const { passage: inOther } = await store.addPassage(passageInput(other.id, 43003016, 1, 'John 3:16'));
+    const { passage: inMain } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    await store.removePassage(inMain.id, NOW);
+    await store.removePassage(inOther.id, NOW + 5); // newer id order would otherwise win
+
+    const res = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    expect(res.revived).toBe(true);
+    expect(res.passage.id).toBe(inMain.id);
+  });
+
+  it('movePassage hard-deletes a soft-deleted twin in the target', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    const { passage: src } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    const { passage: twin } = await store.addPassage(passageInput(other.id, 43003016, 1, 'John 3:16'));
+    await store.removePassage(twin.id, NOW);
+
+    const { moved } = await store.movePassage(src.id, other.id);
+
+    expect(moved).toBe(true);
+    expect((await store.getPassage(src.id))?.collectionId).toBe(other.id);
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [twin.id])).toHaveLength(0);
+  });
+
+  it('deleteCollection handles soft-deleted collisions in either direction', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    // Active in source, soft twin in target.
+    const { passage: a } = await store.addPassage(passageInput(other.id, 43003016, 1, 'John 3:16'));
+    const { passage: aTwin } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    await store.removePassage(aTwin.id, NOW);
+    // Soft in source, active in target.
+    const { passage: bSoft } = await store.addPassage(passageInput(other.id, 45008028, 1, 'Romans 8:28'));
+    const { passage: bActive } = await store.addPassage(passageInput(collectionId, 45008028, 1, 'Romans 8:28'));
+    await store.removePassage(bSoft.id, NOW);
+    // Soft in both.
+    const { passage: cSrc } = await store.addPassage(passageInput(other.id, 19023001, 1, 'Psalm 23:1'));
+    const { passage: cDst } = await store.addPassage(passageInput(collectionId, 19023001, 1, 'Psalm 23:1'));
+    await store.removePassage(cSrc.id, NOW);
+    await store.removePassage(cDst.id, NOW);
+
+    await store.deleteCollection(other.id, collectionId);
+
+    expect((await store.listPassages(collectionId)).map((p) => p.id).sort()).toEqual([a.id, bActive.id].sort());
+    expect(await harness.query(`SELECT id FROM passage WHERE id IN (?, ?)`, [aTwin.id, bSoft.id])).toHaveLength(0);
+    // Exactly one soft-deleted Psalm row remains; no unique violation occurred.
+    expect(
+      await harness.query(`SELECT id FROM passage WHERE start_verse_id = 19023001`),
+    ).toHaveLength(1);
+  });
+
+  it('deleteCollection still refuses an active-vs-active collision', async () => {
+    const { store, collectionId } = await freshStore();
+    const other = await store.createCollection('List B', NOW);
+    await store.addPassage(passageInput(other.id, 43003016, 1, 'John 3:16'));
+    await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    await expect(store.deleteCollection(other.id, collectionId)).rejects.toThrow();
+  });
+
+  it('purgeOldDeletedPassages removes only rows older than the cutoff, cascading history', async () => {
+    const { store, collectionId, harness } = await freshStore();
+    const { passage: old } = await store.addPassage(passageInput(collectionId, 43003016, 1, 'John 3:16'));
+    const { passage: recent } = await store.addPassage(passageInput(collectionId, 45008028, 1, 'Romans 8:28'));
+    const { passage: live } = await store.addPassage(passageInput(collectionId, 19023001, 1, 'Psalm 23:1'));
+    await practise(store, old.id, 'blanks', NOW);
+    await store.removePassage(old.id, NOW - 8 * DAY_MS);
+    await store.removePassage(recent.id, NOW - 6 * DAY_MS);
+
+    const purged = await store.purgeOldDeletedPassages(NOW, 7 * DAY_MS);
+
+    expect(purged).toBe(1);
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [old.id])).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM card WHERE passage_id = ?`, [old.id])).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM attempt`)).toHaveLength(0);
+    expect(await harness.query(`SELECT id FROM passage WHERE id = ?`, [recent.id])).toHaveLength(1);
+    expect(await store.getPassage(live.id)).toBeDefined();
   });
 });

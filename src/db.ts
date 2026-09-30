@@ -164,6 +164,16 @@ const MIGRATIONS: readonly string[][] = [
   // keeps the upgrade lossless: every resume row written before this column
   // existed was written by a session that only ever ran at tier 0.
   [`ALTER TABLE resume_state ADD COLUMN tier INTEGER NOT NULL DEFAULT 0`],
+
+  // --- v5: soft delete - removing a passage hides it rather than erasing it --
+  //
+  // `deleted_at` is nullable and needs no backfill: NULL means live. A removed
+  // passage keeps its cards and attempts so re-adding the same reference
+  // restores progress; old rows are purged after a retention window.
+  [
+    `ALTER TABLE passage ADD COLUMN deleted_at INTEGER`,
+    `CREATE INDEX IF NOT EXISTS passage_deleted_at ON passage (deleted_at)`,
+  ],
 ];
 
 /** The version a fresh database is brought to. */

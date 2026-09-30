@@ -49,6 +49,7 @@ interface PassageRow {
   verse_count: number;
   added_at: number;
   answer_mode: string | null;
+  deleted_at: number | null;
 }
 
 interface CardRow {
@@ -164,35 +165,80 @@ export class MemoryStore {
 
   async listPassages(collectionId: number): Promise<Passage[]> {
     const rows = await this.db.query<PassageRow>(
-      `SELECT * FROM passage WHERE collection_id = ? ORDER BY start_verse_id`,
+      `SELECT * FROM passage WHERE collection_id = ? AND deleted_at IS NULL ORDER BY start_verse_id`,
       [collectionId],
     );
     return rows.map(toPassage);
   }
 
   async getPassage(id: number): Promise<Passage | undefined> {
-    const row = await this.db.queryOne<PassageRow>(`SELECT * FROM passage WHERE id = ?`, [id]);
+    const row = await this.db.queryOne<PassageRow>(
+      `SELECT * FROM passage WHERE id = ? AND deleted_at IS NULL`,
+      [id],
+    );
     return row ? toPassage(row) : undefined;
   }
 
   /**
    * Insert a passage and give it the ladder its shape implies.
    *
-   * Returns the existing row if this exact range is already in the collection
-   * rather than throwing on the unique index: adding a passage twice is a
-   * user slip, not an error worth a dialog, and the second add should simply
-   * land on the passage they already have.
+   * Two ways this can avoid a fresh `INSERT`, checked in order:
+   *
+   *  1. This exact range is already active in the target collection - a user
+   *     slip, not an error worth a dialog - so the second add lands on the
+   *     passage they already have (`created: false`, `revived: false`).
+   *  2. A soft-deleted row matching this `(module, start, end)` exists in ANY
+   *     list (left behind by `removePassage`): it is revived in place
+   *     (`deleted_at` cleared, `collection_id` moved), keeping its cards and
+   *     attempt history (`created: false`, `revived: true`). A match in the
+   *     target list itself wins over one elsewhere. Because the per-list
+   *     unique index also counts soft-deleted rows, a soft-deleted twin
+   *     already sitting in the target list is hard-deleted first when the
+   *     revived row comes from another list.
    */
   async addPassage(
     input: Omit<Passage, 'id' | 'answerMode'>,
-  ): Promise<{ passage: Passage; created: boolean }> {
+  ): Promise<{ passage: Passage; created: boolean; revived: boolean }> {
     const existing = await this.db.queryOne<PassageRow>(
       `SELECT * FROM passage
         WHERE collection_id = ? AND module_id = ?
-          AND start_verse_id = ? AND end_verse_id = ?`,
+          AND start_verse_id = ? AND end_verse_id = ?
+          AND deleted_at IS NULL`,
       [input.collectionId, input.moduleId, input.startVerseId, input.endVerseId],
     );
-    if (existing) return { passage: toPassage(existing), created: false };
+    if (existing) return { passage: toPassage(existing), created: false, revived: false };
+
+    const revivable = await this.db.queryOne<PassageRow>(
+      `SELECT * FROM passage
+        WHERE module_id = ? AND start_verse_id = ? AND end_verse_id = ?
+          AND deleted_at IS NOT NULL
+        ORDER BY (collection_id = ?) DESC, id DESC LIMIT 1`,
+      [input.moduleId, input.startVerseId, input.endVerseId, input.collectionId],
+    );
+    if (revivable) {
+      if (revivable.collection_id !== input.collectionId) {
+        await this.db.run(
+          `DELETE FROM passage
+            WHERE collection_id = ? AND module_id = ?
+              AND start_verse_id = ? AND end_verse_id = ?
+              AND deleted_at IS NOT NULL AND id <> ?`,
+          [
+            input.collectionId,
+            input.moduleId,
+            input.startVerseId,
+            input.endVerseId,
+            revivable.id,
+          ],
+        );
+      }
+      await this.db.run(`UPDATE passage SET deleted_at = NULL, collection_id = ? WHERE id = ?`, [
+        input.collectionId,
+        revivable.id,
+      ]);
+      await this.syncLadders(input.collectionId);
+      const passage = await this.getPassage(revivable.id);
+      return { passage: passage as Passage, created: false, revived: true };
+    }
 
     const res = await this.db.run(
       `INSERT INTO passage
@@ -215,22 +261,34 @@ export class MemoryStore {
     await this.syncLadders(input.collectionId);
 
     const passage = await this.getPassage(id);
-    return { passage: passage as Passage, created: true };
+    return { passage: passage as Passage, created: true, revived: false };
   }
 
   /**
-   * Delete a passage and everything hanging off it.
+   * Soft-delete a passage: stamp `deleted_at` and hide it from every read.
    *
-   * The cascade takes its cards and their attempts. That is the one place the
-   * never-prune rule yields: keeping the attempt history of a passage the user
-   * has explicitly removed would mean their "delete" did not delete, and the
-   * Analytics screen would keep counting work against material that is gone.
+   * Its cards and attempts stay, so re-adding the same reference restores its
+   * progress; `purgeOldDeletedPassages` removes it for good after the
+   * retention window.
    */
-  async removePassage(id: number): Promise<void> {
+  async removePassage(id: number, now: number): Promise<void> {
     const passage = await this.getPassage(id);
     if (!passage) return;
-    await this.db.run(`DELETE FROM passage WHERE id = ?`, [id]);
+    await this.db.run(`UPDATE passage SET deleted_at = ? WHERE id = ?`, [now, id]);
     await this.syncLadders(passage.collectionId);
+  }
+
+  /**
+   * Hard-delete passages soft-deleted more than `maxAgeMs` before `now`,
+   * returning how many went. The `ON DELETE CASCADE` chain takes their cards,
+   * attempts and resume rows. Called once per activation from `main.ts`.
+   */
+  async purgeOldDeletedPassages(now: number, maxAgeMs: number): Promise<number> {
+    const res = await this.db.run(
+      `DELETE FROM passage WHERE deleted_at IS NOT NULL AND deleted_at < ?`,
+      [now - maxAgeMs],
+    );
+    return res.changes;
   }
 
   async setPassageAnswerMode(passageId: number, mode: AnswerMode | null): Promise<void> {
@@ -249,7 +307,7 @@ export class MemoryStore {
    */
   async listPassagesInScope(scope: Scope): Promise<Passage[]> {
     if (scope.kind === 'all') {
-      const rows = await this.db.query<PassageRow>(`SELECT * FROM passage ORDER BY start_verse_id`);
+      const rows = await this.db.query<PassageRow>(`SELECT * FROM passage WHERE deleted_at IS NULL ORDER BY start_verse_id`);
       return rows.map(toPassage);
     }
     return this.listPassages(scope.id);
@@ -278,7 +336,7 @@ export class MemoryStore {
               COUNT(p.id)                 AS passageCount,
               COALESCE(SUM(p.verse_count), 0) AS verseCount
          FROM collection c
-         LEFT JOIN passage p ON p.collection_id = c.id
+         LEFT JOIN passage p ON p.collection_id = c.id AND p.deleted_at IS NULL
         GROUP BY c.id
         ORDER BY c.id`,
     );
@@ -334,6 +392,30 @@ export class MemoryStore {
     }
 
     await this.db.transaction(async (tx) => {
+      // Soft-deleted rows still occupy `passage_range_unique`. Clear the ones
+      // that would collide: a soft-deleted twin in the target yields to an
+      // active row moving in, and a soft-deleted row moving out is dropped if
+      // the target already holds that range (active or not).
+      await tx.run(
+        `DELETE FROM passage
+          WHERE collection_id = ? AND deleted_at IS NOT NULL
+            AND EXISTS (SELECT 1 FROM passage s
+                         WHERE s.collection_id = ? AND s.deleted_at IS NULL
+                           AND s.module_id = passage.module_id
+                           AND s.start_verse_id = passage.start_verse_id
+                           AND s.end_verse_id = passage.end_verse_id)`,
+        [movePassagesTo, id],
+      );
+      await tx.run(
+        `DELETE FROM passage
+          WHERE collection_id = ? AND deleted_at IS NOT NULL
+            AND EXISTS (SELECT 1 FROM passage t
+                         WHERE t.collection_id = ?
+                           AND t.module_id = passage.module_id
+                           AND t.start_verse_id = passage.start_verse_id
+                           AND t.end_verse_id = passage.end_verse_id)`,
+        [id, movePassagesTo],
+      );
       await tx.run(`UPDATE passage SET collection_id = ? WHERE collection_id = ?`, [
         movePassagesTo,
         id,
@@ -363,11 +445,20 @@ export class MemoryStore {
     const existing = await this.db.queryOne<PassageRow>(
       `SELECT * FROM passage
         WHERE collection_id = ? AND module_id = ?
-          AND start_verse_id = ? AND end_verse_id = ?`,
+          AND start_verse_id = ? AND end_verse_id = ?
+          AND deleted_at IS NULL`,
       [collectionId, passage.moduleId, passage.startVerseId, passage.endVerseId],
     );
     if (existing) return { passage: toPassage(existing), moved: false };
 
+    // A soft-deleted twin in the target would trip the unique index.
+    await this.db.run(
+      `DELETE FROM passage
+        WHERE collection_id = ? AND module_id = ?
+          AND start_verse_id = ? AND end_verse_id = ?
+          AND deleted_at IS NOT NULL`,
+      [collectionId, passage.moduleId, passage.startVerseId, passage.endVerseId],
+    );
     await this.db.run(`UPDATE passage SET collection_id = ? WHERE id = ?`, [
       collectionId,
       passageId,
@@ -665,7 +756,10 @@ export class MemoryStore {
   async dueCount(scope: Scope, now: number): Promise<number> {
     if (scope.kind === 'all') {
       const row = await this.db.queryOne<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM card WHERE due_at IS NOT NULL AND due_at <= ?`,
+        `SELECT COUNT(*) AS n
+           FROM card c
+           JOIN passage p ON p.id = c.passage_id
+          WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL`,
         [now],
       );
       return row ? row.n : 0;
@@ -674,7 +768,8 @@ export class MemoryStore {
       `SELECT COUNT(*) AS n
          FROM card c
          JOIN passage p ON p.id = c.passage_id
-        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.collection_id = ?`,
+        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.collection_id = ?
+          AND p.deleted_at IS NULL`,
       [now, scope.id],
     );
     return row ? row.n : 0;
@@ -695,7 +790,7 @@ export class MemoryStore {
     const row = await this.db.queryOne<CardRow>(
       `SELECT c.* FROM card c
          JOIN passage p ON p.id = c.passage_id
-        WHERE c.due_at IS NOT NULL AND c.due_at <= ? ${scopeFilter}
+        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL ${scopeFilter}
         ORDER BY c.due_at ASC,
                  CASE c.rung
                    WHEN 'ordering' THEN 0

@@ -35,6 +35,7 @@ import {
 
 import { activate, deactivate } from '../src/main';
 import { SqliteHarness } from './sqliteHarness';
+import { migrate } from '../src/db';
 import type { PanelRequest, PassageView, PlanView, RungView } from '../src/types';
 
 interface Manifest {
@@ -1029,5 +1030,59 @@ describe('verse labels', () => {
     const ctx = await getContext(channel, passageId);
 
     expect(ctx.verses.map((v) => v.label)).toEqual([String(start), String(start + 1), String(end - 1), String(end)]);
+  });
+});
+
+describe('activation purges old soft-deleted passages', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  async function seededDb(db: SqliteHarness) {
+    await migrate(db);
+    await db.run(`INSERT INTO collection (name, created_at) VALUES ('My plan', 0)`);
+    const now = Date.now();
+    for (const [start, deletedAt] of [
+      [43003016, now - 8 * DAY],
+      [45008028, now - 6 * DAY],
+    ] as const) {
+      await db.run(
+        `INSERT INTO passage (collection_id, module_id, start_verse_id, end_verse_id, reference, verse_count, added_at, deleted_at)
+         VALUES (1, 'KJV', ?, ?, 'x', 1, 0, ?)`,
+        [start, start, deletedAt],
+      );
+    }
+  }
+
+  it('purges passages deleted over 7 days ago and keeps newer ones', async () => {
+    const db = new SqliteHarness();
+    await seededDb(db);
+    const api = createMockApi({
+      storage: { openDatabase: async () => db },
+      bible: { listModules: async () => [MODULE_KJV] },
+    });
+    await activate(api);
+    const rows = await db.query<{ start_verse_id: number }>(`SELECT start_verse_id FROM passage`);
+    expect(rows.map((r) => r.start_verse_id)).toEqual([45008028]);
+  });
+
+  it('still activates when the purge fails', async () => {
+    class FailingPurge extends SqliteHarness {
+      override async run(sql: string, params: unknown[] = []) {
+        if (sql.includes('DELETE FROM passage WHERE deleted_at')) throw new Error('disk full');
+        return super.run(sql, params);
+      }
+    }
+    const db = new FailingPurge();
+    await seededDb(db);
+    const registerPanelType = vi.fn().mockResolvedValue({ dispose: vi.fn() });
+    const api = createMockApi({
+      storage: { openDatabase: async () => db },
+      bible: { listModules: async () => [MODULE_KJV] },
+      ui: { registerPanelType },
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(activate(api)).resolves.toBeUndefined();
+    expect(registerPanelType).toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 });
