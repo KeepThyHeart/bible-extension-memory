@@ -50,6 +50,8 @@ import {
   WELL_LEARNED_LEVEL,
 } from './ladder';
 import { schedule, makeRng, isDue } from './scheduler';
+import { PushController } from './pushController';
+import { localCalendar } from './reminderPlan';
 import { Session, nextSessionId, MAX_REFERENCE_STEPS } from './session';
 import type { ReferenceCatalog } from './session';
 import { toVerseText, CONTEXT_VERSES } from './verses';
@@ -153,6 +155,8 @@ let activeVerseId: number | null = null;
 /** Abbreviation of the translation the reader is in, from the active-verse event. */
 let activeModule: string | null = null;
 let statusBarHandle: DisposableHandle | null = null;
+/** Push cards (task 0072). Null until activation finishes, and after deactivate. */
+let push: PushController | null = null;
 let lastStatusText: string | null = null;
 const sessions = new Map<string, Session>();
 /** When each in-flight session started, for the (currently unshown) duration column. */
@@ -306,6 +310,15 @@ const DELETED_PASSAGE_RETENTION_MS = 7 * 24 * 3600 * 1000;
 /** Set once storage is open. Panel requests answer honestly while it is false. */
 let ready = false;
 
+/**
+ * Tell any open panel the plan changed, and let push cards recompute which
+ * reminders to hand the host (the plan, the due dates or the lists moved).
+ */
+function planChanged(): void {
+  void api.panels.postMessage({ type: 'planChanged' });
+  push?.requestRecompute('plan');
+}
+
 export async function activate(host: BibleExtensionAPI): Promise<void> {
   api = host;
 
@@ -368,6 +381,34 @@ export async function activate(host: BibleExtensionAPI): Promise<void> {
     if (event?.module) activeModule = event.module;
     postActiveVerse();
   });
+
+  // Push cards. Optional by design: the host may have no `reminders` API yet
+  // (task 0083), and nothing here may ever fail activation.
+  try {
+    push = new PushController({
+      store,
+      api,
+      now: () => Date.now(),
+      calendar: localCalendar,
+      rng: Math.random,
+      fetchVerses: (passage) =>
+        fetchVersesSafely(
+          passage.startVerseId,
+          passage.endVerseId,
+          passage.moduleId,
+          makeLabeller(passage.startVerseId, passage.endVerseId),
+        ),
+      post: (message) => void api.panels.postMessage(message),
+      refreshStatus: refreshStatusBar,
+      openPanel: async () => {
+        await api.workspace.openPanel('panel');
+      },
+    });
+    await push.start();
+    await refreshStatusBar();
+  } catch (err) {
+    console.warn(`Scripture Memory: push cards unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   console.log('Scripture Memory activated');
 }
@@ -440,6 +481,8 @@ export function deactivate(): void {
   // the verse in progress.
   sessions.clear();
   sessionStartedAt.clear();
+  push?.dispose();
+  push = null;
   console.log('Scripture Memory deactivated');
 }
 
@@ -536,7 +579,7 @@ async function registerCommands(): Promise<void> {
       return;
     }
     await api.workspace.openPanel('panel');
-    void api.panels.postMessage({ type: 'planChanged' });
+    planChanged();
   });
 
   await api.runtime.expose('addActiveVerse', async (args?: unknown) => {
@@ -580,7 +623,9 @@ async function refreshStatusBar(): Promise<void> {
   // reflection of whatever list a panel happens to have scoped right now -
   // and a panel need not even be open for it to matter.
   const count = await store.dueCount({ kind: 'all' }, Date.now());
-  const text = count === 0 ? 'Memory: up to date' : `Memory: ${count} due`;
+  let text = count === 0 ? 'Memory: up to date' : `Memory: ${count} due`;
+  const waiting = push ? await push.waitingCount() : 0;
+  if (waiting > 0) text += ` · ${waiting} ${waiting === 1 ? 'card' : 'cards'}`;
   if (text === lastStatusText) return;
 
   if (statusBarHandle) {
@@ -642,17 +687,17 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
 
     case 'setPassageSortOrder':
       await store.setPassageSortOrder(req.order);
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return {};
 
     case 'setDefaultAnswerMode':
       await store.setDefaultAnswerMode(req.mode);
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return {};
 
     case 'setPassageAnswerMode':
       await store.setPassageAnswerMode(req.passageId, req.mode);
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return {};
 
     case 'getContext':
@@ -675,7 +720,7 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       // - see `store.ts#listTierProgress`.
       await store.resetPassageProgress(req.passageId, Date.now());
       await refreshStatusBar();
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       // Unlike `removePassage`, the reply carries the rebuilt plan: the
       // screen that asked is showing the levels that just changed, and
       // waiting for the push to come round would flash the old ones.
@@ -705,12 +750,12 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
 
     case 'createList':
       await store.createCollection(req.name, Date.now());
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return buildPlanView();
 
     case 'renameList':
       await store.renameCollection(req.id, req.name);
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return buildPlanView();
 
     case 'deleteList':
@@ -719,7 +764,7 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       // attempt history all move to `movePassagesTo` first.
       await store.deleteCollection(req.id, req.movePassagesTo);
       await refreshStatusBar();
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return buildPlanView();
 
     case 'getListPracticeStats':
@@ -728,13 +773,28 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
     case 'movePassage':
       await store.movePassage(req.passageId, req.collectionId);
       await refreshStatusBar();
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return buildPlanView();
 
     case 'setScope':
       await store.setScope(req.scope);
-      void api.panels.postMessage({ type: 'planChanged' });
+      planChanged();
       return buildPlanView();
+
+    case 'getPushSettings':
+      return requirePush().getSettingsView();
+    case 'setPushSettings':
+      return requirePush().setSettings(req.settings);
+    case 'requestReminderPermission':
+      return requirePush().requestPermission();
+    case 'getCardStack':
+      return requirePush().getStack();
+    case 'gradeRecall':
+      return requirePush().grade(req);
+    case 'snoozeCard':
+      return requirePush().snooze(req);
+    case 'consumeLaunchIntent':
+      return push ? push.consumeLaunchIntent() : { showCard: false };
 
     default: {
       const exhaustive: never = req;
@@ -821,6 +881,11 @@ async function assemblePassageView(
   };
 }
 
+function requirePush(): PushController {
+  if (!push) throw new Error('Memory cards are not available right now.');
+  return push;
+}
+
 async function buildPlanView(): Promise<PlanView> {
   const now = Date.now();
   const scope = await store.getScope();
@@ -845,6 +910,7 @@ async function buildPlanView(): Promise<PlanView> {
   const scopedList = scopedListId !== undefined ? lists.find((l) => l.id === scopedListId) : undefined;
 
   return {
+    cardsWaiting: push ? await push.waitingCount() : 0,
     // The list `addPassage` would target right now - see the field's own doc
     // comment in `types.ts` for why this is kept rather than dropped.
     collectionId: scopedListId ?? defaultCollectionId,
@@ -1044,7 +1110,7 @@ async function addPassageFromReference(reference: string) {
   );
 
   if (created || revived) await refreshStatusBar();
-  void api.panels.postMessage({ type: 'planChanged' });
+  planChanged();
   return passage;
 }
 
@@ -1071,7 +1137,7 @@ async function addPassageFromVerseId(
   );
 
   await refreshStatusBar();
-  void api.panels.postMessage({ type: 'planChanged' });
+  planChanged();
   await api.ui.showNotification(
     created
       ? 'Added to your memorization plan.'
@@ -1344,7 +1410,7 @@ async function finishSession(session: Session): Promise<SessionSummary> {
   await store.applySchedule(card.id, result, score);
 
   await refreshStatusBar();
-  void api.panels.postMessage({ type: 'planChanged' });
+  planChanged();
 
   // Read back AFTER the attempt row was written, so the level reported here
   // is the same one the plan view will show a moment later. Reporting

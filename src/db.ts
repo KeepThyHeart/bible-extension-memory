@@ -174,6 +174,28 @@ const MIGRATIONS: readonly string[][] = [
     `ALTER TABLE passage ADD COLUMN deleted_at INTEGER`,
     `CREATE INDEX IF NOT EXISTS passage_deleted_at ON passage (deleted_at)`,
   ],
+
+  // --- v6: reserved for task 0071 (replace this placeholder with 0071's -----
+  // entry on merge; keeping the slot keeps version numbers aligned).
+  [],
+
+  // --- v7: task 0072 - push cards -------------------------------------------
+  //
+  // `push_card` is the schedule of notification-backed recall cards. A recall
+  // card itself is an ordinary `card` row with rung 'recall' (rung is plain
+  // TEXT), so no DDL is needed for it. `attempt.duration_ms` already exists
+  // (v2), so it is not added again here.
+  [
+    `CREATE TABLE IF NOT EXISTS push_card (
+       key        TEXT PRIMARY KEY,
+       passage_id INTEGER NOT NULL REFERENCES passage(id) ON DELETE CASCADE,
+       fire_at    INTEGER NOT NULL,
+       origin     TEXT    NOT NULL,
+       state      TEXT    NOT NULL,
+       updated_at INTEGER NOT NULL
+     )`,
+    `CREATE INDEX IF NOT EXISTS push_card_state_fire ON push_card (state, fire_at)`,
+  ],
 ];
 
 /** The version a fresh database is brought to. */

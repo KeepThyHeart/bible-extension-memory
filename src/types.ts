@@ -55,6 +55,13 @@
  * how many verses are in scope, how many sibling passages exist - that change
  * under a card without the card itself changing.
  */
+import type {
+  CardStackView,
+  PushCardSettings,
+  PushSettingsView,
+  RecallGrade,
+} from './pushTypes';
+
 export type Rung = 'ordering' | 'refmatch' | 'blanks' | 'firstletters' | 'refprovide';
 
 /**
@@ -273,6 +280,8 @@ export interface PassageView {
 export type PassageSortOrder = 'bible' | 'need';
 
 export interface PlanView {
+  /** Push cards waiting to be recalled (task 0072). 0 when the feature is off. */
+  cardsWaiting: number;
   /**
    * The list new passages would land in right now: the scoped list's id, or
    * (scope `'all'`) the Default list's id. Kept - rather than dropped - for
@@ -678,7 +687,15 @@ export type PanelRequest =
   | { type: 'deleteList'; id: number; movePassagesTo: number }
   | { type: 'getListPracticeStats'; id: number }
   | { type: 'movePassage'; passageId: number; collectionId: number }
-  | { type: 'setScope'; scope: Scope };
+  | { type: 'setScope'; scope: Scope }
+  // --- push cards (task 0072) ---
+  | { type: 'getPushSettings' }
+  | { type: 'setPushSettings'; settings: PushCardSettings }
+  | { type: 'requestReminderPermission' }
+  | { type: 'getCardStack' }
+  | { type: 'gradeRecall'; passageId: number; grade: RecallGrade; key?: string; durationMs?: number }
+  | { type: 'snoozeCard'; passageId: number; key?: string }
+  | { type: 'consumeLaunchIntent' };
 
 /**
  * What the user did, keyed to the step kind that asked.
@@ -745,6 +762,13 @@ export interface RequestMap {
   getListPracticeStats: { total: number; practiced: number };
   movePassage: PlanView;
   setScope: PlanView;
+  getPushSettings: PushSettingsView;
+  setPushSettings: PushSettingsView;
+  requestReminderPermission: PushSettingsView;
+  getCardStack: CardStackView;
+  gradeRecall: { nextDueAt: number | null; stack: CardStackView };
+  snoozeCard: { snoozedUntil: number };
+  consumeLaunchIntent: { showCard: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -759,5 +783,8 @@ export interface RequestMap {
 export type WorkerPush =
   | { type: 'planChanged' }
   | { type: 'dueCountChanged'; count: number }
+  /** A notification was clicked: open the card stack (task 0072). */
+  | { type: 'showCard'; key: string | null }
+  | { type: 'cardsWaitingChanged'; count: number }
   /** The host's active verse moved. Used to prefill the add-passage field. */
   | { type: 'activeVerse'; verseId: number; reference: string };

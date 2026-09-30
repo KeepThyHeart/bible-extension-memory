@@ -2171,3 +2171,119 @@ button.sm-activity-row:hover {
   align-items: center;
   gap: var(--sm-s2);
 }
+
+/* push cards */
+.sm-cards-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sm-s3);
+  width: 100%;
+  margin: var(--sm-s3) 0;
+  padding: var(--sm-s3);
+  font: inherit;
+  text-align: left;
+  color: var(--sm-info-text);
+  background: var(--sm-info-soft);
+  border: 1px solid var(--sm-info-border);
+  border-radius: var(--sm-radius-lg);
+  cursor: pointer;
+}
+
+.sm-cards-banner:hover {
+  border-color: var(--sm-accent);
+}
+
+.sm-cards-banner-text {
+  font-weight: 600;
+}
+
+.sm-cards-banner-go {
+  color: var(--sm-accent);
+}
+
+.sm-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-s3);
+  padding: var(--sm-s4);
+  border: 1px solid var(--sm-border);
+  border-radius: var(--sm-radius-lg);
+  background: var(--sm-surface-raised);
+}
+
+.sm-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sm-s2);
+  color: var(--sm-text-dim);
+  font-size: 0.92em;
+}
+
+.sm-card-ref {
+  margin: 0;
+  color: var(--sm-heading);
+}
+
+.sm-card-cue {
+  margin: 0;
+  font-style: italic;
+  color: var(--sm-text);
+}
+
+.sm-card-grades,
+.sm-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sm-s2);
+}
+
+.sm-card-grade {
+  flex: 1 1 auto;
+}
+
+.sm-card-empty {
+  color: var(--sm-text-dim);
+}
+
+.sm-push-group {
+  margin: var(--sm-s3) 0;
+  padding: 0;
+  border: 0;
+}
+
+.sm-push-legend {
+  padding: 0;
+  margin-bottom: var(--sm-s2);
+  font-weight: 600;
+  color: var(--sm-heading);
+}
+
+.sm-push-slot {
+  flex-wrap: wrap;
+  gap: var(--sm-s2);
+}
+
+.sm-push-slot-times,
+.sm-push-inline,
+.sm-push-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sm-s2);
+}
+
+.sm-push-days {
+  display: flex;
+  gap: var(--sm-s1);
+}
+
+.sm-push-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sm-push-number {
+  width: 4.5em;
+}

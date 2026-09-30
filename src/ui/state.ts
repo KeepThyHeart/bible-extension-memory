@@ -30,6 +30,7 @@ export type View =
   | { name: 'passage'; passageId: number; rung: Rung | null }
   | { name: 'analytics' }
   | { name: 'settings' }
+  | { name: 'card' }
   | { name: 'managePassages' }
   | { name: 'practice'; sessionId: string };
 
@@ -84,6 +85,8 @@ export type NavAction =
   | { type: 'goPlan' }
   | { type: 'goAnalytics' }
   | { type: 'goSettings' }
+  /** The push-card stack (task 0072). A leaf like Settings; leaving it returns to the plan. */
+  | { type: 'goCard' }
   | { type: 'goManagePassages' }
   | { type: 'goPassage'; passageId: number; rung?: Rung | null }
   | { type: 'sessionStarted'; sessionId: string; passageId: number; rung: Rung; flow: Flow }
@@ -114,6 +117,9 @@ export function navReduce(state: NavState, action: NavAction): NavState {
 
     case 'goSettings':
       return { view: { name: 'settings' }, returnTo: { name: 'plan' }, flow: state.flow };
+
+    case 'goCard':
+      return { view: { name: 'card' }, returnTo: { name: 'plan' }, flow: state.flow };
 
     case 'goManagePassages':
       // Manage is a leaf too: it starts no sessions, so it is never a return

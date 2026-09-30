@@ -1682,7 +1682,7 @@ describe('soft delete', () => {
     await harness.exec(`ALTER TABLE passage DROP COLUMN deleted_at`);
     await harness.run(`UPDATE meta SET value = '4' WHERE key = 'schema_version'`);
 
-    expect(await migrate(harness)).toBe(5);
+    expect(await migrate(harness)).toBe(SCHEMA_VERSION);
     const cols = await harness.query<{ name: string }>(`PRAGMA table_info(passage)`);
     expect(cols.map((c) => c.name)).toContain('deleted_at');
     expect(await store.listPassages(collectionId)).toHaveLength(1);

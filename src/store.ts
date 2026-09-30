@@ -38,6 +38,38 @@ import {
 } from './ladder';
 import type { ActivityLevel, TierBest } from './ladder';
 import type { ScheduleResult } from './scheduler';
+import { RECALL_RUNG } from './pushTypes';
+import type { PushCardRow, PushCardState } from './pushTypes';
+
+interface PushCardSqlRow {
+  key: string;
+  passage_id: number;
+  fire_at: number;
+  origin: string;
+  state: string;
+  updated_at: number;
+}
+
+function toPushCard(r: PushCardSqlRow): PushCardRow {
+  return {
+    key: r.key,
+    passageId: r.passage_id,
+    fireAt: r.fire_at,
+    origin: r.origin === 'snooze' ? 'snooze' : 'plan',
+    state: r.state as PushCardState,
+    updatedAt: r.updated_at,
+  };
+}
+
+/** What the push scheduler needs to know about one live passage. */
+export interface PushCandidateFacts {
+  passageId: number;
+  reference: string;
+  /** MAX(attempt.at) over every card of the passage, recall included. */
+  lastAttemptAt: number | null;
+  /** The recall card's due_at, when it has one. */
+  recallDueAt: number | null;
+}
 
 /** Row shapes as SQLite returns them: snake_case, integers for booleans. */
 interface PassageRow {
@@ -562,7 +594,7 @@ export class MemoryStore {
 
   async listCards(passageId: number): Promise<Card[]> {
     const rows = await this.db.query<CardRow>(
-      `SELECT * FROM card WHERE passage_id = ? ORDER BY id`,
+      `SELECT * FROM card WHERE passage_id = ? AND rung <> 'recall' ORDER BY id`,
       [passageId],
     );
     return rows.map(toCard);
@@ -785,7 +817,8 @@ export class MemoryStore {
         `SELECT COUNT(*) AS n
            FROM card c
            JOIN passage p ON p.id = c.passage_id
-          WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL`,
+          WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL
+            AND c.rung <> 'recall'`,
         [now],
       );
       return row ? row.n : 0;
@@ -795,7 +828,7 @@ export class MemoryStore {
          FROM card c
          JOIN passage p ON p.id = c.passage_id
         WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.collection_id = ?
-          AND p.deleted_at IS NULL`,
+          AND p.deleted_at IS NULL AND c.rung <> 'recall'`,
       [now, scope.id],
     );
     return row ? row.n : 0;
@@ -816,7 +849,8 @@ export class MemoryStore {
     const row = await this.db.queryOne<CardRow>(
       `SELECT c.* FROM card c
          JOIN passage p ON p.id = c.passage_id
-        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL ${scopeFilter}
+        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL
+          AND c.rung <> 'recall' ${scopeFilter}
         ORDER BY c.due_at ASC,
                  CASE c.rung
                    WHEN 'ordering' THEN 0
@@ -833,6 +867,168 @@ export class MemoryStore {
     const passage = await this.getPassage(row.passage_id);
     if (!passage) return undefined;
     return { card: toCard(row), passage };
+  }
+
+  // -- push cards (task 0072) ---------------------------------------------------
+
+  async getRecallCard(passageId: number): Promise<Card | undefined> {
+    const row = await this.db.queryOne<CardRow>(
+      `SELECT * FROM card WHERE passage_id = ? AND rung = ?`,
+      [passageId, RECALL_RUNG],
+    );
+    return row ? toCard(row) : undefined;
+  }
+
+  /** Create the passage's recall card if missing, and return it. Idempotent. */
+  async ensureRecallCard(passageId: number): Promise<Card> {
+    await this.db.run(
+      `INSERT OR IGNORE INTO card (passage_id, rung, state, interval_step, due_at, streak, last_score)
+       VALUES (?, ?, 'new', -1, NULL, 0, NULL)`,
+      [passageId, RECALL_RUNG],
+    );
+    return (await this.getRecallCard(passageId)) as Card;
+  }
+
+  async setCardDueAt(cardId: number, dueAt: number | null): Promise<void> {
+    await this.db.run(`UPDATE card SET due_at = ? WHERE id = ?`, [dueAt, cardId]);
+  }
+
+  /** Live passages across every list, with the facts push selection needs. */
+  async listPushCandidateFacts(): Promise<PushCandidateFacts[]> {
+    const rows = await this.db.query<{
+      passageId: number;
+      reference: string;
+      lastAttemptAt: number | null;
+      recallDueAt: number | null;
+    }>(
+      `SELECT p.id AS passageId,
+              p.reference AS reference,
+              (SELECT MAX(a.at) FROM attempt a JOIN card c ON c.id = a.card_id
+                WHERE c.passage_id = p.id) AS lastAttemptAt,
+              (SELECT c.due_at FROM card c
+                WHERE c.passage_id = p.id AND c.rung = ?) AS recallDueAt
+         FROM passage p
+        WHERE p.deleted_at IS NULL
+        ORDER BY p.id`,
+      [RECALL_RUNG],
+    );
+    return rows;
+  }
+
+  async getPushSettingsRaw(): Promise<string | undefined> {
+    return this.getSetting('pushCards');
+  }
+
+  async setPushSettingsRaw(json: string): Promise<void> {
+    await this.setSetting('pushCards', json);
+  }
+
+  async listPushCards(states?: PushCardState[]): Promise<PushCardRow[]> {
+    if (states && states.length === 0) return [];
+    const where = states ? `WHERE state IN (${states.map(() => '?').join(', ')})` : '';
+    const rows = await this.db.query<PushCardSqlRow>(
+      `SELECT * FROM push_card ${where} ORDER BY fire_at ASC, key ASC`,
+      states ?? [],
+    );
+    return rows.map(toPushCard);
+  }
+
+  async getPushCard(key: string): Promise<PushCardRow | undefined> {
+    const row = await this.db.queryOne<PushCardSqlRow>(`SELECT * FROM push_card WHERE key = ?`, [key]);
+    return row ? toPushCard(row) : undefined;
+  }
+
+  /** Insert rows, ignoring keys that already exist. */
+  async insertPushCards(rows: PushCardRow[]): Promise<void> {
+    if (rows.length === 0) return;
+    await this.db.transaction(async (tx) => {
+      for (const r of rows) {
+        await tx.run(
+          `INSERT OR IGNORE INTO push_card (key, passage_id, fire_at, origin, state, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [r.key, r.passageId, r.fireAt, r.origin, r.state, r.updatedAt],
+        );
+      }
+    });
+  }
+
+  /** Delete scheduled rows of `origin` that fire after `now`. */
+  async deleteFutureScheduled(now: number, origin: 'plan' | 'snooze'): Promise<number> {
+    const res = await this.db.run(
+      `DELETE FROM push_card WHERE state = 'scheduled' AND origin = ? AND fire_at > ?`,
+      [origin, now],
+    );
+    return res.changes;
+  }
+
+  /** Delete every scheduled row regardless of origin. */
+  async deleteAllScheduled(): Promise<void> {
+    await this.db.run(`DELETE FROM push_card WHERE state = 'scheduled'`);
+  }
+
+  async setPushCardState(key: string, state: PushCardState, now: number): Promise<boolean> {
+    const res = await this.db.run(`UPDATE push_card SET state = ?, updated_at = ? WHERE key = ?`, [
+      state,
+      now,
+      key,
+    ]);
+    return res.changes > 0;
+  }
+
+  /** Mark scheduled rows with fire_at <= now as `state`; returns the affected rows (before change). */
+  async promoteScheduled(now: number, state: PushCardState): Promise<PushCardRow[]> {
+    const rows = await this.db.query<PushCardSqlRow>(
+      `SELECT * FROM push_card WHERE state = 'scheduled' AND fire_at <= ? ORDER BY fire_at`,
+      [now],
+    );
+    if (rows.length > 0) {
+      await this.db.run(
+        `UPDATE push_card SET state = ?, updated_at = ? WHERE state = 'scheduled' AND fire_at <= ?`,
+        [state, now, now],
+      );
+    }
+    return rows.map(toPushCard);
+  }
+
+  /**
+   * Passage ids that already have a card on each local day, for rows whose
+   * fire_at is at or after `fromDayStart`. `dayStartOf` maps a timestamp to its
+   * local day start (injected: the store has no calendar).
+   */
+  async usedPassageIdsByDay(
+    fromDayStart: number,
+    dayStartOf: (ms: number) => number,
+  ): Promise<Map<number, Set<number>>> {
+    const rows = await this.db.query<{ passage_id: number; fire_at: number }>(
+      `SELECT passage_id, fire_at FROM push_card
+        WHERE fire_at >= ? AND state <> 'dropped'`,
+      [fromDayStart],
+    );
+    const out = new Map<number, Set<number>>();
+    for (const r of rows) {
+      const day = dayStartOf(r.fire_at);
+      const set = out.get(day);
+      if (set) set.add(r.passage_id);
+      else out.set(day, new Set([r.passage_id]));
+    }
+    return out;
+  }
+
+  async waitingCount(): Promise<number> {
+    const row = await this.db.queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM push_card pc JOIN passage p ON p.id = pc.passage_id
+        WHERE pc.state = 'waiting' AND p.deleted_at IS NULL`,
+    );
+    return row ? row.n : 0;
+  }
+
+  /** Delete fired/done/dropped rows last touched more than `maxAgeMs` ago. */
+  async prunePushCards(now: number, maxAgeMs: number): Promise<number> {
+    const res = await this.db.run(
+      `DELETE FROM push_card WHERE state IN ('fired', 'done', 'dropped') AND updated_at < ?`,
+      [now - maxAgeMs],
+    );
+    return res.changes;
   }
 
   // -- analytics --------------------------------------------------------------

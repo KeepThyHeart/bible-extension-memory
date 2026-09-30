@@ -467,6 +467,7 @@ function emptyPlan(): PlanView {
     sortOrder: 'bible',
     passages: [],
     totalDue: 0,
+    cardsWaiting: 0,
     defaultAnswerMode: 'firstLetter',
   };
 }

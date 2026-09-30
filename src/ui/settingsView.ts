@@ -9,11 +9,18 @@
  */
 
 import type { AnswerMode, PlanView, SettingsView } from '../types';
+import type { PushSettingsView } from '../pushTypes';
+import { renderPushSettings } from './pushSettingsView';
 import { button, el } from './dom';
 import { breadcrumb } from './components';
 import type { PanelHost } from './host';
 
-export function renderSettings(host: PanelHost, settings: SettingsView, plan: PlanView): HTMLElement {
+export function renderSettings(
+  host: PanelHost,
+  settings: SettingsView,
+  plan: PlanView,
+  push: PushSettingsView | null = null,
+): HTMLElement {
   const root = el('section', { class: 'sm-screen sm-screen-settings' });
 
   root.appendChild(breadcrumb({ crumbs: [{ label: 'Home', onClick: () => host.go({ type: 'goPlan' }) }, { label: 'Settings' }] }));
@@ -27,6 +34,8 @@ export function renderSettings(host: PanelHost, settings: SettingsView, plan: Pl
   );
 
   root.appendChild(renderOverrides(host, plan));
+
+  if (push) root.appendChild(renderPushSettings(host, push));
 
   return root;
 }
