@@ -108,6 +108,17 @@ export function createHandsFreeView(initial: ReciteStateView, cb: HandsFreeCallb
   }
 
   draw(initial);
+  // The tone depends on the clock and the app theme, neither of which is a recite state change, so re-check it
+  // while the screen is mounted (a paused or waiting run would otherwise keep the old tone).
+  const retone = setInterval(() => {
+    if (!root.isConnected) {
+      if (root.dataset.mounted === '1') clearInterval(retone);
+      return;
+    }
+    root.dataset.mounted = '1';
+    const tone = currentTone();
+    if (root.getAttribute('data-tone') !== tone) root.setAttribute('data-tone', tone);
+  }, 2000);
   return { element: root, update: draw };
 }
 
