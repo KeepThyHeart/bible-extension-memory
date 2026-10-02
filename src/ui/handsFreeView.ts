@@ -22,6 +22,31 @@ export interface HandsFreeScreen {
   update(state: ReciteStateView): void;
 }
 
+export type HandsFreeTone = 'light' | 'dark';
+
+/** Night, by the clock: 19:00 to 05:59 local. */
+export function isNightHour(hour: number): boolean {
+  return hour >= 19 || hour < 6;
+}
+
+/**
+ * Car mode is dark only when the app's own theme is dark or it is night by the
+ * local clock; otherwise it follows the panel's light styling. With no host
+ * theme mode (a bare browser) the OS colour scheme stands in for it.
+ */
+export function handsFreeTone(opts: { themeMode: string | null; prefersDark: boolean; hour: number }): HandsFreeTone {
+  const mainDark = opts.themeMode === null ? opts.prefersDark : opts.themeMode === 'dark';
+  return mainDark || isNightHour(opts.hour) ? 'dark' : 'light';
+}
+
+function currentTone(): HandsFreeTone {
+  return handsFreeTone({
+    themeMode: document.documentElement.getAttribute('data-theme-mode'),
+    prefersDark: typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches,
+    hour: new Date().getHours(),
+  });
+}
+
 /** The big line of text for a phase. */
 export function handsFreePhaseText(state: ReciteStateView): string {
   const base: Record<LoopPhase, string> = {
@@ -42,11 +67,12 @@ export function handsFreePhaseText(state: ReciteStateView): string {
 export function createHandsFreeView(initial: ReciteStateView, cb: HandsFreeCallbacks): HandsFreeScreen {
   const live = el('div', { class: 'sm-sr-only', attrs: { 'aria-live': 'assertive', role: 'status' } });
   const body = el('div', { class: 'sm-handsfree-body' });
-  const root = el('section', { class: 'sm-screen sm-handsfree', attrs: { 'data-phase': initial.phase } }, [body, live]);
+  const root = el('section', { class: 'sm-screen sm-handsfree', attrs: { 'data-phase': initial.phase, 'data-tone': currentTone() } }, [body, live]);
   let last = '';
 
   function draw(state: ReciteStateView): void {
     root.setAttribute('data-phase', state.phase);
+    root.setAttribute('data-tone', currentTone());
     const finished = state.phase === 'summary' || state.phase === 'done' || state.phase === 'error';
     const paused = state.phase === 'paused';
     const big = (label: string, action: ReciteAction, extra = ''): HTMLButtonElement =>

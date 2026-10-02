@@ -105,7 +105,7 @@ function renderActivityTiles(host: PanelHost, plan: PlanView, now: number): HTML
       disabled: due === null || !due.enabled,
     });
     append(recite, [
-      el('span', { class: 'sm-tile-title', text: RECITE_TILE.title }),
+      el('span', { class: 'sm-tile-head' }, [icon('recite'), el('span', { class: 'sm-tile-title', text: RECITE_TILE.title })]),
       el('span', { class: 'sm-tile-sub', text: RECITE_TILE.subtext }),
       due !== null && !due.enabled
         ? el('span', { class: 'sm-tile-warning', text: 'Nothing due to recite yet. Switch it on for a passage first.' })
@@ -152,8 +152,7 @@ function renderActivityTile(host: PanelHost, plan: PlanView, tile: ActivityTile,
   });
 
   append(tileButton, [
-    icon(tile.id),
-    el('span', { class: 'sm-tile-title', text: tile.title }),
+    el('span', { class: 'sm-tile-head' }, [icon(tile.id), el('span', { class: 'sm-tile-title', text: tile.title })]),
     el('span', { class: 'sm-tile-sub', text: tile.subtext }),
     warning === null ? null : el('span', { class: 'sm-tile-warning', text: warning }),
   ]);

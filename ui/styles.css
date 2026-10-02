@@ -376,8 +376,14 @@ ul, ol {
   overflow-wrap: break-word;
 }
 
-.sm-crumb-current:focus-visible {
-  outline-offset: 4px;
+/* The current-page heading is not interactive: panel.ts focuses it
+   programmatically after navigation (and on first load), and :focus-visible
+   matches that, which drew a ring that looked like a persistent "selected"
+   state on Home. Screen readers still get the focus move; sighted users get
+   no ring on a non-control. */
+.sm-crumb-current:focus-visible,
+.sm-screen-title:focus-visible {
+  outline: none;
 }
 
 .sm-crumbs-actions {
@@ -2150,6 +2156,12 @@ button.sm-activity-row:hover {
   cursor: default;
 }
 
+.sm-tile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sm-s2);
+}
+
 .sm-tile-title {
   font-weight: 600;
   color: var(--sm-heading);
@@ -2206,18 +2218,27 @@ button.sm-activity-row:hover {
 .sm-banner-warn { background: var(--sm-warning-soft); color: var(--sm-warning-text); border-color: var(--sm-warning-border); }
 .sm-setting-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sm-s2); }
 
-/* Hands-free (car mode): large, high contrast, big targets. */
-.sm-handsfree { background: #000; color: #fff; padding: var(--sm-s4, 16px); text-align: center; border-radius: var(--sm-radius); }
-.sm-handsfree-ref { font-size: 1.4em; color: #ddd; }
+/* Hands-free (car mode): large, high contrast, big targets. Light by default;
+   dark only when the app theme is dark or it is night (handsFreeTone in
+   handsFreeView.ts sets data-tone). */
+.sm-handsfree { background: var(--sm-surface); color: var(--sm-heading); border: 1px solid var(--sm-border); padding: var(--sm-s4, 16px); text-align: center; border-radius: var(--sm-radius); }
+.sm-handsfree-ref { font-size: 1.4em; color: var(--sm-text-dim); }
 .sm-handsfree-phase { font-size: 3em; font-weight: 800; line-height: 1.1; margin: var(--sm-s3, 12px) 0; }
-.sm-handsfree-progress { font-size: 1.25rem; font-weight: 600; color: #fff; }
+.sm-handsfree-progress { font-size: 1.25rem; font-weight: 600; }
 .sm-handsfree-controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sm-s2); margin-top: var(--sm-s3, 12px); }
 .sm-handsfree-btn { min-height: 4em; font-size: 1.4em; font-weight: 700; }
+.sm-handsfree .sm-btn { border-width: 2px; }
+.sm-handsfree .sm-btn-danger { background: #a11; border-color: #f99; color: #fff; }
 
-/* Buttons inside the black hands-free panel: explicit colours so they read on dark. */
-.sm-handsfree .sm-btn { background: #222; color: #fff; border: 2px solid #888; }
-.sm-handsfree .sm-btn:hover:not(:disabled) { background: #333; }
-.sm-handsfree .sm-btn:disabled { color: #aaa; border-color: #555; }
-.sm-handsfree .sm-btn-primary { background: #1d5fd1; border-color: #8ab4ff; }
-.sm-handsfree .sm-btn-danger { background: #a11; border-color: #f99; }
-.sm-handsfree .sm-btn:focus-visible { outline: 3px solid #ff0; outline-offset: 2px; }
+.sm-handsfree[data-tone="dark"] { background: #000; color: #fff; border-color: #000; }
+.sm-handsfree[data-tone="dark"] .sm-handsfree-ref { color: #ddd; }
+.sm-handsfree[data-tone="dark"] .sm-handsfree-progress { color: #fff; }
+/* Buttons inside the black panel: explicit colours so they read on dark. */
+.sm-handsfree[data-tone="dark"] .sm-btn { background: #222; color: #fff; border: 2px solid #888; }
+.sm-handsfree[data-tone="dark"] .sm-btn:hover:not(:disabled) { background: #333; }
+.sm-handsfree[data-tone="dark"] .sm-btn:disabled { color: #aaa; border-color: #555; }
+.sm-handsfree[data-tone="dark"] .sm-btn-primary { background: #1d5fd1; border-color: #8ab4ff; }
+.sm-handsfree[data-tone="dark"] .sm-btn-danger { background: #a11; border-color: #f99; }
+.sm-handsfree[data-tone="dark"] .sm-btn:focus-visible { outline: 3px solid #ff0; outline-offset: 2px; }
+
+.sm-recite-include { padding: var(--sm-s2) var(--sm-s3); display: flex; flex-direction: column; gap: var(--sm-s1); }

@@ -101,7 +101,7 @@ function renderOverrides(host: PanelHost, plan: PlanView): HTMLElement {
 // ---------------------------------------------------------------------------
 
 export const PERMISSION_MISSING_TEXT =
-  'Scripture Memory needs the speech:listen permission. Grant it in Preferences > Extensions.';
+  'Scripture Memory needs microphone access (the speech:listen permission) to listen while you recite. Grant it under Preferences > Extensions > Scripture Memory.';
 
 /** The banner text for each availability state, or null when all is well. */
 export function availabilityMessage(speech: SpeechAvailability): string | null {
@@ -110,7 +110,7 @@ export function availabilityMessage(speech: SpeechAvailability): string | null {
       return null;
     case 'permission-missing':
       return speech.missingPermissions.length > 0 && !speech.missingPermissions.includes('speech:listen')
-        ? `Scripture Memory needs the ${speech.missingPermissions.join(', ')} permission for hands-free mode. Grant it in Preferences > Extensions.`
+        ? `Scripture Memory needs the ${speech.missingPermissions.join(', ')} permission for hands-free mode. Grant it under Preferences > Extensions > Scripture Memory.`
         : PERMISSION_MISSING_TEXT;
     case 'needs-download':
       return 'The speech model needs to be downloaded before you can recite aloud. Download it in the main app\'s speech settings.';
@@ -123,7 +123,22 @@ export function availabilityMessage(speech: SpeechAvailability): string | null {
   }
 }
 
-export function availabilityBanner(speech: SpeechAvailability): HTMLElement {
+/**
+ * A button that opens the host's Extensions preferences page on this
+ * extension's own settings (the host API `ui.openSettings`), only when the
+ * state is a missing permission. Gap: the API has no deep link to the
+ * permission itself, so the text beside it still names the path.
+ */
+export function permissionSettingsButton(host: PanelHost, speech: SpeechAvailability): HTMLElement | null {
+  if (speech.state !== 'permission-missing') return null;
+  return button(
+    'Open extension settings',
+    () => void host.request({ type: 'openHostSettings' }).then((r) => { if (!r.ok) host.announce(r.error); }),
+    { class: 'sm-btn sm-btn-small' },
+  );
+}
+
+export function availabilityBanner(speech: SpeechAvailability, host?: PanelHost): HTMLElement {
   const msg = availabilityMessage(speech);
   if (msg === null) {
     const where = speech.onDevice ? 'on this device' : 'online';
@@ -134,11 +149,11 @@ export function availabilityBanner(speech: SpeechAvailability): HTMLElement {
       attrs: { role: 'status', 'data-speech-state': speech.state },
     });
   }
-  return el('p', {
-    class: 'sm-banner sm-banner-warn',
-    text: msg,
-    attrs: { role: 'status', 'data-speech-state': speech.state },
-  });
+  const action = host ? permissionSettingsButton(host, speech) : null;
+  return el('div', { class: 'sm-banner sm-banner-warn', attrs: { role: 'status', 'data-speech-state': speech.state } }, [
+    el('p', { text: msg }),
+    action,
+  ]);
 }
 
 const HINT_DELAYS_MS = [3000, 5000, 8000, 12000];
@@ -191,7 +206,7 @@ export function renderReciteSettings(host: PanelHost, recite: ReciteSettings, sp
 
   return el('section', { class: 'sm-block sm-block-recite' }, [
     el('h2', { class: 'sm-block-title', text: 'Recite aloud' }),
-    availabilityBanner(speech),
+    availabilityBanner(speech, host),
     field('sm-recite-strictness', 'Strictness', select('strictness', 'sm-recite-strictness', [
       { value: 'lenient', label: 'Lenient (small slips are fine)' },
       { value: 'normal', label: 'Normal' },

@@ -791,6 +791,8 @@ export type PanelRequest =
   | { type: 'getReciteState' }
   | { type: 'setReciteSettings'; patch: Partial<ReciteSettings> }
   | { type: 'setPassageRecite'; passageId: number; on: boolean }
+  /** Opens the host's Extensions preferences page on this extension (api.ui.openSettings). */
+  | { type: 'openHostSettings' }
   /** Deletes stored per-word recitation detail only; attempts, scores and schedule stay. */
   | { type: 'deleteReciteHistory' };
 
@@ -864,6 +866,7 @@ export interface RequestMap {
   getReciteState: ReciteStateView | null;
   setReciteSettings: Record<string, never>;
   setPassageRecite: PassageView;
+  openHostSettings: Record<string, never>;
   deleteReciteHistory: Record<string, never>;
 }
 

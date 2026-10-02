@@ -208,7 +208,9 @@ describe('settings: Recite aloud group', () => {
 
   it('uses the exact permission-missing text', () => {
     const root = renderSettings(host(), settings(speech({ state: 'permission-missing', missingPermissions: ['speech:listen'] })), plan);
-    expect(text(root)).toContain('Scripture Memory needs the speech:listen permission. Grant it in Preferences > Extensions.');
+    expect(text(root)).toContain('Scripture Memory needs microphone access (the speech:listen permission)');
+    expect(text(root)).toContain('Preferences > Extensions > Scripture Memory');
+    expect(text(root)).toContain('Open extension settings');
   });
 
   it('confirms before deleting recitation history, and explains what is kept', () => {
@@ -267,5 +269,20 @@ describe('review fixes (render)', () => {
     const diff = root.querySelector('.sm-recite-diff')!;
     expect(text(diff)).toContain('beginning (missed)');
     expect(text(diff)).toContain('the (close)');
+  });
+});
+
+describe('hands-free tone (car mode)', () => {
+  it('is light by default in daytime', async () => {
+    const { handsFreeTone } = await import('../src/ui/handsFreeView');
+    expect(handsFreeTone({ themeMode: 'light', prefersDark: true, hour: 12 })).toBe('light');
+    expect(handsFreeTone({ themeMode: 'sepia', prefersDark: false, hour: 18 })).toBe('light');
+  });
+  it('is dark when the app theme is dark or at night', async () => {
+    const { handsFreeTone } = await import('../src/ui/handsFreeView');
+    expect(handsFreeTone({ themeMode: 'dark', prefersDark: false, hour: 12 })).toBe('dark');
+    expect(handsFreeTone({ themeMode: 'light', prefersDark: false, hour: 19 })).toBe('dark');
+    expect(handsFreeTone({ themeMode: 'light', prefersDark: false, hour: 5 })).toBe('dark');
+    expect(handsFreeTone({ themeMode: null, prefersDark: true, hour: 12 })).toBe('dark');
   });
 });

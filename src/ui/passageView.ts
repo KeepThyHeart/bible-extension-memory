@@ -41,7 +41,7 @@ import {
 import { RUNG_BLURB, RUNG_LABEL, countLabel, formatDue, formatScore, inLadderOrder, isDue, suggestedRungFor } from './format';
 import type { PanelHost } from './host';
 import { startReciteRun } from './activities';
-import { availabilityMessage } from './settingsView';
+import { availabilityBanner, availabilityMessage, permissionSettingsButton } from './settingsView';
 
 /** Tab/row label: recite is marked optional so nobody thinks it is required. */
 export function rungTabLabel(rv: RungView): string {
@@ -128,6 +128,8 @@ export function renderPassageScreen(
         root.appendChild(
           el('p', { class: 'sm-activity-blurb' }, [el('strong', { text: rungTabLabel(rv) }), `: ${why}`]),
         );
+        const action = speech ? permissionSettingsButton(host, speech) : null;
+        if (action) root.appendChild(action);
       }
       continue;
     }
@@ -270,23 +272,13 @@ function renderReciteDetail(
   });
 
   const progress = progressText(rv, now);
-  return el('div', { class: 'sm-activity-card sm-activity-recite' }, [
+  const card = el('div', { class: 'sm-activity-card sm-activity-recite' }, [
     el('div', { class: 'sm-activity-level-row' }, [
       levelBoxes(rv.level, { due: isDue(rv, now) }),
       rv.level === 0 ? null : el('span', { class: 'sm-activity-level-text', text: `${rv.level}/5` }),
     ]),
     el('p', { class: 'sm-activity-blurb', text: RUNG_BLURB.recite }),
     el('p', { class: 'sm-activity-row-progress', text: progress }),
-    el('div', { class: 'sm-setting-row' }, [
-      checkbox,
-      el('label', { text: "Include in Recite what's due", attrs: { for: 'sm-recite-on' } }),
-    ]),
-    el('p', {
-      class: 'sm-hint',
-      id: 'sm-recite-on-hint',
-      text: 'Off by default: reciting is optional and never blocks a passage from being well learned.',
-    }),
-    why === null ? null : el('p', { class: 'sm-banner sm-banner-warn', text: why, attrs: { role: 'status' } }),
     el('div', { class: 'sm-activity-actions' }, [
       button('Recite', () => void startReciteRun(host, { kind: 'passage', passageId: pv.passage.id }, 'tap'), {
         class: 'sm-btn sm-btn-small sm-btn-primary',
@@ -294,6 +286,29 @@ function renderReciteDetail(
       }),
     ]),
   ]);
+
+  // Per-passage on purpose: reciting is optional and you may want it for some
+  // passages and not others. Passages you have already recited join "Recite
+  // what's due" on their own when due; this switch adds one you have not.
+  const include = el('div', { class: 'sm-recite-include' }, [
+    el('div', { class: 'sm-setting-row' }, [
+      checkbox,
+      el('label', { text: 'Add this passage to "Recite what\'s due"', attrs: { for: 'sm-recite-on' } }),
+    ]),
+    el('p', {
+      class: 'sm-hint',
+      id: 'sm-recite-on-hint',
+      text: 'Reciting is optional and never holds back this passage. Once you have recited it, it comes up when due without this.',
+    }),
+  ]);
+
+  const notice =
+    why === null
+      ? null
+      : speech
+        ? availabilityBanner(speech, host)
+        : el('p', { class: 'sm-banner sm-banner-warn', text: why, attrs: { role: 'status' } });
+  return el('div', { class: 'sm-activity-recite-wrap' }, [notice, card, include]);
 }
 
 // ---------------------------------------------------------------------------

@@ -70,7 +70,7 @@ export function unavailableMessage(a: SpeechAvailability): string {
     case 'unavailable':
       return 'Speech recognition is not available on this device.';
     case 'permission-missing':
-      return 'Scripture Memory needs the speech:listen permission. Grant it in Preferences > Extensions.';
+      return 'Scripture Memory needs microphone access (the speech:listen permission) to listen while you recite. Grant it under Preferences > Extensions > Scripture Memory.';
     case 'unsupported-language':
       return 'Reciting aloud does not support this Bible translation’s language yet.';
     case 'host-too-old':

@@ -824,7 +824,8 @@ export type IconName =
   | 'ordering'
   | 'blanks'
   | 'firstletters'
-  | 'refprovide';
+  | 'refprovide'
+  | 'recite';
 
 /**
  * The strokes each icon is built from, one `<path>` per entry.
@@ -861,6 +862,8 @@ const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
   // A bookmark - the passage's own place kept, which is what "provide the
   // reference" is asking the user to recall.
   refprovide: ['M6 3h12v18l-6-4-6 4z'],
+  // A microphone: capsule, pickup arc and stand - saying it aloud.
+  recite: ['M9 3a3 3 0 0 1 6 0v8a3 3 0 0 1-6 0z', 'M5 11a7 7 0 0 0 14 0', 'M12 18v3'],
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

@@ -800,6 +800,10 @@ async function dispatch(req: PanelRequest): Promise<unknown> {
       void api.panels.postMessage({ type: 'planChanged' });
       return buildPassageView(req.passageId);
 
+    case 'openHostSettings':
+      await api.ui.openSettings();
+      return {};
+
     case 'deleteReciteHistory':
       await getRecite().deleteHistory();
       return {};
