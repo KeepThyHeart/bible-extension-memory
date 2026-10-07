@@ -37,6 +37,7 @@ import { renderSettings } from './ui/settingsView';
 import { createReciteView } from './ui/reciteView';
 import { createHandsFreeView } from './ui/handsFreeView';
 import { startReciteRun } from './ui/activities';
+import { renderCardStack } from './ui/cardView';
 import { call } from './ui/rpc';
 import { pickFlowTarget } from './ui/suggest';
 import { INITIAL_NAV, navReduce, sameView } from './ui/state';
@@ -328,13 +329,19 @@ async function buildScreen(): Promise<HTMLElement> {
     }
 
     case 'settings': {
-      const [settingsReply, planReply] = await Promise.all([
+      const [settingsReply, planReply, pushReply] = await Promise.all([
         host.request({ type: 'getSettings' }),
         host.request({ type: 'getPlan' }),
+        host.request({ type: 'getPushSettings' }),
       ]);
       if (!settingsReply.ok) return failure(settingsReply.error);
       if (!planReply.ok) return failure(planReply.error);
-      return renderSettings(host, settingsReply.data, planReply.data);
+      return renderSettings(host, settingsReply.data, planReply.data, pushReply.ok ? pushReply.data : null);
+    }
+
+    case 'card': {
+      const reply = await host.request({ type: 'getCardStack' });
+      return reply.ok ? renderCardStack(host, reply.data) : failure(reply.error);
     }
 
     case 'managePassages': {
@@ -474,6 +481,18 @@ bible.onWorkerMessage((message) => {
       return;
     }
 
+    case 'showCard':
+      // A notification was clicked: open the card stack, unless an exercise is open.
+      if (nav.view.name !== 'practice') {
+        nav = navReduce(nav, { type: 'goCard' });
+        void render();
+      }
+      return;
+
+    case 'cardsWaitingChanged':
+      if (nav.view.name === 'plan' || nav.view.name === 'card') void render();
+      return;
+
     case 'activeVerse':
       if (typeof push.reference !== 'string') return;
       activeReference = push.reference;
@@ -526,4 +545,16 @@ void host
     }
   })
   .catch(() => undefined)
-  .then(() => render());
+  .then(() => render())
+  .then(() => consumeLaunchIntent());
+
+// A notification click may have happened before this panel existed (the push
+// is lost), so ask the worker once on open whether a card was asked for.
+function consumeLaunchIntent(): Promise<void> {
+  return host.request({ type: 'consumeLaunchIntent' }).then((reply) => {
+    if (reply.ok && reply.data.showCard && nav.view.name === 'plan') {
+      nav = navReduce(nav, { type: 'goCard' });
+      void render();
+    }
+  });
+}

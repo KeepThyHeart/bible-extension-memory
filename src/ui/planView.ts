@@ -29,6 +29,7 @@ import type { ActivityTile } from './activities';
 import type { Flow } from './state';
 import { MIN_VERSES_FOR_REFERENCE_ACTIVITIES } from '../ladder';
 import type { PanelHost } from './host';
+import { cardsWaitingBanner } from './cardsBanner';
 
 export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
   const now = host.now();
@@ -63,6 +64,9 @@ export function renderPlan(host: PanelHost, plan: PlanView): HTMLElement {
     );
     return root;
   }
+
+  const banner = cardsWaitingBanner(host, plan.cardsWaiting ?? 0);
+  if (banner) root.appendChild(banner);
 
   root.appendChild(renderActivityTiles(host, plan, now));
   root.appendChild(renderPassageListHeader(host, plan));

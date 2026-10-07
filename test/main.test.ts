@@ -34,6 +34,7 @@ import {
 } from '@bible/extension-testing';
 
 import { activate, deactivate } from '../src/main';
+import { createFakeReminders } from './fakeReminders';
 import { SqliteHarness } from './sqliteHarness';
 import { migrate } from '../src/db';
 import type { PanelRequest, PassageView, PlanView, RungView } from '../src/types';
@@ -64,6 +65,15 @@ describe('activation', () => {
   it('completes against a mock host', async () => {
     const api = createMockApi();
     await expect(activate(api)).resolves.toBeUndefined();
+  });
+
+  it('completes when the host has a reminders API, and when it is broken', async () => {
+    const fake = createFakeReminders();
+    await expect(activate(Object.assign(createMockApi(), { reminders: fake.api }))).resolves.toBeUndefined();
+    deactivate();
+    const broken = createFakeReminders({ throwOnCapabilities: true });
+    await expect(activate(Object.assign(createMockApi(), { reminders: broken.api }))).resolves.toBeUndefined();
+    deactivate();
   });
 
   it('binds a handler for every command in extension.json', async () => {

@@ -1685,7 +1685,9 @@ describe('soft delete', () => {
     await harness.exec(`ALTER TABLE passage DROP COLUMN deleted_at`);
     await harness.run(`UPDATE meta SET value = '4' WHERE key = 'schema_version'`);
 
-    // Rewinding also has to undo v6, or its ADD COLUMN would run twice.
+    // Rewinding also has to undo v7 (push cards) and v6, or its ADD COLUMN would run twice.
+    await harness.exec(`DROP INDEX push_card_state_fire`);
+    await harness.exec(`DROP TABLE push_card`);
     await harness.exec(`DROP INDEX recite_detail_card_at`);
     await harness.exec(`DROP TABLE recite_detail`);
     await harness.exec(`ALTER TABLE passage DROP COLUMN recite_on`);

@@ -26,6 +26,13 @@
  * the four-state one.
  */
 
+import type {
+  CardStackView,
+  PushCardSettings,
+  PushSettingsView,
+  RecallGrade,
+} from './pushTypes';
+
 // ---------------------------------------------------------------------------
 // Domain
 // ---------------------------------------------------------------------------
@@ -279,6 +286,8 @@ export interface PassageView {
 export type PassageSortOrder = 'bible' | 'need';
 
 export interface PlanView {
+  /** Push cards waiting to be recalled (task 0072). 0 when the feature is off. */
+  cardsWaiting: number;
   /**
    * The list new passages would land in right now: the scoped list's id, or
    * (scope `'all'`) the Default list's id. Kept - rather than dropped - for
@@ -794,7 +803,15 @@ export type PanelRequest =
   /** Opens the host's Extensions preferences page on this extension (api.ui.openSettings). */
   | { type: 'openHostSettings' }
   /** Deletes stored per-word recitation detail only; attempts, scores and schedule stay. */
-  | { type: 'deleteReciteHistory' };
+  | { type: 'deleteReciteHistory' }
+  // --- push cards (task 0072) ---
+  | { type: 'getPushSettings' }
+  | { type: 'setPushSettings'; settings: PushCardSettings }
+  | { type: 'requestReminderPermission' }
+  | { type: 'getCardStack' }
+  | { type: 'gradeRecall'; passageId: number; grade: RecallGrade; key?: string; durationMs?: number }
+  | { type: 'snoozeCard'; passageId: number; key?: string }
+  | { type: 'consumeLaunchIntent' };
 
 /**
  * What the user did, keyed to the step kind that asked.
@@ -868,6 +885,13 @@ export interface RequestMap {
   setPassageRecite: PassageView;
   openHostSettings: Record<string, never>;
   deleteReciteHistory: Record<string, never>;
+  getPushSettings: PushSettingsView;
+  setPushSettings: PushSettingsView;
+  requestReminderPermission: PushSettingsView;
+  getCardStack: CardStackView;
+  gradeRecall: { nextDueAt: number | null; stack: CardStackView };
+  snoozeCard: { snoozedUntil: number };
+  consumeLaunchIntent: { showCard: boolean; key?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -882,6 +906,9 @@ export interface RequestMap {
 export type WorkerPush =
   | { type: 'planChanged' }
   | { type: 'dueCountChanged'; count: number }
+  /** A notification was clicked: open the card stack (task 0072). */
+  | { type: 'showCard'; key: string | null }
+  | { type: 'cardsWaitingChanged'; count: number }
   /** The host's active verse moved. Used to prefill the add-passage field. */
   | { type: 'activeVerse'; verseId: number; reference: string }
   | { type: 'reciteState'; state: ReciteStateView };

@@ -487,6 +487,7 @@ function emptyPlan(): PlanView {
     totalDue: 0,
     speech: SPEECH_OFF,
     reciteDueCount: 0,
+    cardsWaiting: 0,
     defaultAnswerMode: 'firstLetter',
   };
 }

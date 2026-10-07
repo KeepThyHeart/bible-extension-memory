@@ -60,13 +60,15 @@ describe('v6 migration', () => {
     const attemptId = await attempt(store, card.id, NOW);
     // Rewind to v5 (which never had a recite card).
     await harness.run(`DELETE FROM card WHERE rung = 'recite'`);
+    await harness.exec(`DROP INDEX push_card_state_fire`);
+    await harness.exec(`DROP TABLE push_card`);
     await harness.exec(`DROP INDEX recite_detail_card_at`);
     await harness.exec(`DROP TABLE recite_detail`);
     await harness.exec(`ALTER TABLE passage DROP COLUMN recite_on`);
     await harness.run(`UPDATE meta SET value = '5' WHERE key = 'schema_version'`);
 
-    expect(SCHEMA_VERSION).toBe(6);
-    expect(await migrate(harness)).toBe(6);
+    // v7 (push cards) was added on top of v6 when the branches were reconciled.
+    expect(await migrate(harness)).toBe(SCHEMA_VERSION);
     const cols = await harness.query<{ name: string }>(`PRAGMA table_info(passage)`);
     expect(cols.map((c) => c.name)).toContain('recite_on');
     const tables = await harness.query<{ name: string }>(`SELECT name FROM sqlite_master WHERE type='table'`);
