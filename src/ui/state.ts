@@ -31,7 +31,8 @@ export type View =
   | { name: 'analytics' }
   | { name: 'settings' }
   | { name: 'managePassages' }
-  | { name: 'practice'; sessionId: string };
+  | { name: 'practice'; sessionId: string }
+  | { name: 'recite'; reciteId: string; mode: 'tap' | 'handsfree' };
 
 /**
  * A panel-side flow: what the user pressed to get into practice.
@@ -88,6 +89,9 @@ export type NavAction =
   | { type: 'goPassage'; passageId: number; rung?: Rung | null }
   | { type: 'sessionStarted'; sessionId: string; passageId: number; rung: Rung; flow: Flow }
   | { type: 'sessionEnded' }
+  /** A recite run (tap or hands-free) started, or was resumed on panel open. */
+  | { type: 'reciteStarted'; reciteId: string; mode: 'tap' | 'handsfree' }
+  | { type: 'reciteEnded' }
   /**
    * The passage the current view is about has gone away - removed here, or
    * removed in another panel and announced by a `planChanged` push. Any view
@@ -160,6 +164,20 @@ export function navReduce(state: NavState, action: NavAction): NavState {
       if (state.view.name !== 'practice') return state;
       return { view: state.returnTo, returnTo: state.returnTo, flow: state.flow };
 
+    case 'reciteStarted': {
+      const returnTo: View =
+        state.view.name === 'plan' || state.view.name === 'passage'
+          ? state.view
+          : state.view.name === 'recite'
+            ? state.returnTo
+            : { name: 'plan' };
+      return { view: { name: 'recite', reciteId: action.reciteId, mode: action.mode }, returnTo, flow: state.flow };
+    }
+
+    case 'reciteEnded':
+      if (state.view.name !== 'recite') return state;
+      return { view: state.returnTo, returnTo: state.returnTo, flow: state.flow };
+
     case 'passageRemoved': {
       const stranded =
         (state.view.name === 'passage' && state.view.passageId === action.passageId) ||
@@ -189,5 +207,6 @@ export function sameView(a: View, b: View): boolean {
     return a.passageId === b.passageId && a.rung === b.rung;
   }
   if (a.name === 'practice' && b.name === 'practice') return a.sessionId === b.sessionId;
+  if (a.name === 'recite' && b.name === 'recite') return a.reciteId === b.reciteId;
   return true;
 }

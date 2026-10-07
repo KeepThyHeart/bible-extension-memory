@@ -174,6 +174,29 @@ const MIGRATIONS: readonly string[][] = [
     `ALTER TABLE passage ADD COLUMN deleted_at INTEGER`,
     `CREATE INDEX IF NOT EXISTS passage_deleted_at ON passage (deleted_at)`,
   ],
+
+  // --- v6: recite aloud - per-word verdict detail, and an opt-in flag -------
+  //
+  // `recite_detail` hangs one row off each recite attempt. Only verdict
+  // letters, credits and counts are stored - never heard text. Kept to the
+  // last 20 per card (`store.ts#recordReciteDetail`); the attempt rows
+  // themselves are never pruned.
+  [
+    `ALTER TABLE passage ADD COLUMN recite_on INTEGER NOT NULL DEFAULT 0`,
+    `CREATE TABLE IF NOT EXISTS recite_detail (
+       attempt_id   INTEGER PRIMARY KEY REFERENCES attempt(id) ON DELETE CASCADE,
+       card_id      INTEGER NOT NULL REFERENCES card(id) ON DELETE CASCADE,
+       at           INTEGER NOT NULL,
+       verdicts     TEXT    NOT NULL,
+       credits      TEXT    NOT NULL,
+       verse_scores TEXT    NOT NULL,
+       extras       INTEGER NOT NULL,
+       strictness   TEXT    NOT NULL,
+       engine_id    TEXT,
+       model_id     TEXT
+     )`,
+    `CREATE INDEX IF NOT EXISTS recite_detail_card_at ON recite_detail (card_id, at)`,
+  ],
 ];
 
 /** The version a fresh database is brought to. */

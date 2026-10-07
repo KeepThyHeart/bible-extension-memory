@@ -55,6 +55,24 @@ import type { Flow } from '../src/ui/state';
 import { resolveWrongPositions, revealedWord } from '../src/ui/stepResult';
 import type { HiddenWords } from '../src/ui/stepResult';
 
+const SPEECH_OFF = {
+  state: 'unavailable',
+  missingPermissions: [],
+  engineLabel: '',
+  onDevice: false,
+  handsFree: false,
+} as const satisfies import('../src/types').SpeechAvailability;
+const RECITE_DEFAULTS: import('../src/types').ReciteSettings = {
+  strictness: 'normal',
+  promptStyle: 'reference',
+  feedback: 'brief',
+  readBack: false,
+  autoAdvance: false,
+  voiceCommands: false,
+  hintDelayMs: 5000,
+};
+
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -83,6 +101,8 @@ function plan(now: number): PlanView {
     collectionId: 1,
     collectionName: 'My plan',
     totalDue: 3,
+    speech: SPEECH_OFF,
+    reciteDueCount: 0,
     defaultAnswerMode: 'firstLetter',
     sortOrder: 'bible',
     passages: [
@@ -97,6 +117,7 @@ function plan(now: number): PlanView {
           verseCount: 6,
           addedAt: now - 30 * DAY,
           answerMode: null,
+          reciteOn: false,
         },
         dueCount: 1,
         bestLevel: 5,
@@ -120,6 +141,7 @@ function plan(now: number): PlanView {
           verseCount: 3,
           addedAt: now - 10 * DAY,
           answerMode: null,
+          reciteOn: false,
         },
         dueCount: 2,
         bestLevel: 1,
@@ -422,6 +444,7 @@ function passage(over: Partial<Passage> & Pick<Passage, 'id'>): Passage {
     verseCount: 1,
     addedAt: 0,
     answerMode: null,
+    reciteOn: false,
     ...over,
   };
 }

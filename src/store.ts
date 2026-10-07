@@ -39,6 +39,22 @@ import {
 import type { ActivityLevel, TierBest } from './ladder';
 import type { ScheduleResult } from './scheduler';
 
+/** How many recite detail rows are kept per card. */
+export const RECITE_DETAIL_KEEP = 20;
+
+/** Per-word detail of one recite attempt. No heard text, ever. */
+export interface ReciteDetailInput {
+  /** One char per expected word: c v n s w m h. */
+  verdicts: string;
+  credits: number[];
+  verseScores: number[];
+  /** Count of extra spoken words only. */
+  extras: number;
+  strictness: string;
+  engineId?: string | null;
+  modelId?: string | null;
+}
+
 /** Row shapes as SQLite returns them: snake_case, integers for booleans. */
 interface PassageRow {
   id: number;
@@ -51,6 +67,7 @@ interface PassageRow {
   added_at: number;
   answer_mode: string | null;
   deleted_at: number | null;
+  recite_on?: number | null;
 }
 
 interface CardRow {
@@ -122,6 +139,7 @@ function toPassage(r: PassageRow): Passage {
     verseCount: r.verse_count,
     addedAt: r.added_at,
     answerMode: r.answer_mode === 'firstLetter' || r.answer_mode === 'fullWord' ? r.answer_mode : null,
+    reciteOn: r.recite_on === 1,
   };
 }
 
@@ -201,7 +219,7 @@ export class MemoryStore {
    *     revived row comes from another list.
    */
   async addPassage(
-    input: Omit<Passage, 'id' | 'answerMode'>,
+    input: Omit<Passage, 'id' | 'answerMode' | 'reciteOn'>,
   ): Promise<{ passage: Passage; created: boolean; revived: boolean }> {
     const existing = await this.db.queryOne<PassageRow>(
       `SELECT * FROM passage
@@ -293,6 +311,10 @@ export class MemoryStore {
       [now - maxAgeMs],
     );
     return res.changes;
+  }
+
+  async setPassageReciteOn(passageId: number, on: boolean): Promise<void> {
+    await this.db.run(`UPDATE passage SET recite_on = ? WHERE id = ?`, [on ? 1 : 0, passageId]);
   }
 
   async setPassageAnswerMode(passageId: number, mode: AnswerMode | null): Promise<void> {
@@ -675,6 +697,11 @@ export class MemoryStore {
           WHERE card_id IN (SELECT id FROM card WHERE passage_id = ?)`,
         [passageId],
       );
+      await tx.run(
+        `DELETE FROM recite_detail
+          WHERE card_id IN (SELECT id FROM card WHERE passage_id = ?)`,
+        [passageId],
+      );
     });
   }
 
@@ -726,6 +753,98 @@ export class MemoryStore {
       [a.cardId, a.at, a.score, a.correctFirst, a.totalSteps, a.durationMs, a.tier ?? 0],
     );
     return Number(res.lastInsertRowid);
+  }
+
+  /**
+   * Store the per-word detail of one recite attempt, then keep only the
+   * card's 20 most recent detail rows - in one transaction. Never stores any
+   * heard text: verdict letters, credits and counts only.
+   */
+  async recordReciteDetail(
+    attemptId: number,
+    cardId: number,
+    at: number,
+    detail: ReciteDetailInput,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.run(
+        `INSERT OR REPLACE INTO recite_detail
+           (attempt_id, card_id, at, verdicts, credits, verse_scores, extras, strictness, engine_id, model_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          attemptId,
+          cardId,
+          at,
+          detail.verdicts,
+          JSON.stringify(detail.credits),
+          JSON.stringify(detail.verseScores),
+          detail.extras,
+          detail.strictness,
+          detail.engineId ?? null,
+          detail.modelId ?? null,
+        ],
+      );
+      await tx.run(
+        `DELETE FROM recite_detail
+          WHERE card_id = ?
+            AND attempt_id NOT IN (
+              SELECT attempt_id FROM recite_detail
+               WHERE card_id = ?
+               ORDER BY at DESC, attempt_id DESC
+               LIMIT ?)`,
+        [cardId, cardId, RECITE_DETAIL_KEEP],
+      );
+    });
+  }
+
+  /** Erase all per-word recite detail. Attempts, scores and schedule stay. */
+  async deleteReciteHistory(): Promise<void> {
+    await this.db.run(`DELETE FROM recite_detail`);
+  }
+
+  /**
+   * Recite cards due now: tried and due, or untried on a passage switched on
+   * for recite. Kept apart from `dueCount`, which never counts recite.
+   */
+  async reciteDueCount(scope: Scope, now: number): Promise<number> {
+    const scopeFilter = scope.kind === 'list' ? `AND p.collection_id = ?` : '';
+    const row = await this.db.queryOne<{ n: number }>(
+      `SELECT COUNT(*) AS n
+         FROM card c
+         JOIN passage p ON p.id = c.passage_id
+        WHERE c.rung = 'recite' AND p.deleted_at IS NULL ${scopeFilter}
+          AND ((c.due_at IS NOT NULL AND c.due_at <= ?) OR (c.due_at IS NULL AND p.recite_on = 1))`,
+      scope.kind === 'list' ? [scope.id, now] : [now],
+    );
+    return row ? row.n : 0;
+  }
+
+  /** The next recite card due, skipping the passage ids in `exclude`. */
+  async nextDueRecite(
+    scope: Scope,
+    now: number,
+    exclude: number[],
+  ): Promise<{ card: Card; passage: Passage } | undefined> {
+    const scopeFilter = scope.kind === 'list' ? `AND p.collection_id = ?` : '';
+    const excludeFilter =
+      exclude.length > 0 ? `AND p.id NOT IN (${exclude.map(() => '?').join(', ')})` : '';
+    const params: number[] = [];
+    if (scope.kind === 'list') params.push(scope.id);
+    params.push(now, ...exclude);
+    const row = await this.db.queryOne<CardRow>(
+      `SELECT c.* FROM card c
+         JOIN passage p ON p.id = c.passage_id
+        WHERE c.rung = 'recite' AND p.deleted_at IS NULL ${scopeFilter}
+          AND ((c.due_at IS NOT NULL AND c.due_at <= ?) OR (c.due_at IS NULL AND p.recite_on = 1))
+          ${excludeFilter}
+        ORDER BY (c.due_at IS NULL), c.due_at, p.id
+        LIMIT 1`,
+      params,
+    );
+    if (!row) return undefined;
+    const passage = await this.getPassage(row.passage_id);
+    if (!passage) return undefined;
+    return { card: toCard(row), passage };
   }
 
   /**
@@ -785,7 +904,7 @@ export class MemoryStore {
         `SELECT COUNT(*) AS n
            FROM card c
            JOIN passage p ON p.id = c.passage_id
-          WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL`,
+          WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND c.rung <> 'recite' AND p.deleted_at IS NULL`,
         [now],
       );
       return row ? row.n : 0;
@@ -795,7 +914,7 @@ export class MemoryStore {
          FROM card c
          JOIN passage p ON p.id = c.passage_id
         WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.collection_id = ?
-          AND p.deleted_at IS NULL`,
+          AND c.rung <> 'recite' AND p.deleted_at IS NULL`,
       [now, scope.id],
     );
     return row ? row.n : 0;
@@ -816,7 +935,7 @@ export class MemoryStore {
     const row = await this.db.queryOne<CardRow>(
       `SELECT c.* FROM card c
          JOIN passage p ON p.id = c.passage_id
-        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND p.deleted_at IS NULL ${scopeFilter}
+        WHERE c.due_at IS NOT NULL AND c.due_at <= ? AND c.rung <> 'recite' AND p.deleted_at IS NULL ${scopeFilter}
         ORDER BY c.due_at ASC,
                  CASE c.rung
                    WHEN 'ordering' THEN 0

@@ -145,13 +145,14 @@ describe('materialRungs - which CARDS exist, as opposed to what applies', () => 
     // were created only when an activity became applicable, the day the plan
     // crossed 25 verses would silently become the day the user's history with
     // reference activities began.
-    expect(materialRungs(1)).toEqual(['refmatch', 'blanks', 'firstletters', 'refprovide']);
+    expect(materialRungs(1)).toEqual(['refmatch', 'blanks', 'firstletters', 'refprovide', 'recite']);
     expect(materialRungs(3)).toEqual([
       'ordering',
       'refmatch',
       'blanks',
       'firstletters',
       'refprovide',
+      'recite',
     ]);
   });
 
@@ -432,7 +433,7 @@ describe('TEXT_RECALL_CHAIN', () => {
     // the worker does not count as satisfied, or the reverse.
     const positions = TEXT_RECALL_CHAIN.map((r) => RUNG_ORDER.indexOf(r));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
-    expect(TEXT_RECALL_CHAIN).toEqual(['ordering', 'blanks', 'firstletters']);
+    expect(TEXT_RECALL_CHAIN).toEqual(['ordering', 'blanks', 'firstletters', 'recite']);
   });
 
   it('leaves the reference activities out of the chain entirely', () => {

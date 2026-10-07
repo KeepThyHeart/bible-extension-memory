@@ -17,6 +17,7 @@
 
 import type { AnalyticsView, PassageView, PlanView, Rung, RungView } from '../types';
 import { RUNG_ORDER } from '../types';
+import { TEXT_RECALL_CHAIN, isOptionalRung } from '../ladder';
 
 /**
  * The level at and above which an activity counts as mastered.
@@ -42,6 +43,7 @@ export const RUNG_LABEL: Readonly<Record<Rung, string>> = {
   blanks: 'Fill in the blanks',
   firstletters: 'First letters only',
   refprovide: 'Name the reference',
+  recite: 'Recite aloud',
 };
 
 /** What each activity asks of the user, in one line. */
@@ -51,6 +53,7 @@ export const RUNG_BLURB: Readonly<Record<Rung, string>> = {
   blanks: 'Type the words that have been removed from the passage.',
   firstletters: 'Every word is hidden. Recall the whole verse.',
   refprovide: 'Given the words, say which reference they come from.',
+  recite: 'Say the passage aloud from memory. Optional; needs a microphone.',
 };
 
 // ---------------------------------------------------------------------------
@@ -206,6 +209,7 @@ export function pickDueTarget(plan: PlanView, now: number): PracticeTarget | nul
 
   for (const pv of plan.passages) {
     for (const rv of pv.rungs) {
+      if (isOptionalRung(rv.rung)) continue; // recite has its own "Recite what's due"
       if (!isDue(rv, now)) continue;
       const candidate: PracticeTarget = {
         passageId: pv.passage.id,
@@ -241,7 +245,7 @@ function comparePriority(a: PracticeTarget, b: PracticeTarget): number {
  * `RungView[]` to hand.
  */
 export function suggestedRungFor(rungs: RungView[], now: number): Rung | null {
-  const applicable = rungs.filter((r) => r.applicable);
+  const applicable = rungs.filter((r) => r.applicable && !isOptionalRung(r.rung));
   if (applicable.length === 0) return null;
 
   const due = applicable.filter((r) => isDue(r, now));
@@ -283,9 +287,15 @@ export function pickStartTarget(plan: PlanView, now: number): PracticeTarget | n
  * mastery can still be drawn as "passed" rather than "not started".
  */
 export function carriesDownFrom(rungs: RungView[], rung: Rung): boolean {
-  const index = RUNG_ORDER.indexOf(rung);
+  // Same chain as ladder.ts (the worker's rule), so the panel and worker agree:
+  // recite carries down to the three text rungs, never to refmatch/refprovide.
+  const index = TEXT_RECALL_CHAIN.indexOf(rung);
+  if (index < 0) return false;
   return rungs.some(
-    (r) => r.applicable && RUNG_ORDER.indexOf(r.rung) > index && r.level >= MASTERED_LEVEL,
+    (r) =>
+      (r.applicable || r.optional === true) &&
+      TEXT_RECALL_CHAIN.indexOf(r.rung) > index &&
+      r.level >= MASTERED_LEVEL,
   );
 }
 

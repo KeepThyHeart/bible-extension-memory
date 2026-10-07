@@ -526,6 +526,9 @@ export class Session {
           totalSteps: this.totalSteps,
         };
       }
+      case 'recite':
+        // Recite runs through src/recite (startRecite), never as a session.
+        throw new Error('Recite is not a practice-session activity; use startRecite.');
     }
   }
 
@@ -563,6 +566,8 @@ export class Session {
         return this.submitFirstLetters(answer);
       case 'refprovide':
         return this.submitRefProvide(answer);
+      case 'recite':
+        throw new Error('Recite is not a practice-session activity; use startRecite.');
     }
   }
 

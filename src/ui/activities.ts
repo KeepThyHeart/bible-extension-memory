@@ -18,7 +18,8 @@
  * right now - this table only says what the tile is called and what it does.
  */
 
-import type { Rung } from '../types';
+import type { PlanView, ReciteStateView, Rung } from '../types';
+import type { PanelHost } from './host';
 
 /** The six tile ids - see the file header for why `variety` is not a `Rung`. */
 export type ActivityId = 'variety' | 'refmatch' | 'ordering' | 'blanks' | 'firstletters' | 'refprovide';
@@ -77,3 +78,55 @@ export const ACTIVITY_TILES: readonly ActivityTile[] = [
     subtext: 'The passage text is shown, and you type its reference.',
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Recite aloud (optional; needs the speech host)
+// ---------------------------------------------------------------------------
+
+/**
+ * The recite tile. Kept out of `ACTIVITY_TILES` on purpose: it is optional,
+ * is not a practice-session flow (it starts `startRecite`, not a session),
+ * and exists only while `plan.speech.state === 'ready'`.
+ */
+export const RECITE_TILE = {
+  id: 'recite',
+  rung: 'recite',
+  title: 'Recite Aloud',
+  subtext: 'Say a passage aloud from memory and see which words you got.',
+} as const;
+
+/** The recite tile is offered only when speech is ready. */
+export function reciteTileVisible(plan: PlanView): boolean {
+  return plan.speech.state === 'ready';
+}
+
+/** The "Recite what's due aloud" entry: label, due count and whether it can be pressed. */
+export function reciteDueEntry(plan: PlanView): { label: string; count: number; enabled: boolean } | null {
+  if (!reciteTileVisible(plan)) return null;
+  const count = plan.reciteDueCount;
+  return {
+    label: count > 0 ? `Recite what's due aloud (${count})` : "Recite what's due aloud",
+    count,
+    enabled: count > 0,
+  };
+}
+
+/**
+ * Starts a recite run and switches the panel to it.
+ *
+ * The panel (`panel.ts`) builds the screen from `getReciteState` when the
+ * `recite` view renders, so this only has to start the run and navigate.
+ */
+export async function startReciteRun(
+  host: PanelHost,
+  source: { kind: 'passage'; passageId: number } | { kind: 'due' },
+  mode: 'tap' | 'handsfree',
+): Promise<ReciteStateView | null> {
+  const reply = await host.request({ type: 'startRecite', source, mode });
+  if (!reply.ok) {
+    host.announce(reply.error);
+    return null;
+  }
+  host.go({ type: 'reciteStarted', reciteId: reply.data.reciteId, mode: reply.data.mode });
+  return reply.data;
+}

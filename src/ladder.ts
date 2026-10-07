@@ -89,6 +89,8 @@ export function materialRungs(verseCount: number): Rung[] {
   const rungs: Rung[] = [];
   if (verseCount > 1) rungs.push('ordering');
   rungs.push('refmatch', 'blanks', 'firstletters', 'refprovide');
+  // Every passage gets a recite card from the start so history can hang on it.
+  rungs.push('recite');
   return rungs;
 }
 
@@ -112,6 +114,7 @@ export function applicableRungs(
   verseCount: number,
   siblingCount: number,
   scopeVerseCount = 0,
+  opts: { speech?: boolean } = {},
 ): Rung[] {
   const referenceActivities = scopeVerseCount >= MIN_VERSES_FOR_REFERENCE_ACTIVITIES;
   const rungs: Rung[] = [];
@@ -119,6 +122,8 @@ export function applicableRungs(
   if (referenceActivities && siblingCount >= MIN_PASSAGES_FOR_REFMATCH) rungs.push('refmatch');
   rungs.push('blanks', 'firstletters');
   if (referenceActivities) rungs.push('refprovide');
+  // Recite aloud is offered only when listening is usable for the module language.
+  if (opts.speech) rungs.push('recite');
   return rungs;
 }
 
@@ -149,6 +154,7 @@ export const TIERS: Readonly<Record<Rung, number>> = {
   blanks: 2,
   firstletters: 2,
   refprovide: 1,
+  recite: 1,
 };
 
 /**
@@ -164,6 +170,7 @@ export const TIER_LABEL: Readonly<Record<Rung, readonly string[]>> = {
   blanks: ['Easier', 'Harder'],
   firstletters: ['Easier', 'Harder'],
   refprovide: ['From memory'],
+  recite: ['From memory'],
 };
 
 /** The label for one tier, or a bare "Tier n" if the number is out of range. */
@@ -183,7 +190,18 @@ export function tierLabel(rung: Rung, tier: number): string {
  * The direction (later = harder) is the same one `RUNG_ORDER` encodes and
  * `ui/format.ts#carriesDownFrom` reads; the two must not disagree.
  */
-export const TEXT_RECALL_CHAIN: readonly Rung[] = ['ordering', 'blanks', 'firstletters'];
+export const TEXT_RECALL_CHAIN: readonly Rung[] = ['ordering', 'blanks', 'firstletters', 'recite'];
+
+/**
+ * Rungs that never block a passage being well learned and that may be absent
+ * (no microphone, no speech kit). A real recitation still carries down after
+ * the rung stops being applicable.
+ */
+export const OPTIONAL_RUNGS: readonly Rung[] = ['recite'];
+
+export function isOptionalRung(rung: Rung): boolean {
+  return OPTIONAL_RUNGS.includes(rung);
+}
 
 /**
  * Minimum score for an attempt to count as a pass, on the 0..1
@@ -443,7 +461,7 @@ export function isActivitySatisfied(rungs: readonly ActivityLevel[], rung: Rung)
   if (position === -1) return false;
   return rungs.some(
     (r) =>
-      r.applicable &&
+      (r.applicable || isOptionalRung(r.rung)) &&
       r.level >= WELL_LEARNED_LEVEL &&
       TEXT_RECALL_CHAIN.indexOf(r.rung) > position,
   );
@@ -460,7 +478,7 @@ export function isActivitySatisfied(rungs: readonly ActivityLevel[], rung: Rung)
  * question about it.
  */
 export function passageWellLearned(rungs: readonly ActivityLevel[]): boolean {
-  const applicable = rungs.filter((r) => r.applicable);
+  const applicable = rungs.filter((r) => r.applicable && !isOptionalRung(r.rung));
   if (applicable.length === 0) return false;
   return applicable.every((r) => isActivitySatisfied(rungs, r.rung));
 }
