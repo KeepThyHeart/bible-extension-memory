@@ -106,7 +106,7 @@ An opt-in notification at times you choose shows a passage reference (never vers
 
 - The reminders engine is a host feature (task 0083, `api.reminders`) that is not built yet. The extension feature-detects it (`pushController.ts#detectReminders`). Without it, or when notification permission is missing, due cards simply wait: a "N memory cards waiting" banner on Home and a suffix on the status bar item. `extension.json` does not yet declare the `notifications:schedule` permission or the `onReminder` activation event: the manifest schema has no such entries. Add both once core lands them.
 - `src/reminderPlan.ts` is a local stand-in for core's `expandPlan`; `src/pushTypes.ts` holds a local copy of the `api.reminders` contract. Swap both for core's when 0083 lands.
-- Schema v7 adds the `push_card` table (scheduled / fired / waiting / done / dropped). v6 is an empty placeholder reserved for task 0071: replace it with 0071's migration when merging.
+- Schema v7 adds the `push_card` table (scheduled / fired / waiting / done / dropped). v6 is Recite aloud (`recite_on`, `recite_detail`); each passage also has a hidden `recall` card.
 - Desktop first. Web delivery waits on web extension hosting (0086) and PWA push (0085).
 
 ## Known limitations
@@ -149,4 +149,4 @@ The worker and the panel are bundled separately and have different rules: the wo
 ## Technical Details
   * Written using Claude Code
   * Built against the Bible SDK from `next/0.2`. The active verse arrives through `api.events.subscribe('verse.activeChanged', ...)` (the old `api.bible.onDidChangeActiveVerse` no longer exists there).
-  * The database is at schema version 6: v5 added `passage.deleted_at` for soft delete (every passage read filters `deleted_at IS NULL`; a purge of rows deleted over seven days ago runs on activation); v6 adds `passage.recite_on` and the `recite_detail` table for Recite aloud, and every passage gets a `recite` card.
+  * The database is at schema version 7: v5 added `passage.deleted_at` for soft delete (every passage read filters `deleted_at IS NULL`; a purge of rows deleted over seven days ago runs on activation); v6 adds `passage.recite_on` and the `recite_detail` table for Recite aloud, and every passage gets a `recite` card; v7 adds `push_card` for push cards.

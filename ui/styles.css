@@ -2184,7 +2184,7 @@ button.sm-activity-row:hover {
   gap: var(--sm-s2);
 }
 
-/* ===================================================================
+/* ==========================================================================
    Recite aloud (append to ui/styles.css)
    ========================================================================== */
 
@@ -2242,7 +2242,6 @@ button.sm-activity-row:hover {
 .sm-handsfree[data-tone="dark"] .sm-btn:focus-visible { outline: 3px solid #ff0; outline-offset: 2px; }
 
 .sm-recite-include { padding: var(--sm-s2) var(--sm-s3); display: flex; flex-direction: column; gap: var(--sm-s1); }
-=======
 /* push cards */
 .sm-cards-banner {
   display: flex;

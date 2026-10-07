@@ -483,7 +483,7 @@ bible.onWorkerMessage((message) => {
 
     case 'showCard':
       // A notification was clicked: open the card stack, unless an exercise is open.
-      if (nav.view.name !== 'practice') {
+      if (nav.view.name !== 'practice' && nav.view.name !== 'recite') {
         nav = navReduce(nav, { type: 'goCard' });
         void render();
       }
